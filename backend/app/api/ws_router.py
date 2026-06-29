@@ -144,6 +144,10 @@ async def chat_websocket(websocket: WebSocket, session_id: str) -> None:
                     await process_audio_buffer(websocket, db_session, session_id, audio_buffer)
                     continue
 
+                if message_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+                    continue
+
                 await send_error(websocket, "UNSUPPORTED_MESSAGE", f"不支持的消息类型: {message_type}")
     except WebSocketDisconnect:
         return

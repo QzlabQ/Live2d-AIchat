@@ -5,3 +5,6 @@ __pycache__/
 backend/.venv/
 backend/phase1.db
 backend/.env
+frontend/node_modules/
+frontend/dist/
+frontend/.env
