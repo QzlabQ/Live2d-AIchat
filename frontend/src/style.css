@@ -1,17 +1,22 @@
 :root {
   color-scheme: light;
   font-family:
-    'Source Han Sans SC',
-    'Noto Sans SC',
-    'PingFang SC',
-    'Microsoft YaHei',
+    "Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
     sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color: #163046;
   background:
-    radial-gradient(circle at top left, rgba(255, 232, 191, 0.55), transparent 32%),
-    radial-gradient(circle at top right, rgba(68, 155, 188, 0.22), transparent 28%),
+    radial-gradient(
+      circle at top left,
+      rgba(255, 232, 191, 0.55),
+      transparent 32%
+    ),
+    radial-gradient(
+      circle at top right,
+      rgba(68, 155, 188, 0.22),
+      transparent 28%
+    ),
     linear-gradient(180deg, #f4f1e7 0%, #f1ece0 45%, #ebe5d9 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -42,11 +47,14 @@
 html,
 body,
 #app {
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
 }
 
 body {
   margin: 0;
+  overflow: hidden;
+  overscroll-behavior-y: none;
 }
 
 button,
@@ -60,14 +68,19 @@ button {
 }
 
 .mono {
-  font-family: 'Consolas', 'SFMono-Regular', monospace;
+  font-family: "Consolas", "SFMono-Regular", monospace;
 }
 
 .app-shell {
   position: relative;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100svh;
   padding: 2rem;
   overflow: hidden;
+  animation: shell-enter 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: top center;
+  display: flex;
+  flex-direction: column;
 }
 
 .aurora {
@@ -122,11 +135,7 @@ button {
 .topbar h1,
 .panel h2 {
   margin: 0.3rem 0 0;
-  font-family:
-    'Avenir Next',
-    'Trebuchet MS',
-    'Source Han Sans SC',
-    sans-serif;
+  font-family: "Avenir Next", "Trebuchet MS", "Source Han Sans SC", sans-serif;
   color: var(--ink-strong);
 }
 
@@ -172,6 +181,10 @@ button {
   display: grid;
   grid-template-columns: minmax(320px, 0.95fr) minmax(380px, 1.05fr);
   gap: 1.25rem;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
 }
 
 .panel {
@@ -186,7 +199,9 @@ button {
 .chat-panel {
   display: flex;
   flex-direction: column;
-  min-height: 44rem;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .panel-header {
@@ -229,24 +244,24 @@ button {
   font-size: 0.88rem;
 }
 
-.status-pill[data-tone='connected'] {
+.status-pill[data-tone="connected"] {
   background: rgba(35, 104, 74, 0.12);
   color: var(--success);
 }
 
-.status-pill[data-tone='recording'] {
+.status-pill[data-tone="recording"] {
   background: rgba(181, 85, 67, 0.14);
   color: var(--danger);
 }
 
-.status-pill[data-tone='reconnecting'],
-.status-pill[data-tone='connecting'] {
+.status-pill[data-tone="reconnecting"],
+.status-pill[data-tone="connecting"] {
   background: rgba(143, 107, 26, 0.14);
   color: var(--warn);
 }
 
-.status-pill[data-tone='error'],
-.status-pill[data-tone='disconnected'] {
+.status-pill[data-tone="error"],
+.status-pill[data-tone="disconnected"] {
   background: rgba(181, 85, 67, 0.12);
   color: var(--danger);
 }
@@ -259,12 +274,16 @@ button {
   overflow: hidden;
   border-radius: 1.6rem;
   background:
-    radial-gradient(circle at 20% 10%, rgba(255, 238, 206, 0.5), transparent 30%),
+    radial-gradient(
+      circle at 20% 10%,
+      rgba(255, 238, 206, 0.5),
+      transparent 30%
+    ),
     linear-gradient(180deg, #19364a 0%, #133145 58%, #0b2437 100%);
 }
 
 .stage-card::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: auto 8% 1.1rem;
   height: 5.4rem;
@@ -507,6 +526,18 @@ button {
   }
 }
 
+@keyframes shell-enter {
+  from {
+    opacity: 0;
+    transform: scaleY(0.975);
+  }
+
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
 @keyframes blink {
   50% {
     opacity: 0;
@@ -514,8 +545,20 @@ button {
 }
 
 @media (max-width: 1180px) {
+  body {
+    overflow: auto;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100svh;
+    overflow: visible;
+  }
+
   .workspace {
     grid-template-columns: 1fr;
+    overflow: visible;
   }
 
   .topbar {
@@ -529,6 +572,8 @@ button {
   .stage-panel,
   .chat-panel {
     min-height: auto;
+    height: auto;
+    overflow: visible;
   }
 }
 

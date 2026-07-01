@@ -8,14 +8,14 @@
 
 ## 快速导航
 
-| 文档 | 说明 |
-|------|------|
-| [技术选型](docs/tech-stack.md) | 各模块技术方案与选型理由 |
-| [系统架构](docs/architecture.md) | 整体架构设计、模块划分、数据流 |
-| [项目Roadmap](docs/roadmap.md) | 开发阶段计划与里程碑 |
-| [API设计](docs/api-design.md) | 前后端接口规范 |
-| [知识库建设](docs/knowledge-base.md) | RAG知识库构建与调优方案 |
-| [口型同步方案](docs/lipsync.md) | Live2D口型驱动技术细节 |
+| 文档                                 | 说明                           |
+| ------------------------------------ | ------------------------------ |
+| [技术选型](docs/tech-stack.md)       | 各模块技术方案与选型理由       |
+| [系统架构](docs/architecture.md)     | 整体架构设计、模块划分、数据流 |
+| [项目Roadmap](docs/roadmap.md)       | 开发阶段计划与里程碑           |
+| [API设计](docs/api-design.md)        | 前后端接口规范                 |
+| [知识库建设](docs/knowledge-base.md) | RAG知识库构建与调优方案        |
+| [口型同步方案](docs/lipsync.md)      | Live2D口型驱动技术细节         |
 
 ---
 
@@ -49,11 +49,13 @@ ai-tour-guide/
 ## 核心功能
 
 ### 游客端
+
 - **多模态交互**：语音输入（Whisper）+ 文本输入，数字人语音+口型+表情同步回答
 - **智能问答**：基于景区知识库RAG，事实性问答准确率≥90%
 - **个性化推荐**：根据兴趣标签（历史/自然/美食等）推荐游览路线
 
 ### 管理后台
+
 - **知识库管理**：上传PDF/Word/文本，自动切片入库
 - **数字人配置**：外观、声音、人设Prompt自定义
 - **游客感受度报告**：情感趋势、关注点分析
@@ -63,16 +65,66 @@ ai-tour-guide/
 
 ## 环境要求
 
-| 组件 | 最低要求 |
-|------|---------|
-| Python | 3.10+ |
-| Node.js | 18+ |
+| 组件                 | 最低要求                            |
+| -------------------- | ----------------------------------- |
+| Python               | 3.10+                               |
+| Node.js              | 18+                                 |
 | VRAM（可选本地模型） | 8GB（Whisper large-v3 + CosyVoice） |
-| 磁盘 | 20GB+ |
+| 磁盘                 | 20GB+                               |
 
 ---
 
 ## 快速启动
+
+### 1
+
+首次准备
+终端 1，启动后端：
+
+```powershell
+cd "E:\2026spring\software contest\AI-chat-live2d\backend"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+uvicorn main:app --reload
+```
+
+终端 2，启动前端：
+
+```powershell
+cd "E:\2026spring\software contest\AI-chat-live2d\frontend"
+npm install
+Copy-Item .env.example .env
+npm run dev
+```
+
+以后日常启动可以简化成
+后端：
+
+```powershell
+cd "E:\2026spring\software contest\AI-chat-live2d\backend"
+.\.venv\Scripts\Activate.ps1
+uvicorn main:app --reload
+```
+
+前端：
+
+```powershell
+cd "E:\2026spring\software contest\AI-chat-live2d\frontend"
+npm run dev
+```
+
+测试地址
+前端页面：http://127.0.0.1:5173
+后端健康检查：http://127.0.0.1:8000/api/v1/health
+后端 Swagger：http://127.0.0.1:8000/docs
+如果你想顺手验证前端构建也没问题，再执行：
+
+```powershell
+cd "E:\2026spring\software contest\AI-chat-live2d\frontend"
+npm run build
+```
 
 ```bash
 # 1. 后端
@@ -97,9 +149,9 @@ docker-compose up -d
 
 ## 评分对照
 
-| 评分项 | 分值 | 对应模块 |
-|--------|------|---------|
-| 功能完整度 | 40 | 全部功能模块 |
-| 技术与创新性 | 30 | 口型同步、RAG+大模型 |
-| 行业实用与体验性 | 20 | 交互流畅度、数字人表现力 |
-| 文档质量 | 10 | docs/ + PPT + 演示视频 |
+| 评分项           | 分值 | 对应模块                 |
+| ---------------- | ---- | ------------------------ |
+| 功能完整度       | 40   | 全部功能模块             |
+| 技术与创新性     | 30   | 口型同步、RAG+大模型     |
+| 行业实用与体验性 | 20   | 交互流畅度、数字人表现力 |
+| 文档质量         | 10   | docs/ + PPT + 演示视频   |
