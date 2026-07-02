@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     debug: bool = True
     api_v1_prefix: str = "/api/v1"
 
-    # PostgreSQL is the primary target. SQLite remains available for quick local validation.
     database_url: str = "sqlite+aiosqlite:///./phase1.db"
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -51,6 +50,15 @@ class Settings(BaseSettings):
     websocket_chunk_size: int = 24
     request_timeout_seconds: float = 10.0
 
+    knowledge_base_dir: str = "./storage/knowledge"
+    knowledge_collection_name: str = "phase1_scenic_knowledge"
+    knowledge_embedding_engine: str = "bge-m3"
+    knowledge_embedding_model: str = "BAAI/bge-m3"
+    knowledge_embedding_device: str = "cpu"
+    knowledge_embedding_batch_size: int = 8
+    knowledge_chunk_size: int = 512
+    knowledge_chunk_overlap: int = 64
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def split_cors_origins(cls, value: object) -> object:
@@ -67,6 +75,18 @@ class Settings(BaseSettings):
                 return True
             if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
                 return False
+        return value
+
+    @field_validator(
+        "knowledge_embedding_batch_size",
+        "knowledge_chunk_size",
+        "knowledge_chunk_overlap",
+        mode="after",
+    )
+    @classmethod
+    def ensure_positive_knowledge_numbers(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Knowledge configuration values must be positive integers.")
         return value
 
 
