@@ -22,7 +22,11 @@ type RuntimeLive2DModel = Live2DModel &
     position: {
       set: (x: number, y?: number) => void
     }
+    pivot: {
+      set: (x: number, y?: number) => void
+    }
     on: (event: string, handler: () => void) => void
+    getLocalBounds: () => PIXI.Rectangle
     internalModel: {
       coreModel: {
         setParameterValueById: (id: string, value: number) => void
@@ -80,15 +84,17 @@ function resizeModel() {
   }
 
   const { clientWidth, clientHeight } = stageHost.value
-  const modelWidth = Math.max(model.width || 1, 1)
-  const modelHeight = Math.max(model.height || 1, 1)
-  const scaleX = clientWidth / modelWidth
-  const scaleY = clientHeight / modelHeight
-  const scale = Math.min(scaleX, scaleY) * 0.88
+  const bounds = model.getLocalBounds()
+  const modelWidth = Math.max(bounds.width || 1, 1)
+  const modelHeight = Math.max(bounds.height || 1, 1)
+  const isCompact = clientWidth < 720
+  const widthRatio = isCompact ? 0.82 : 0.74
+  const heightRatio = isCompact ? 0.84 : 0.78
+  const scale = Math.min((clientWidth * widthRatio) / modelWidth, (clientHeight * heightRatio) / modelHeight)
 
-  model.anchor.set(0.5, 1)
   model.scale.set(scale)
-  model.position.set(clientWidth / 2, clientHeight * 0.96)
+  model.pivot.set(bounds.x + modelWidth / 2, bounds.y + modelHeight * 0.82)
+  model.position.set(clientWidth / 2, clientHeight * (isCompact ? 0.94 : 0.92))
 }
 
 function playIdleMotion() {

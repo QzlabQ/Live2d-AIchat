@@ -44,9 +44,9 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 
 **知识库**
 
-- [ ] 下载示范景区资料包并解析（PDF/Word → 纯文本）
-- [ ] LangChain 文档切片（chunk_size=512, overlap=64）
-- [ ] bge-m3 Embedding 向量化入库（ChromaDB）
+- [x] 下载示范景区资料包并解析（PDF/Word → 纯文本）
+- [x] LangChain 文档切片（chunk_size=512, overlap=64）
+- [x] bge-m3 Embedding 向量化入库（ChromaDB）
 
 **里程碑验收**：语音输入 → 识别文字 → 数字人张嘴说话（Edge-TTS音频）
 

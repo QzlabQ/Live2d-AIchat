@@ -58,19 +58,22 @@ function downsampleBuffer(buffer: Float32Buffer, inputRate: number, targetRate: 
 export function useAudioRecorder(options: UseAudioRecorderOptions) {
   const isRecording = ref(false)
   const isSupported = computed(
-    () => typeof navigator !== 'undefined' && !!navigator.mediaDevices && !!window.MediaRecorder,
+    () =>
+      typeof navigator !== 'undefined' &&
+      !!navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === 'function' &&
+      typeof window.AudioContext !== 'undefined',
   )
   const level = ref(0)
 
   let stream: MediaStream | null = null
-  let mediaRecorder: MediaRecorder | null = null
   let audioContext: AudioContext | null = null
   let sourceNode: MediaStreamAudioSourceNode | null = null
   let processorNode: ScriptProcessorNode | null = null
   let sinkNode: GainNode | null = null
-
   let sourceRemainder: Float32Buffer = new Float32Array(0)
   let pcmRemainder: Int16Buffer = new Int16Array(0)
+  let hasCapturedSamples = false
 
   function cleanupGraph() {
     processorNode?.disconnect()
@@ -89,9 +92,9 @@ export function useAudioRecorder(options: UseAudioRecorderOptions) {
       audioContext = null
     }
 
-    mediaRecorder = null
     sourceRemainder = new Float32Array(0)
     pcmRemainder = new Int16Array(0)
+    hasCapturedSamples = false
     level.value = 0
   }
 
@@ -134,8 +137,13 @@ export function useAudioRecorder(options: UseAudioRecorderOptions) {
       sourceRemainder = new Float32Array(0)
     }
 
+    if (!hasCapturedSamples && pcmRemainder.length === 0) {
+      cleanupGraph()
+      options.onError('未采集到有效音频，请检查麦克风权限或系统输入设备设置。')
+      return
+    }
+
     flushPcm(true)
-    mediaRecorder?.stop()
     cleanupGraph()
   }
 
@@ -158,9 +166,6 @@ export function useAudioRecorder(options: UseAudioRecorderOptions) {
         },
       })
 
-      mediaRecorder = new MediaRecorder(stream)
-      mediaRecorder.start(250)
-
       audioContext = new AudioContext()
       sourceNode = audioContext.createMediaStreamSource(stream)
       processorNode = audioContext.createScriptProcessor(4096, 1, 1)
@@ -171,6 +176,10 @@ export function useAudioRecorder(options: UseAudioRecorderOptions) {
       processorNode.connect(sinkNode)
       sinkNode.connect(audioContext.destination)
 
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume()
+      }
+
       processorNode.onaudioprocess = (event) => {
         if (!isRecording.value || !audioContext) {
           return
@@ -180,6 +189,7 @@ export function useAudioRecorder(options: UseAudioRecorderOptions) {
         const sampleCopy: Float32Buffer = new Float32Array(channelData.length)
         sampleCopy.set(channelData)
         sourceRemainder = mergeFloat32Arrays(sourceRemainder, sampleCopy)
+        hasCapturedSamples = true
 
         let energy = 0
         for (const value of sampleCopy) {
