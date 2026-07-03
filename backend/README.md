@@ -141,10 +141,25 @@ conda activate ai-chat
 python -m scripts.evaluate_rag --dataset .\evals\phase2_rag_eval.sample.jsonl
 ```
 
-如果你要做 roadmap 里的 50 题准确率测试，可以按这个 JSONL 格式自行扩展题库：
+如果你要跑 roadmap 里的 50 题准确率测试，可以直接使用仓库内置题集：
+
+```powershell
+cd backend
+conda activate ai-chat
+python -m scripts.evaluate_rag --dataset .\evals\phase2_rag_eval.50.jsonl --target 0.9
+```
+
+评测脚本现在支持：
+
+- `expected_keywords`: 必须全部命中
+- `expected_keyword_groups`: 每组至少命中一个关键词
+- `requires_citations`: 检查回答里是否带 `参考资料`
+- `expects_refusal`: 检查越界问题是否被拒答
+
+如果你还要继续扩展题库，可以按下面的 JSONL 结构追加：
 
 ```json
-{"question":"灵山胜境有什么历史故事？","expected_keywords":["小灵山","佛教"]}
+{"question":"灵山胜境有什么历史故事？","expected_keyword_groups":[["小灵山"],["玄奘"]],"requires_citations":true}
 ```
 
 ## 接口

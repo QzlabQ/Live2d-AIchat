@@ -19,6 +19,10 @@ from app.services.knowledge_base import (
 
 SENTENCE_RE = re.compile(r"(?<=[。！？!?；;\n])")
 TOKEN_RE = re.compile("\\w+|[\u4e00-\u9fff]")
+ROUTE_PLAN_RE = re.compile(
+    r"(?:(?P<label>[^\n：:]{2,40}路线(?:（[^）]+）)?)\s*\n)?路线规划[:：]\s*(?P<plan>[^\n]+)"
+)
+TIME_RANGE_RE = re.compile(r"(?P<time>\d{1,2}:\d{2}(?:\s*[-~至到]\s*\d{1,2}:\d{2})?)")
 STOP_TOKENS = {
     "请",
     "一下",
@@ -46,6 +50,31 @@ STOP_TOKENS = {
     "如何",
     "能否",
 }
+OVERVIEW_SPOT_PRIORITY = (
+    "灵山大佛",
+    "灵山梵宫",
+    "九龙灌浴",
+    "五印坛城",
+    "祥符禅寺",
+    "佛手广场",
+    "百子戏弥勒",
+    "灵山精舍",
+    "曼飞龙塔",
+)
+OUT_OF_DOMAIN_HINTS = (
+    "天气",
+    "下雨",
+    "气温",
+    "温度",
+    "微积分",
+    "导数",
+    "积分",
+    "线性代数",
+    "股票",
+    "基金",
+    "高考",
+    "考研",
+)
 
 
 @dataclass(slots=True)
@@ -223,6 +252,10 @@ class ScenicRAGService:
         query = normalize_question(question)
         if not query:
             return self._refuse("我刚刚没有听清，你可以再说一次吗？")
+        if is_out_of_domain_question(query):
+            return self._refuse(
+                "根据当前景区知识库，暂时无法确认这个问题。你可以继续问我景点、历史、游览路线或参观建议。"
+            )
 
         candidates = await self.retrieve(query)
         if not self._has_grounded_context(query, candidates):
@@ -285,10 +318,17 @@ class ScenicRAGService:
             rerank_scores = await reranker.score_pairs(question, documents)
 
         ranked: list[RetrievedChunk] = []
+        intent = detect_query_intent(question)
         for index, hit in enumerate(raw_hits):
             metadata = hit.metadata
             retrieval_score = distance_to_similarity(hit.distance)
             rerank_score = rerank_scores[index] if index < len(rerank_scores) else retrieval_score
+            rerank_score += structured_rank_bonus(
+                intent=intent,
+                text=hit.text,
+                title=str(metadata.get("title", metadata.get("filename", ""))),
+                category=str(metadata.get("category", "scenery")),
+            )
             ranked.append(
                 RetrievedChunk(
                     chunk_id=hit.chunk_id,
@@ -311,7 +351,7 @@ class ScenicRAGService:
             ),
             reverse=True,
         )
-        return ranked[: self.settings.rag_rerank_top_n]
+        return limit_ranked_sources(ranked, self.settings.rag_rerank_top_n)
 
     def _get_reranker(self) -> LexicalReranker | BgeRerankerService:
         if self._reranker is not None:
@@ -338,6 +378,10 @@ class ScenicRAGService:
         return await self.llm.complete(messages)
 
     def _build_extractive_answer(self, question: str, sources: list[RetrievedChunk]) -> str:
+        structured_answer = build_structured_answer(question, sources)
+        if structured_answer:
+            return structured_answer
+
         query_tokens = meaningful_tokens(question)
         intent_tokens = intent_keywords(question)
         scored_sentences: list[tuple[float, str]] = []
@@ -460,6 +504,281 @@ def intent_keywords(text: str) -> set[str]:
     if any(token in text for token in ("停车", "交通", "酒店", "厕所", "导游", "门票")):
         hints.update({"停车", "交通", "酒店", "厕所", "导游", "门票"})
     return hints
+
+
+def detect_query_intent(text: str) -> str:
+    if any(token in text for token in ("几点", "营业", "演出时间", "开放时间", "场次")):
+        return "schedule"
+    if any(token in text for token in ("什么时候", "哪一年", "哪一期", "何时", "开光", "奠基", "开放")):
+        return "timeline"
+    if any(token in text for token in ("路线", "推荐", "先去", "怎么逛", "游览", "第一次来")):
+        return "route"
+    if any(token in text for token in ("核心景点", "有哪些景点", "必看", "主要景点", "代表景点")):
+        return "overview"
+    if any(token in text for token in ("历史", "故事", "由来", "文化", "渊源", "兴衰")):
+        return "history"
+    if any(token in text for token in ("停车", "交通", "酒店", "厕所", "导游", "门票")):
+        return "facility"
+    return "general"
+
+
+def build_structured_answer(question: str, sources: list[RetrievedChunk]) -> str:
+    intent = detect_query_intent(question)
+    if intent == "timeline":
+        return build_timeline_answer(question, sources)
+    if intent == "route":
+        return build_route_answer(question, sources)
+    if intent == "overview":
+        return build_overview_answer(sources)
+    if intent == "schedule":
+        return build_schedule_answer(sources)
+    return ""
+
+
+def build_route_answer(question: str, sources: list[RetrievedChunk]) -> str:
+    route_candidates: list[tuple[float, str, str]] = []
+    for source in sources:
+        for label, plan in extract_route_plans(source.text):
+            score = score_route_plan(question, label, plan, source)
+            route_candidates.append((score, label, normalize_route_text(plan)))
+
+    if not route_candidates:
+        return ""
+
+    _, label, plan = max(route_candidates, key=lambda item: item[0])
+    if any(token in question for token in ("亲子", "家庭", "孩子")):
+        prefix = "如果是亲子或家庭出游，推荐这条轻松路线。路线规划："
+    elif any(token in question for token in ("自然", "风光", "拍照")):
+        prefix = "如果你更偏好自然风光，可以这样走。路线规划："
+    elif any(token in question for token in ("历史", "文化", "典故")):
+        prefix = "如果你想重点看历史文化，推荐这条深度路线。路线规划："
+    elif any(token in question for token in ("第一次", "初次")):
+        prefix = "如果你是第一次来，建议优先走核心景点主线。路线规划："
+    else:
+        prefix = "可以参考这条游览路线。路线规划："
+
+    answer = f"{prefix}{plan}"
+    if label and "第一次" in question and "历史文化" in label:
+        answer += " 这条路线覆盖了大照壁、祥符禅寺、灵山大佛和梵宫等代表性景点。"
+    return answer
+
+
+def build_overview_answer(sources: list[RetrievedChunk]) -> str:
+    spot_names = collect_spot_names(sources)
+    if len(spot_names) < 3:
+        return ""
+
+    primary = "、".join(spot_names[:5])
+    focus = "、".join(spot_names[:3])
+    return f"灵山胜境的核心景点通常包括{primary}。如果时间有限，可以优先看{focus}。"
+
+
+def build_schedule_answer(sources: list[RetrievedChunk]) -> str:
+    candidates: list[str] = []
+    for source in sources:
+        for line in split_lines(source.text):
+            normalized = normalize_sentence_candidate(line, source.title)
+            if len(normalized) < 6:
+                continue
+            if TIME_RANGE_RE.search(normalized) or any(
+                token in normalized for token in ("开放时间", "营业时间", "演出时间", "开放", "场次")
+            ):
+                candidates.append(normalized)
+
+    picked = dedupe_preserve_order(candidates)[:2]
+    if not picked:
+        return ""
+    return " ".join(picked)
+
+
+def build_timeline_answer(question: str, sources: list[RetrievedChunk]) -> str:
+    relevant_lines: list[str] = []
+    question_tokens = meaningful_tokens(question)
+    for source in sources:
+        for line in split_sentences(source.text):
+            normalized = normalize_sentence_candidate(line, source.title)
+            if len(normalized) < 8:
+                continue
+            if not re.search(r"\d{4}年|[一二三]期工程|奠基|开光|开放", normalized):
+                continue
+            overlap = sum(1 for token in question_tokens if token in normalized)
+            if overlap == 0 and not any(token in normalized for token in ("一期", "二期", "三期", "开放", "开光")):
+                continue
+            relevant_lines.append(normalized)
+
+    picked = dedupe_preserve_order(relevant_lines)[:2]
+    if not picked:
+        return ""
+    answer = " ".join(picked)
+    if not answer.startswith(("根据", "灵山")):
+        answer = f"根据景区资料，{answer}"
+    return answer
+
+
+def extract_route_plans(text: str) -> list[tuple[str, str]]:
+    plans: list[tuple[str, str]] = []
+    for match in ROUTE_PLAN_RE.finditer(text):
+        label = normalize_route_text(match.group("label") or "")
+        plan = normalize_route_text(match.group("plan") or "")
+        if plan:
+            plans.append((label, plan))
+    return plans
+
+
+def score_route_plan(question: str, label: str, plan: str, source: RetrievedChunk) -> float:
+    score = max(source.rerank_score, source.retrieval_score)
+    lowered = f"{label}\n{plan}"
+    if source.category == "route":
+        score += 0.3
+    if "→" in plan:
+        score += 0.2
+    if any(token in question for token in ("亲子", "家庭", "孩子")) and "亲子" in lowered:
+        score += 1.0
+    if any(token in question for token in ("历史", "文化", "典故")) and "历史文化" in lowered:
+        score += 1.0
+    if any(token in question for token in ("自然", "风光", "拍照")) and "自然风光" in lowered:
+        score += 1.0
+    if any(token in question for token in ("第一次", "初次")):
+        if "历史文化" in lowered:
+            score += 0.5
+        if any(token in plan for token in ("灵山大佛", "灵山梵宫", "九龙灌浴")):
+            score += 0.4
+    return score
+
+
+def collect_spot_names(sources: list[RetrievedChunk]) -> list[str]:
+    available: set[str] = set()
+    ordered_names: list[str] = []
+    seen = set()
+    for source in sources:
+        for name in extract_spot_names_from_text(source.text):
+            if name == "灵山胜境":
+                continue
+            available.add(name)
+            if name not in seen:
+                seen.add(name)
+                ordered_names.append(name)
+
+    prioritized = [name for name in OVERVIEW_SPOT_PRIORITY if name in available]
+    extras = [name for name in ordered_names if name not in prioritized]
+    return prioritized + extras
+
+
+def extract_spot_names_from_text(text: str) -> list[str]:
+    generic_names = {
+        "项目",
+        "详细信息",
+        "基本数据",
+        "建造工艺",
+        "佛教意义",
+        "最佳体验",
+        "核心艺术",
+        "特色体验",
+        "文化地位",
+        "景区名称",
+        "景点名称",
+        "路线规划",
+        "讲解重点",
+        "数据集说明",
+        "其他特色景点",
+        "实用游览贴士",
+    }
+    candidates: list[str] = []
+    for line in split_lines(text):
+        cleaned = line.strip().strip("：:")
+        if not cleaned or cleaned in generic_names:
+            continue
+        if cleaned.startswith("LS-"):
+            continue
+        if re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9]{2,16}", cleaned):
+            candidates.append(cleaned)
+            continue
+        heading = re.match(r"(?P<name>[\u4e00-\u9fffA-Za-z0-9]{2,16})[:：]", cleaned)
+        if heading and heading.group("name") not in generic_names:
+            candidates.append(heading.group("name"))
+    return dedupe_preserve_order(candidates)
+
+
+def structured_rank_bonus(intent: str, text: str, title: str, category: str) -> float:
+    bonus = 0.0
+    if intent == "route":
+        if category == "route":
+            bonus += 0.22
+        if "路线规划" in text:
+            bonus += 0.5
+        if "→" in text:
+            bonus += 0.18
+    elif intent == "overview":
+        if "核心景点" in text or "特色景点" in text:
+            bonus += 0.32
+        bonus += min(len(extract_spot_names_from_text(text)), 5) * 0.08
+    elif intent == "timeline":
+        if re.search(r"\d{4}年|[一二三]期工程|奠基|开光|正式开放", text):
+            bonus += 0.4
+        if any(token in text for token in ("1994年", "1997年", "2003年", "2009年")):
+            bonus += 0.18
+    elif intent == "schedule":
+        if TIME_RANGE_RE.search(text):
+            bonus += 0.28
+        if any(token in text for token in ("开放时间", "营业时间", "演出时间", "开放", "场次")):
+            bonus += 0.2
+    elif intent == "history":
+        if category == "history":
+            bonus += 0.16
+        if any(token in text for token in ("玄奘", "贞观", "祥符禅寺", "1994年", "1997年")):
+            bonus += 0.22
+    elif intent == "facility":
+        if any(token in text for token in ("停车", "交通", "酒店", "厕所", "导游", "门票")):
+            bonus += 0.24
+    if "参考资料" in title:
+        bonus -= 0.05
+    return bonus
+
+
+def limit_ranked_sources(ranked: list[RetrievedChunk], limit: int) -> list[RetrievedChunk]:
+    if len(ranked) <= limit:
+        return ranked
+
+    selected: list[RetrievedChunk] = []
+    remaining: list[RetrievedChunk] = []
+    seen_filenames = set()
+
+    for item in ranked:
+        if item.filename not in seen_filenames and len(selected) < limit:
+            selected.append(item)
+            seen_filenames.add(item.filename)
+        else:
+            remaining.append(item)
+
+    for item in remaining:
+        if len(selected) >= limit:
+            break
+        selected.append(item)
+
+    return selected
+
+
+def split_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def normalize_route_text(text: str) -> str:
+    return " ".join(text.strip().split())
+
+
+def dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen = set()
+    unique: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique
+
+
+def is_out_of_domain_question(text: str) -> bool:
+    return any(token in text for token in OUT_OF_DOMAIN_HINTS)
 
 
 def split_sentences(text: str) -> list[str]:
