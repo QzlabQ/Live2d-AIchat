@@ -1,4 +1,6 @@
 chromadb==0.5.23
 sentence-transformers==5.0.0
+transformers==4.46.3
+langchain-core==1.4.8
 langchain-text-splitters==0.3.11
 PyMuPDF==1.26.3

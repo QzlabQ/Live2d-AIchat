@@ -64,6 +64,14 @@ class ImportedKnowledgeDoc:
 
 
 @dataclass(slots=True)
+class VectorStoreHit:
+    chunk_id: str
+    text: str
+    metadata: dict[str, str | int | float | bool]
+    distance: float | None
+
+
+@dataclass(slots=True)
 class KnowledgeImportReport:
     imported: list[ImportedKnowledgeDoc]
     skipped: list[tuple[str, str]]
@@ -525,6 +533,36 @@ class KnowledgeVectorStore:
 
     def count(self) -> int:
         return int(self.collection().count())
+
+    def query_chunks(self, query_embedding: list[float], n_results: int) -> list[VectorStoreHit]:
+        if n_results <= 0:
+            return []
+
+        if self.count() == 0:
+            return []
+
+        payload = self.collection().query(
+            query_embeddings=[query_embedding],
+            n_results=n_results,
+            include=["documents", "metadatas", "distances"],
+        )
+
+        ids = payload.get("ids", [[]])[0]
+        documents = payload.get("documents", [[]])[0]
+        metadatas = payload.get("metadatas", [[]])[0]
+        distances = payload.get("distances", [[]])[0]
+
+        hits: list[VectorStoreHit] = []
+        for index, chunk_id in enumerate(ids):
+            hits.append(
+                VectorStoreHit(
+                    chunk_id=str(chunk_id),
+                    text=str(documents[index]) if index < len(documents) else "",
+                    metadata=metadatas[index] if index < len(metadatas) and metadatas[index] else {},
+                    distance=float(distances[index]) if index < len(distances) and distances[index] is not None else None,
+                )
+            )
+        return hits
 
 
 class KnowledgeImporter:

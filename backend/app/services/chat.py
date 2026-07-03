@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 from app.core.config import Settings, get_settings
+from app.services.rag import RetrievedChunk, get_rag_service
 
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])")
 
@@ -13,13 +14,45 @@ SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])")
 class GeneratedReply:
     text: str
     emotion: str
+    spoken_text: str | None = None
+    sources: list[RetrievedChunk] = field(default_factory=list)
+    confidence: float = 0.0
+    mode: str = "template"
 
 
-class GuideChatService:
+class BaseGuideChatService:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def generate_reply(self, user_text: str, persona: str | None = None) -> GeneratedReply:
+    def chunk_text(self, text: str) -> list[str]:
+        segments = [item.strip() for item in SENTENCE_SPLIT_RE.split(text) if item.strip()]
+        if not segments:
+            return [text]
+
+        chunked: list[str] = []
+        for segment in segments:
+            if len(segment) <= self.settings.websocket_chunk_size:
+                chunked.append(segment)
+                continue
+
+            start = 0
+            while start < len(segment):
+                chunked.append(segment[start : start + self.settings.websocket_chunk_size])
+                start += self.settings.websocket_chunk_size
+        return chunked
+
+    def infer_emotion(self, text: str) -> str:
+        if any(token in text for token in ("你好", "欢迎", "推荐", "适合", "可以去")):
+            return "happy"
+        if any(token in text for token in ("路线", "先去", "游览", "安排")):
+            return "excited"
+        if any(token in text for token in ("历史", "故事", "文化", "由来")):
+            return "thinking"
+        return "neutral"
+
+
+class TemplateGuideChatService(BaseGuideChatService):
+    async def generate_reply(self, user_text: str, persona: str | None = None) -> GeneratedReply:
         text = " ".join(user_text.strip().split())
         if not text:
             return GeneratedReply("我刚刚没有听清，你可以再说一次吗？", "thinking")
@@ -58,24 +91,25 @@ class GuideChatService:
         )
         return GeneratedReply(reply, "neutral")
 
-    def chunk_text(self, text: str) -> list[str]:
-        segments = [item.strip() for item in SENTENCE_SPLIT_RE.split(text) if item.strip()]
-        if not segments:
-            return [text]
 
-        chunked: list[str] = []
-        for segment in segments:
-            if len(segment) <= self.settings.websocket_chunk_size:
-                chunked.append(segment)
-                continue
-
-            start = 0
-            while start < len(segment):
-                chunked.append(segment[start : start + self.settings.websocket_chunk_size])
-                start += self.settings.websocket_chunk_size
-        return chunked
+class RAGGuideChatService(BaseGuideChatService):
+    async def generate_reply(self, user_text: str, persona: str | None = None) -> GeneratedReply:
+        answer = await get_rag_service().answer(user_text, persona=persona)
+        emotion = self.infer_emotion(answer.spoken_text or answer.answer_text)
+        return GeneratedReply(
+            text=answer.answer_text,
+            spoken_text=answer.spoken_text,
+            emotion=emotion,
+            sources=answer.sources,
+            confidence=answer.confidence,
+            mode="rag",
+        )
 
 
-@lru_cache
-def get_chat_service() -> GuideChatService:
-    return GuideChatService(get_settings())
+def get_chat_service():
+    settings = get_settings()
+    mode = settings.chat_mode.strip().lower()
+    if mode == "rag":
+        return RAGGuideChatService(settings)
+    return TemplateGuideChatService(settings)
+

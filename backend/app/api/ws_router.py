@@ -55,11 +55,14 @@ async def process_text_message(websocket: WebSocket, db_session, session_id: str
     await save_message(db_session, session_id=session_id, role="user", content=content)
     avatar = await get_avatar_config(db_session)
 
-    generated = chat_service.generate_reply(content, persona=avatar.persona)
+    generated = await chat_service.generate_reply(content, persona=avatar.persona)
     await websocket.send_json({"type": "emotion", "value": generated.emotion})
 
-    for seq, chunk in enumerate(chat_service.chunk_text(generated.text)):
+    for chunk in chat_service.chunk_text(generated.text):
         await websocket.send_json({"type": "text_delta", "content": chunk})
+
+    spoken_text = generated.spoken_text or generated.text
+    for seq, chunk in enumerate(chat_service.chunk_text(spoken_text)):
         tts_chunk = await tts_service.synthesize_chunk(chunk, seq=seq, voice_id=avatar.voice_id)
         if tts_chunk.audio_bytes:
             await websocket.send_json(
@@ -71,6 +74,25 @@ async def process_text_message(websocket: WebSocket, db_session, session_id: str
             )
         if tts_chunk.phonemes:
             await websocket.send_json({"type": "phonemes", "seq": seq, "data": tts_chunk.phonemes})
+
+    if generated.sources:
+        await websocket.send_json(
+            {
+                "type": "sources",
+                "mode": generated.mode,
+                "items": [
+                    {
+                        "filename": item.filename,
+                        "title": item.title,
+                        "category": item.category,
+                        "chunk_index": item.chunk_index,
+                        "retrieval_score": item.retrieval_score,
+                        "rerank_score": item.rerank_score,
+                    }
+                    for item in generated.sources
+                ],
+            }
+        )
 
     latency_ms = int((perf_counter() - started_at) * 1000)
     await save_message(

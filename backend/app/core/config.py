@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     tts_pitch: str = "+0Hz"
 
     chat_mode: str = "template"
+    rag_retrieval_top_k: int = 8
+    rag_rerank_top_n: int = 4
+    rag_context_docs: int = 3
+    rag_context_chars_per_chunk: int = 520
+    rag_min_retrieval_score: float = 0.08
+    rag_generation_temperature: float = 0.2
+    rag_generation_max_tokens: int = 360
+    rag_reranker_engine: str = "bge-reranker-v2-m3"
+    rag_reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    rag_reranker_device: str = "cpu"
+    rag_reranker_batch_size: int = 4
     websocket_chunk_size: int = 24
     request_timeout_seconds: float = 10.0
 
@@ -81,12 +92,25 @@ class Settings(BaseSettings):
         "knowledge_embedding_batch_size",
         "knowledge_chunk_size",
         "knowledge_chunk_overlap",
+        "rag_retrieval_top_k",
+        "rag_rerank_top_n",
+        "rag_context_docs",
+        "rag_context_chars_per_chunk",
+        "rag_generation_max_tokens",
+        "rag_reranker_batch_size",
         mode="after",
     )
     @classmethod
     def ensure_positive_knowledge_numbers(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("Knowledge configuration values must be positive integers.")
+        return value
+
+    @field_validator("rag_generation_temperature", "rag_min_retrieval_score", mode="after")
+    @classmethod
+    def ensure_non_negative_rag_numbers(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("RAG configuration values must be non-negative.")
         return value
 
 
