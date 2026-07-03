@@ -124,6 +124,12 @@ RAG_RERANKER_MODEL=./storage/models/bge-reranker-v2-m3
 
 - 如果你已经配置 `DASHSCOPE_API_KEY`，RAG 会走“检索 → 重排 → Qwen 生成”
 - 如果没有配置 `DASHSCOPE_API_KEY`，RAG 会走“检索 → 重排 → 抽取式回答”，仍可本地验证知识库问答链
+- 默认模型已经切到 `qwen3.7-plus`
+- `DASHSCOPE_BASE_URL` 当前默认使用共享域名，便于快速联调；如果你已经有 Workspace 专属域名，建议替换成：
+
+```env
+DASHSCOPE_BASE_URL=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+```
 
 ## Phase 2 RAG 验证
 

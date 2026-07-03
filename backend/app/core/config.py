@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     dashscope_api_key: str | None = None
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    dashscope_model: str = "qwen-plus"
+    dashscope_model: str = "qwen3.7-plus"
 
     asr_engine: str = "mock"
     asr_model_name: str = "small"

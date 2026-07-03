@@ -62,8 +62,8 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 
 **RAG问答链**
 
-- [ ] LangChain RAG 链搭建（检索 → Rerank → 生成）
-- [ ] bge-reranker-v2-m3 重排序接入（提升准确率）
+- [x] LangChain RAG 链搭建（检索 → Rerank → 生成）
+- [x] bge-reranker-v2-m3 重排序接入（提升准确率）
 - [ ] Prompt 工程：景区导游人设、引用原文作答、拒绝越界
 - [ ] 景区问答准确率测试（目标≥90%，构建50题测试集）
 
