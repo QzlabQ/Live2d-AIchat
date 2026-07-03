@@ -3,7 +3,7 @@ import * as PIXI from 'pixi.js'
 import { Live2DModel } from 'pixi-live2d-display/cubism4'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { EMOTION_PRESETS, currentPhoneme, finalFrameEnd, phonemeToMouth } from '../lib/lipsync'
+import { EMOTION_PRESETS, currentPhoneme, finalFrameEnd, mouthPoseFromFrame } from '../lib/lipsync'
 import type { EmotionValue, PhonemeFrame } from '../types/chat'
 
 type RuntimeLive2DModel = Live2DModel &
@@ -57,6 +57,15 @@ let idleTimer = 0
 let lipSyncFrame = 0
 let currentOpen = 0.06
 let currentForm = 0
+const MOUTH_OPEN_IDS = ['ParamMouthOpenY', 'PARAM_MOUTH_OPEN_Y']
+const MOUTH_FORM_IDS = ['ParamMouthForm', 'PARAM_MOUTH_FORM']
+const EMOTION_PARAM_IDS = Array.from(
+  new Set(
+    Object.values(EMOTION_PRESETS).flatMap((preset) => Object.keys(preset)),
+  ),
+)
+const currentEmotionValues: Record<string, number> = {}
+let targetEmotionValues: Record<string, number> = { ...EMOTION_PRESETS.neutral }
 
 function safeSetParameter(id: string, value: number) {
   if (!model) {
@@ -70,12 +79,18 @@ function safeSetParameter(id: string, value: number) {
   }
 }
 
+function safeSetParameterAliases(ids: string[], value: number) {
+  for (const id of ids) {
+    safeSetParameter(id, value)
+  }
+}
+
 function setMouthPose(targetOpen: number, targetForm: number) {
   currentOpen += (targetOpen - currentOpen) * 0.35
   currentForm += (targetForm - currentForm) * 0.35
 
-  safeSetParameter('ParamMouthOpenY', currentOpen)
-  safeSetParameter('ParamMouthForm', currentForm)
+  safeSetParameterAliases(MOUTH_OPEN_IDS, currentOpen)
+  safeSetParameterAliases(MOUTH_FORM_IDS, currentForm)
 }
 
 function resizeModel() {
@@ -124,8 +139,14 @@ function startBreathingLoop() {
 
     const t = performance.now() / 1000
     safeSetParameter('ParamBreath', (Math.sin(t * 1.2) + 1) / 2)
-    safeSetParameter('ParamBodyAngleX', Math.sin(t * 0.6) * 2.2)
-    safeSetParameter('ParamAngleY', Math.sin(t * 0.8) * 1.6)
+
+    for (const id of EMOTION_PARAM_IDS) {
+      const current = currentEmotionValues[id] ?? 0
+      const target = targetEmotionValues[id] ?? 0
+      const next = current + (target - current) * 0.18
+      currentEmotionValues[id] = next
+      safeSetParameter(id, next)
+    }
 
     if (!lipSyncFrame) {
       setMouthPose(0.06 + Math.sin(t * 2.3) * 0.01, currentForm * 0.85)
@@ -203,29 +224,28 @@ async function createModel() {
 
 function setEmotion(emotion: EmotionValue) {
   const preset = EMOTION_PRESETS[emotion] ?? EMOTION_PRESETS.neutral
-
-  for (const [id, value] of Object.entries(EMOTION_PRESETS.neutral)) {
-    safeSetParameter(id, value)
-  }
-
-  for (const [id, value] of Object.entries(preset)) {
-    safeSetParameter(id, value)
+  targetEmotionValues = {
+    ...EMOTION_PRESETS.neutral,
+    ...preset,
   }
 }
 
-function playPhonemes(frames: PhonemeFrame[]) {
+function playPhonemes(frames: PhonemeFrame[], audio?: HTMLAudioElement | null) {
   window.cancelAnimationFrame(lipSyncFrame)
 
   const startedAt = performance.now()
   const stopAt = finalFrameEnd(frames) + 0.18
 
   const tick = (now: number) => {
-    const elapsed = (now - startedAt) / 1000
+    const elapsed =
+      audio && Number.isFinite(audio.currentTime) && audio.currentTime > 0
+        ? audio.currentTime
+        : (now - startedAt) / 1000
     const frame = currentPhoneme(frames, elapsed)
-    const target = phonemeToMouth(frame?.ph ?? 'N')
+    const target = mouthPoseFromFrame(frame)
     setMouthPose(target.openY, target.form)
 
-    if (elapsed <= stopAt) {
+    if (elapsed <= stopAt && !audio?.ended) {
       lipSyncFrame = window.requestAnimationFrame(tick)
       return
     }

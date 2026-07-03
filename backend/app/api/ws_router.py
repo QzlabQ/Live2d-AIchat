@@ -56,7 +56,16 @@ async def process_text_message(websocket: WebSocket, db_session, session_id: str
     avatar = await get_avatar_config(db_session)
 
     generated = await chat_service.generate_reply(content, persona=avatar.persona)
-    await websocket.send_json({"type": "emotion", "value": generated.emotion})
+    await websocket.send_json(
+        {
+            "type": "emotion",
+            "value": generated.emotion,
+            "confidence": generated.emotion_meta.confidence,
+            "keywords": generated.emotion_meta.keywords,
+            "reason": generated.emotion_meta.reason,
+            "source": generated.emotion_meta.source,
+        }
+    )
 
     for chunk in chat_service.chunk_text(generated.text):
         await websocket.send_json({"type": "text_delta", "content": chunk})
@@ -69,6 +78,7 @@ async def process_text_message(websocket: WebSocket, db_session, session_id: str
                 {
                     "type": "audio",
                     "data": base64.b64encode(tts_chunk.audio_bytes).decode("utf-8"),
+                    "mime_type": tts_chunk.mime_type,
                     "seq": seq,
                 }
             )

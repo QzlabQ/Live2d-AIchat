@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     tts_voice: str = "zh-CN-XiaoxiaoNeural"
     tts_rate: str = "+0%"
     tts_pitch: str = "+0Hz"
+    tts_cosyvoice_model_path: str = "./storage/models/CosyVoice-300M-SFT"
+    tts_cosyvoice_code_path: str = "./storage/vendor/CosyVoice"
+    tts_cosyvoice_speaker: str = "中文女"
+    tts_cosyvoice_device: str = "auto"
+    tts_cosyvoice_sample_rate: int = 22050
 
     chat_mode: str = "template"
     rag_retrieval_top_k: int = 8
@@ -98,6 +103,7 @@ class Settings(BaseSettings):
         "rag_context_chars_per_chunk",
         "rag_generation_max_tokens",
         "rag_reranker_batch_size",
+        "tts_cosyvoice_sample_rate",
         mode="after",
     )
     @classmethod

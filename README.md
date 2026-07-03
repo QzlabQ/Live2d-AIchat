@@ -83,11 +83,16 @@ ai-tour-guide/
 
 ```powershell
 cd "E:\2026spring\software contest\AI-chat-live2d\backend"
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+conda create -n ai-chat-gpu python=3.11 numpy=1.24.3 -c defaults -y
+conda activate ai-chat-gpu
+conda install pytorch::pytorch=2.3.1=py3.11_cuda12.1_cudnn8_0 pytorch::torchvision=0.18.1=py311_cu121 pytorch::torchaudio=2.3.1=py311_cu121 pytorch-cuda=12.1 -c pytorch -c nvidia -c defaults -y
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -r requirements.asr.txt
+python -m pip install -r requirements.knowledge.txt
+python -m pip install -r requirements.tts.txt --no-build-isolation
 Copy-Item .env.example .env
-uvicorn main:app --reload
+python -m uvicorn main:app --reload
 ```
 
 终端 2，启动前端：
@@ -104,8 +109,8 @@ npm run dev
 
 ```powershell
 cd "E:\2026spring\software contest\AI-chat-live2d\backend"
-.\.venv\Scripts\Activate.ps1
-uvicorn main:app --reload
+conda activate ai-chat-gpu
+python -m uvicorn main:app --reload
 ```
 
 前端：
@@ -129,15 +134,24 @@ npm run build
 ```bash
 # 1. 后端
 cd backend
-pip install -r requirements.txt
+conda create -n ai-chat-gpu python=3.11 numpy=1.24.3 -c defaults -y
+conda activate ai-chat-gpu
+conda install pytorch::pytorch=2.3.1=py3.11_cuda12.1_cudnn8_0 pytorch::torchvision=0.18.1=py311_cu121 pytorch::torchaudio=2.3.1=py311_cu121 pytorch-cuda=12.1 -c pytorch -c nvidia -c defaults -y
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -r requirements.asr.txt
+python -m pip install -r requirements.knowledge.txt
+python -m pip install -r requirements.tts.txt --no-build-isolation
 cp .env.example .env   # 填入 DASHSCOPE_API_KEY 等
-uvicorn main:app --reload
+python -m uvicorn main:app --reload
 
 # 2. 前端
 cd frontend
 npm install
 npm run dev
 ```
+
+完整的后端 conda / GPU / CosyVoice 环境说明请查看 `backend/README.md`。
 
 或使用 Docker：
 

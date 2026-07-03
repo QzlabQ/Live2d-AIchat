@@ -44,6 +44,8 @@ npm run build
 - 文本输入走 `text`
 - 语音输入走 `audio_chunk` / `audio_end`
 - 服务端返回的 `audio`、`phonemes`、`emotion` 会分别驱动音频播放、口型和表情
+- `emotion` 事件现在除情绪值外，还会携带 `confidence / keywords / reason / source`
+- 页面左侧已加入“情绪熔岩灯”调试面板，方便观察当前表情判断
 
 ## 验收结果 20260629
 
@@ -56,7 +58,11 @@ pixi-live2d-display 集成，载入 Live2D 模型 ✅ Live2DStage.vue，haru 模
 WebSocket 连接管理（心跳 + 断线重连） ✅ useChatSocket.ts：ping/pong 心跳 + 指数退避重连（最大 8s）
 麦克风录音（边录边传） ✅ useAudioRecorder.ts：ScriptProcessorNode → PCM 下采样到 16kHz →100ms 分块 base64 发送
 文本输入框 + 发送逻辑 ✅ App.vue：Enter 发送，流式气泡实时更新
-额外完成（超出 Phase 1 范围）-音素帧驱动的口型同步（rAF 时间轴调度+ lerp 平滑，lipsync.ts）
+额外完成（Phase 2 已接入）
+- 音素/口型帧驱动的口型同步（rAF 时间轴调度 + lerp 平滑，`lipsync.ts`）
+- 按真实音频 `currentTime` 对齐嘴型，而不是只靠本地计时器估算
+- 兼容后端返回的 `audio/mpeg`（Edge-TTS）和 `audio/wav`（CosyVoice）两类音频
+- Live2D 表情改为平滑过渡，不再瞬间切换
 
 5 种情绪预设驱动 Live2D 参数
 音频队列顺序播放 + Blob URL 自动回收

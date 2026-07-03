@@ -5,10 +5,12 @@ import Live2DStage from './components/Live2DStage.vue'
 import { useAudioRecorder } from './composables/useAudioRecorder'
 import { useChatSocket } from './composables/useChatSocket'
 import { base64ToBlobUrl } from './lib/base64'
+import { EMOTION_VISUALS } from './lib/lipsync'
 import type {
   AudioEvent,
   ChatMessage,
   EmotionEvent,
+  EmotionTelemetry,
   EmotionValue,
   PhonemeFrame,
   PhonemesEvent,
@@ -32,7 +34,17 @@ function createWelcomeMessage(): ChatMessage {
   return {
     id: 'welcome',
     role: 'assistant',
-    content: '欢迎来到景区 AI 数字人演示。你可以直接输入问题，或点击麦克风开始语音对话。',
+    content: '欢迎来到景区 AI 数字人演示。你可以直接输入问题，或点击麦克风开始语音对话。当前页面已经接入表情映射与调试面板。',
+  }
+}
+
+function createDefaultEmotionTelemetry(): EmotionTelemetry {
+  return {
+    value: 'neutral',
+    confidence: 0.45,
+    keywords: [],
+    reason: '等待新一轮回答时，保持中性待机状态。',
+    source: 'heuristic',
   }
 }
 
@@ -52,6 +64,7 @@ const messages = ref<ChatMessage[]>([createWelcomeMessage()])
 const assistantDraftId = ref<string | null>(null)
 const lastAsrPreview = ref('')
 const latestEmotion = ref<EmotionValue>('neutral')
+const emotionTelemetry = ref<EmotionTelemetry>(createDefaultEmotionTelemetry())
 const playbackError = ref('')
 
 const queuedAudio = ref<QueuedAudio[]>([])
@@ -59,6 +72,7 @@ const knownAudioSeqs = new Set<number>()
 const pendingPhonemes = new Map<number, PhonemeFrame[]>()
 const phonemeFallbackTimers = new Map<number, number>()
 let currentAudio: HTMLAudioElement | null = null
+let currentAudioSeq: number | null = null
 let audioPlaying = false
 
 function createMessageId(prefix: string) {
@@ -75,6 +89,7 @@ function resetReplyMediaState() {
   pendingPhonemes.clear()
   currentAudio?.pause()
   currentAudio = null
+  currentAudioSeq = null
   audioPlaying = false
   queuedAudio.value.forEach((item) => URL.revokeObjectURL(item.url))
   queuedAudio.value = []
@@ -86,6 +101,7 @@ function resetConversation() {
   assistantDraftId.value = null
   lastAsrPreview.value = ''
   latestEmotion.value = 'neutral'
+  emotionTelemetry.value = createDefaultEmotionTelemetry()
   composer.value = ''
   resetReplyMediaState()
 }
@@ -205,17 +221,14 @@ async function playNextAudio() {
   clearPhonemeFallback(nextAudio.seq)
 
   const phonemes = pendingPhonemes.get(nextAudio.seq)
-  if (phonemes) {
-    live2dRef.value?.playPhonemes(phonemes)
-    pendingPhonemes.delete(nextAudio.seq)
-  }
-
   currentAudio = new Audio(nextAudio.url)
+  currentAudioSeq = nextAudio.seq
   currentAudio.preload = 'auto'
 
   const release = () => {
     URL.revokeObjectURL(nextAudio.url)
     currentAudio = null
+    currentAudioSeq = null
     audioPlaying = false
     void playNextAudio()
   }
@@ -223,14 +236,28 @@ async function playNextAudio() {
   currentAudio.onended = release
   currentAudio.onerror = () => {
     playbackError.value = '音频播放失败，已降级为口型动画。'
+    knownAudioSeqs.delete(nextAudio.seq)
+    if (phonemes) {
+      live2dRef.value?.playPhonemes(phonemes)
+      pendingPhonemes.delete(nextAudio.seq)
+    }
     release()
   }
 
   try {
     await currentAudio.play()
+    if (phonemes) {
+      live2dRef.value?.playPhonemes(phonemes, currentAudio)
+      pendingPhonemes.delete(nextAudio.seq)
+    }
   } catch (error) {
     playbackError.value =
       error instanceof Error ? error.message : '浏览器阻止了自动播放，请先进行一次页面交互。'
+    knownAudioSeqs.delete(nextAudio.seq)
+    if (phonemes) {
+      live2dRef.value?.playPhonemes(phonemes)
+      pendingPhonemes.delete(nextAudio.seq)
+    }
     release()
   }
 }
@@ -239,18 +266,29 @@ function handleAudio(payload: AudioEvent) {
   knownAudioSeqs.add(payload.seq)
   queuedAudio.value.push({
     seq: payload.seq,
-    url: base64ToBlobUrl(payload.data, 'audio/mpeg'),
+    url: base64ToBlobUrl(payload.data, payload.mime_type || 'audio/mpeg'),
   })
   void playNextAudio()
 }
 
 function handlePhonemes(payload: PhonemesEvent) {
   pendingPhonemes.set(payload.seq, payload.data)
+  if (currentAudio && currentAudioSeq === payload.seq) {
+    live2dRef.value?.playPhonemes(payload.data, currentAudio)
+    return
+  }
   queueFallbackLipSync(payload.seq, payload.data)
 }
 
 function handleEmotion(payload: EmotionEvent) {
   latestEmotion.value = payload.value
+  emotionTelemetry.value = {
+    value: payload.value,
+    confidence: payload.confidence ?? 0.45,
+    keywords: payload.keywords ?? [],
+    reason: payload.reason ?? '当前回答未附带更多情绪说明。',
+    source: payload.source ?? 'heuristic',
+  }
 }
 
 function handleSocketMessage(payload: ServerSocketMessage) {
@@ -340,6 +378,10 @@ const canRecord = computed(
   () => recorder.isSupported.value && socket.state.value === 'connected' && !sessionBooting.value,
 )
 const meterScale = computed(() => Math.max(0.05, recorder.level.value))
+const emotionVisual = computed(() => EMOTION_VISUALS[emotionTelemetry.value.value] ?? EMOTION_VISUALS.neutral)
+const emotionConfidenceLabel = computed(
+  () => `${Math.round((emotionTelemetry.value.confidence || 0) * 100)}%`,
+)
 
 const connectionLabel = computed(() => {
   switch (socket.state.value) {
@@ -435,10 +477,10 @@ onBeforeUnmount(() => {
 
     <header class="topbar">
       <div>
-        <p class="eyebrow">Phase 1 Visitor Demo</p>
+        <p class="eyebrow">Phase 2 Visitor Demo</p>
         <h1>景区 AI 数字人导览台</h1>
         <p class="subtitle">
-          已接入示例 Live2D 模型、文本与语音输入、WebSocket 流式对话，以及基础口型驱动链路。
+          已接入示例 Live2D 模型、文本与语音输入、WebSocket 流式对话、口型同步，以及表情识别与调试链路。
         </p>
       </div>
       <div class="topbar-meta">
@@ -473,7 +515,7 @@ onBeforeUnmount(() => {
           <div class="stage-caption">
             <div>
               <span class="caption-label">情绪映射</span>
-              <strong>{{ latestEmotion }}</strong>
+              <strong>{{ emotionVisual.label }} / {{ latestEmotion }}</strong>
             </div>
             <div>
               <span class="caption-label">模型路径</span>
@@ -488,6 +530,29 @@ onBeforeUnmount(() => {
             <div class="meter">
               <span class="meter-fill" :style="{ transform: `scaleX(${meterScale})` }"></span>
             </div>
+          </article>
+          <article class="telemetry-card telemetry-card-lamp">
+            <span class="telemetry-label">情绪熔岩灯</span>
+            <div class="emotion-lamp-shell">
+              <div
+                class="emotion-lamp"
+                :style="{
+                  background: emotionVisual.color,
+                  boxShadow: `0 0 28px ${emotionVisual.glow}`,
+                }"
+              >
+                <span class="emotion-lamp-core"></span>
+              </div>
+              <div class="emotion-meta">
+                <strong>{{ emotionVisual.label }}</strong>
+                <span>置信度 {{ emotionConfidenceLabel }}</span>
+                <span>来源 {{ emotionTelemetry.source }}</span>
+              </div>
+            </div>
+            <p class="emotion-reason">{{ emotionTelemetry.reason }}</p>
+            <p class="emotion-keywords">
+              {{ emotionTelemetry.keywords.length ? emotionTelemetry.keywords.join(' / ') : '暂无显著情绪关键词' }}
+            </p>
           </article>
           <article class="telemetry-card">
             <span class="telemetry-label">识别回显</span>

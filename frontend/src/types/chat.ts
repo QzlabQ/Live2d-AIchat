@@ -10,9 +10,19 @@ export interface PhonemeFrame {
   ph: string
   start: number
   end: number
+  openY?: number
+  form?: number
 }
 
 export type EmotionValue = 'neutral' | 'happy' | 'thinking' | 'excited' | 'sad'
+
+export interface EmotionTelemetry {
+  value: EmotionValue
+  confidence: number
+  keywords: string[]
+  reason: string
+  source: 'heuristic' | 'llm'
+}
 
 export interface SocketTextMessage {
   type: 'text'
@@ -52,6 +62,7 @@ export interface AsrResultEvent {
 export interface AudioEvent {
   type: 'audio'
   data: string
+  mime_type?: string
   seq: number
 }
 
@@ -64,6 +75,10 @@ export interface PhonemesEvent {
 export interface EmotionEvent {
   type: 'emotion'
   value: EmotionValue
+  confidence?: number
+  keywords?: string[]
+  reason?: string
+  source?: 'heuristic' | 'llm'
 }
 
 export interface DoneEvent {

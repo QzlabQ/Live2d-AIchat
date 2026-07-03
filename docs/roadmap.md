@@ -64,20 +64,32 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 
 - [x] LangChain RAG 链搭建（检索 → Rerank → 生成）
 - [x] bge-reranker-v2-m3 重排序接入（提升准确率）
-- [ ] Prompt 工程：景区导游人设、引用原文作答、拒绝越界
-- [ ] 景区问答准确率测试（目标≥90%，构建50题测试集）
+- [x] Prompt 工程：景区导游人设、引用原文作答、拒绝越界
+- [x] 景区问答准确率测试（目标≥90%，构建50题测试集）
 
-**口型同步**
+**TTS 升级 & 口型同步**
 
-- [ ] CosyVoice 2 本地部署（或API接入）
-- [ ] 音素时间戳提取与解析（见 [lipsync.md](lipsync.md)）
-- [ ] Live2D 口型参数驱动（PARAM_MOUTH_OPEN_Y / PARAM_MOUTH_FORM）
-- [ ] 音频与口型动画时间轴对齐
+> 决策：放弃 CosyVoice-300M-SFT（inference_sft 音质差、无情感控制），改用
+> **CosyVoice2-0.5B + inference_instruct2**。RTX 4060 仅需约 3GB VRAM，完全可用。
+
+- [ ] 下载 CosyVoice2-0.5B 模型到 `./storage/models/CosyVoice2-0.5B`
+      （HuggingFace: `FunAudioLLM/CosyVoice2-0.5B`，约 3.5GB）
+- [ ] 更新 `.env`：`TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B`
+- [ ] 修改 `backend/app/services/tts.py`：将 `inference_sft` 替换为 `inference_instruct2`，
+      并添加情感指令映射：
+      - `happy`    → "用愉快活泼的语气介绍"
+      - `excited`  → "用热情兴奋的语气说"
+      - `thinking` → "用平静思考的语气说"
+      - `sad`      → "用温柔低沉的语气说"
+      - `neutral`  → "用自然友好的语气说"
+- [ ] 利用 CosyVoice2 输出的 `duration` 字段提取真实音素时长（替换现有 WordBoundary 近似算法）
+- [ ] Live2D 口型参数驱动（PARAM_MOUTH_OPEN_Y / PARAM_MOUTH_FORM），见 [lipsync.md](lipsync.md)
+- [ ] 联调口型与音频时间轴对齐，目标误差 < 80ms
 
 **表情系统**
 
-- [ ] 情感关键词提取（LLM分析回答情感）
-- [ ] 情感 → Live2D 表情参数映射表
+- [x] 情感关键词提取（LLM分析回答情感）
+- [x] 情感 → Live2D 表情参数映射表，（这里前端可以做一个情感熔岩灯，通过灯的颜色来判断其当前的情绪，也方便我们开发调试）
   - `happy` → 眉毛上扬 + 嘴角上扬
   - `thinking` → 眼神偏移 + 眉毛微蹙
   - `excited` → 眼睛睁大 + 手势
@@ -141,7 +153,9 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 **体验优化**
 
 - [ ] 口型平滑插值（避免突变，lerp过渡）
-- [ ] TTS分句并行合成（降低首句延迟）
+- [ ] TTS 分句并行合成（LLM 流式输出 → 按句触发合成 → pipeline，降低首句延迟）
+- [ ] 初赛后迁移至 A100：开启 `stream=True` 流式合成，首句延迟目标 < 1.5s
+- [ ] A100 阶段可选：`inference_zero_shot` + 专属导游音色录音（3~10s 参考音频），进一步提升辨识度
 - [ ] 弱网环境降级处理（文字回复 + 简单口型）
 - [ ] 数字人闲置动画（无对话时轻微摇头/眨眼）
 
@@ -192,7 +206,7 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 
 | 风险               | 触发条件         | 预案                                       |
 | ------------------ | ---------------- | ------------------------------------------ |
-| CosyVoice显存不足  | VRAM < 8GB       | 降级Edge-TTS，口型用音量包络近似           |
+| CosyVoice2显存不足 | VRAM < 4GB       | 降级 Edge-TTS + WordBoundary 近似口型；4060(8GB)已验证可用，触发概率极低 |
 | RAG准确率 < 90%    | Week 4测试不达标 | 增加知识条目 + 加 reranker + 调整chunk策略 |
 | LLM延迟过高        | P90 > 3s         | 换qwen-plus（更快）+ 限制生成token数       |
 | Live2D授权问题     | 商用模型版权     | 使用免费开源模型或自绘（pixi-live2d支持）  |
