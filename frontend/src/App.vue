@@ -53,6 +53,11 @@ interface QueuedAudio {
   url: string
 }
 
+type AudioContextWindow = Window &
+  typeof globalThis & {
+    webkitAudioContext?: typeof AudioContext
+  }
+
 const live2dRef = ref<InstanceType<typeof Live2DStage> | null>(null)
 const chatBodyRef = ref<HTMLDivElement | null>(null)
 
@@ -71,9 +76,12 @@ const queuedAudio = ref<QueuedAudio[]>([])
 const knownAudioSeqs = new Set<number>()
 const pendingPhonemes = new Map<number, PhonemeFrame[]>()
 const phonemeFallbackTimers = new Map<number, number>()
+const failedAudioSeqs = new Set<number>()
 let currentAudio: HTMLAudioElement | null = null
 let currentAudioSeq: number | null = null
 let audioPlaying = false
+let audioUnlockContext: AudioContext | null = null
+let audioUnlocked = false
 
 function createMessageId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
@@ -87,6 +95,7 @@ function resetReplyMediaState() {
   phonemeFallbackTimers.clear()
   knownAudioSeqs.clear()
   pendingPhonemes.clear()
+  failedAudioSeqs.clear()
   currentAudio?.pause()
   currentAudio = null
   currentAudioSeq = null
@@ -196,6 +205,48 @@ function clearPhonemeFallback(seq: number) {
   }
 }
 
+async function unlockAudioPlayback() {
+  if (audioUnlocked) {
+    return
+  }
+
+  const AudioContextCtor = window.AudioContext ?? (window as AudioContextWindow).webkitAudioContext
+  if (!AudioContextCtor) {
+    return
+  }
+
+  try {
+    const context = audioUnlockContext ?? new AudioContextCtor()
+    audioUnlockContext = context
+    if (context.state === 'suspended') {
+      await context.resume()
+    }
+
+    const source = context.createBufferSource()
+    const gain = context.createGain()
+    gain.gain.value = 0
+    source.buffer = context.createBuffer(1, 1, context.sampleRate)
+    source.connect(gain).connect(context.destination)
+    source.start(0)
+    audioUnlocked = true
+  } catch {
+    audioUnlocked = false
+  }
+}
+
+function playPhonemeFallbackNow(seq: number) {
+  knownAudioSeqs.delete(seq)
+  const frames = pendingPhonemes.get(seq)
+  if (!frames) {
+    failedAudioSeqs.add(seq)
+    return
+  }
+
+  live2dRef.value?.playPhonemes(frames)
+  pendingPhonemes.delete(seq)
+  failedAudioSeqs.delete(seq)
+}
+
 function queueFallbackLipSync(seq: number, frames: PhonemeFrame[]) {
   clearPhonemeFallback(seq)
   const timer = window.setTimeout(() => {
@@ -224,6 +275,8 @@ async function playNextAudio() {
   currentAudio = new Audio(nextAudio.url)
   currentAudioSeq = nextAudio.seq
   currentAudio.preload = 'auto'
+  currentAudio.volume = 1
+  currentAudio.setAttribute('playsinline', 'true')
 
   const release = () => {
     URL.revokeObjectURL(nextAudio.url)
@@ -236,34 +289,29 @@ async function playNextAudio() {
   currentAudio.onended = release
   currentAudio.onerror = () => {
     playbackError.value = '音频播放失败，已降级为口型动画。'
-    knownAudioSeqs.delete(nextAudio.seq)
-    if (phonemes) {
-      live2dRef.value?.playPhonemes(phonemes)
-      pendingPhonemes.delete(nextAudio.seq)
-    }
+    playPhonemeFallbackNow(nextAudio.seq)
     release()
   }
 
   try {
+    currentAudio.load()
     await currentAudio.play()
-    if (phonemes) {
-      live2dRef.value?.playPhonemes(phonemes, currentAudio)
+    const latestPhonemes = pendingPhonemes.get(nextAudio.seq) ?? phonemes
+    if (latestPhonemes) {
+      live2dRef.value?.playPhonemes(latestPhonemes, currentAudio)
       pendingPhonemes.delete(nextAudio.seq)
     }
   } catch (error) {
     playbackError.value =
       error instanceof Error ? error.message : '浏览器阻止了自动播放，请先进行一次页面交互。'
-    knownAudioSeqs.delete(nextAudio.seq)
-    if (phonemes) {
-      live2dRef.value?.playPhonemes(phonemes)
-      pendingPhonemes.delete(nextAudio.seq)
-    }
+    playPhonemeFallbackNow(nextAudio.seq)
     release()
   }
 }
 
 function handleAudio(payload: AudioEvent) {
   knownAudioSeqs.add(payload.seq)
+  failedAudioSeqs.delete(payload.seq)
   queuedAudio.value.push({
     seq: payload.seq,
     url: base64ToBlobUrl(payload.data, payload.mime_type || 'audio/mpeg'),
@@ -273,6 +321,11 @@ function handleAudio(payload: AudioEvent) {
 
 function handlePhonemes(payload: PhonemesEvent) {
   pendingPhonemes.set(payload.seq, payload.data)
+  if (failedAudioSeqs.has(payload.seq)) {
+    playPhonemeFallbackNow(payload.seq)
+    return
+  }
+
   if (currentAudio && currentAudioSeq === payload.seq) {
     live2dRef.value?.playPhonemes(payload.data, currentAudio)
     return
@@ -411,6 +464,8 @@ async function sendText() {
     return
   }
 
+  void unlockAudioPlayback()
+
   messages.value.push({
     id: createMessageId('user'),
     role: 'user',
@@ -440,6 +495,7 @@ async function toggleRecording() {
     return
   }
 
+  void unlockAudioPlayback()
   resetReplyMediaState()
   finalizeAssistantDraft()
   await recorder.start()

@@ -21,6 +21,10 @@ async def ensure_default_avatar_config() -> None:
                 model_path=settings.default_avatar_model_path,
                 voice_id=settings.default_avatar_voice_id,
                 persona=settings.default_avatar_persona,
+                tts_reference_audio_path=settings.default_tts_reference_audio_path,
+                tts_reference_text=settings.default_tts_reference_text,
+                tts_speed=settings.default_tts_speed,
+                tts_emotion_enabled=settings.default_tts_emotion_enabled,
             )
         )
         await session.commit()

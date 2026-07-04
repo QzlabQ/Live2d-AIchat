@@ -41,15 +41,14 @@ class Settings(BaseSettings):
     asr_language: str = "zh"
     asr_mock_transcript: str = "你好，请介绍一下这个景区。"
 
-    tts_engine: str = "mock"
+    tts_engine: str = "cosyvoice"
     tts_voice: str = "zh-CN-XiaoxiaoNeural"
     tts_rate: str = "+0%"
     tts_pitch: str = "+0Hz"
-    tts_cosyvoice_model_path: str = "./storage/models/CosyVoice-300M-SFT"
+    tts_cosyvoice_model_path: str = "./storage/models/CosyVoice2-0.5B"
     tts_cosyvoice_code_path: str = "./storage/vendor/CosyVoice"
-    tts_cosyvoice_speaker: str = "中文女"
-    tts_cosyvoice_device: str = "auto"
-    tts_cosyvoice_sample_rate: int = 22050
+    tts_cosyvoice_device: str = "cuda"
+    tts_cosyvoice_sample_rate: int = 24000
 
     chat_mode: str = "template"
     rag_retrieval_top_k: int = 8
@@ -65,6 +64,11 @@ class Settings(BaseSettings):
     rag_reranker_batch_size: int = 4
     websocket_chunk_size: int = 24
     request_timeout_seconds: float = 10.0
+
+    default_tts_reference_audio_path: str = './storage/vendor/CosyVoice/asset/zero_shot_prompt.wav'
+    default_tts_reference_text: str = '\u5e0c\u671b\u4f60\u4ee5\u540e\u80fd\u591f\u505a\u5f97\u6bd4\u6211\u8fd8\u597d\u3002'
+    default_tts_speed: float = Field(default=1.0, ge=0.5, le=1.5)
+    default_tts_emotion_enabled: bool = True
 
     knowledge_base_dir: str = "./storage/knowledge"
     knowledge_collection_name: str = "phase1_scenic_knowledge"

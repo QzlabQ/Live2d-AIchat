@@ -42,6 +42,13 @@ interface ModelSettings {
   }
 }
 
+interface LipSyncState {
+  frames: PhonemeFrame[]
+  audio: HTMLAudioElement | null
+  startedAt: number
+  stopAt: number
+}
+
 const props = defineProps<{
   modelPath: string
 }>()
@@ -54,7 +61,7 @@ let pixiApp: PIXI.Application | null = null
 let model: RuntimeLive2DModel | null = null
 let resizeObserver: ResizeObserver | null = null
 let idleTimer = 0
-let lipSyncFrame = 0
+let lipSyncState: LipSyncState | null = null
 let currentOpen = 0.06
 let currentForm = 0
 const MOUTH_OPEN_IDS = ['ParamMouthOpenY', 'PARAM_MOUTH_OPEN_Y']
@@ -148,9 +155,26 @@ function startBreathingLoop() {
       safeSetParameter(id, next)
     }
 
-    if (!lipSyncFrame) {
-      setMouthPose(0.06 + Math.sin(t * 2.3) * 0.01, currentForm * 0.85)
+    if (lipSyncState) {
+      const { frames, audio, startedAt, stopAt } = lipSyncState
+      const elapsed =
+        audio && Number.isFinite(audio.currentTime) && audio.currentTime > 0
+          ? audio.currentTime
+          : (performance.now() - startedAt) / 1000
+      const frame = currentPhoneme(frames, elapsed)
+      const target = mouthPoseFromFrame(frame)
+      setMouthPose(target.openY, target.form)
+
+      if (elapsed <= stopAt && !audio?.ended) {
+        return
+      }
+
+      lipSyncState = null
+      setMouthPose(0.06, 0)
+      return
     }
+
+    setMouthPose(0.06 + Math.sin(t * 2.3) * 0.01, currentForm * 0.85)
   })
 }
 
@@ -231,30 +255,18 @@ function setEmotion(emotion: EmotionValue) {
 }
 
 function playPhonemes(frames: PhonemeFrame[], audio?: HTMLAudioElement | null) {
-  window.cancelAnimationFrame(lipSyncFrame)
-
-  const startedAt = performance.now()
-  const stopAt = finalFrameEnd(frames) + 0.18
-
-  const tick = (now: number) => {
-    const elapsed =
-      audio && Number.isFinite(audio.currentTime) && audio.currentTime > 0
-        ? audio.currentTime
-        : (now - startedAt) / 1000
-    const frame = currentPhoneme(frames, elapsed)
-    const target = mouthPoseFromFrame(frame)
-    setMouthPose(target.openY, target.form)
-
-    if (elapsed <= stopAt && !audio?.ended) {
-      lipSyncFrame = window.requestAnimationFrame(tick)
-      return
-    }
-
-    lipSyncFrame = 0
+  if (!frames.length) {
+    lipSyncState = null
     setMouthPose(0.06, 0)
+    return
   }
 
-  lipSyncFrame = window.requestAnimationFrame(tick)
+  lipSyncState = {
+    frames,
+    audio: audio ?? null,
+    startedAt: performance.now(),
+    stopAt: finalFrameEnd(frames) + 0.18,
+  }
 }
 
 defineExpose({
@@ -274,7 +286,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.clearInterval(idleTimer)
-  window.cancelAnimationFrame(lipSyncFrame)
+  lipSyncState = null
   resizeObserver?.disconnect()
   pixiApp?.destroy(true, { children: true })
   pixiApp = null

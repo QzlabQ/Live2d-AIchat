@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -55,6 +55,10 @@ class AvatarConfig(Base):
     model_path: Mapped[str] = mapped_column(String(255), nullable=False)
     voice_id: Mapped[str] = mapped_column(String(100), nullable=False)
     persona: Mapped[str] = mapped_column(Text, nullable=False)
+    tts_reference_audio_path: Mapped[str] = mapped_column(String(500), nullable=False, default='')
+    tts_reference_text: Mapped[str] = mapped_column(Text, nullable=False, default='')
+    tts_speed: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    tts_emotion_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

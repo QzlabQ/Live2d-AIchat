@@ -72,16 +72,11 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 > 决策：放弃 CosyVoice-300M-SFT（inference_sft 音质差、无情感控制），改用
 > **CosyVoice2-0.5B + inference_instruct2**。RTX 4060 仅需约 3GB VRAM，完全可用。
 
-- [ ] 下载 CosyVoice2-0.5B 模型到 `./storage/models/CosyVoice2-0.5B`
+- [x] 下载 CosyVoice2-0.5B 模型到 `./storage/models/CosyVoice2-0.5B`
       （HuggingFace: `FunAudioLLM/CosyVoice2-0.5B`，约 3.5GB）
 - [ ] 更新 `.env`：`TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B`
 - [ ] 修改 `backend/app/services/tts.py`：将 `inference_sft` 替换为 `inference_instruct2`，
-      并添加情感指令映射：
-      - `happy`    → "用愉快活泼的语气介绍"
-      - `excited`  → "用热情兴奋的语气说"
-      - `thinking` → "用平静思考的语气说"
-      - `sad`      → "用温柔低沉的语气说"
-      - `neutral`  → "用自然友好的语气说"
+      并添加情感指令映射：- `happy` → "用愉快活泼的语气介绍" - `excited` → "用热情兴奋的语气说" - `thinking` → "用平静思考的语气说" - `sad` → "用温柔低沉的语气说" - `neutral` → "用自然友好的语气说"
 - [ ] 利用 CosyVoice2 输出的 `duration` 字段提取真实音素时长（替换现有 WordBoundary 近似算法）
 - [ ] Live2D 口型参数驱动（PARAM_MOUTH_OPEN_Y / PARAM_MOUTH_FORM），见 [lipsync.md](lipsync.md)
 - [ ] 联调口型与音频时间轴对齐，目标误差 < 80ms
@@ -118,6 +113,7 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 - [ ] 知识库管理：文件上传/列表/删除 + 处理状态显示
 - [ ] 数字人配置：Live2D模型选择/声音ID/系统Prompt编辑 + 实时预览
 - [ ] 用户登录（简单JWT，admin账户即可）
+- [ ] 新增独立 voice_profile 表、音频资源管理、上传/校验/试听链路，下拉选择音色
 
 **后端**
 
@@ -204,10 +200,10 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 
 ## 风险预案
 
-| 风险               | 触发条件         | 预案                                       |
-| ------------------ | ---------------- | ------------------------------------------ |
+| 风险               | 触发条件         | 预案                                                                     |
+| ------------------ | ---------------- | ------------------------------------------------------------------------ |
 | CosyVoice2显存不足 | VRAM < 4GB       | 降级 Edge-TTS + WordBoundary 近似口型；4060(8GB)已验证可用，触发概率极低 |
-| RAG准确率 < 90%    | Week 4测试不达标 | 增加知识条目 + 加 reranker + 调整chunk策略 |
-| LLM延迟过高        | P90 > 3s         | 换qwen-plus（更快）+ 限制生成token数       |
-| Live2D授权问题     | 商用模型版权     | 使用免费开源模型或自绘（pixi-live2d支持）  |
-| 示范资料包数据稀疏 | 问答覆盖率低     | 爬取景区官网补充，人工撰写FAQ              |
+| RAG准确率 < 90%    | Week 4测试不达标 | 增加知识条目 + 加 reranker + 调整chunk策略                               |
+| LLM延迟过高        | P90 > 3s         | 换qwen-plus（更快）+ 限制生成token数                                     |
+| Live2D授权问题     | 商用模型版权     | 使用免费开源模型或自绘（pixi-live2d支持）                                |
+| 示范资料包数据稀疏 | 问答覆盖率低     | 爬取景区官网补充，人工撰写FAQ                                            |

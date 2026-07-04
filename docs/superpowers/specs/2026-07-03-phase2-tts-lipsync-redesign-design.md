@@ -1,201 +1,201 @@
-# Phase 2 TTS Upgrade And Lip Sync Redesign
+# Phase 2 TTS 升级与口型同步重构设计
 
-## Background
+## 背景
 
-Phase 2 originally used `CosyVoice-300M-SFT + inference_sft`. That path is now deprecated for this project because:
+Phase 2 原本采用的是 `CosyVoice-300M-SFT + inference_sft`。现在这条路线不再适合本项目，原因包括：
 
-- audio quality is not good enough for the milestone demo
-- `inference_sft` does not support natural language emotion control
-- the current emotion system cannot drive voice style in a meaningful way
-- the existing lip-sync timing still relies on approximate timing for some engines
+- 音质还不够好，难以支撑里程碑演示效果
+- `inference_sft` 不支持自然语言情感控制
+- 当前情感系统无法真正驱动发声音色与语气
+- 现有口型同步在部分引擎下仍依赖近似时序
 
-The new target is:
+新的目标是：
 
-- switch to `CosyVoice2-0.5B + inference_instruct2`
-- bind TTS reference audio to `avatar_config`
-- make `happy / excited / thinking / sad / neutral` affect both facial expression and speech instruction
-- improve lip sync timing with structured timing data when available, and high-quality waveform timing fallback when it is not
+- 切换到 `CosyVoice2-0.5B + inference_instruct2`
+- 将 TTS 参考音频绑定到 `avatar_config`
+- 让 `happy / excited / thinking / sad / neutral` 同时影响表情和发声指令
+- 在模型可提供结构化时序时优先使用它；不可提供时，使用高质量音频包络兜底提升口型同步
 
-## User Decisions Already Confirmed
+## 已确认的用户决策
 
-- use a temporary sample reference audio first, then replace it later with the formal guide voice
-- bind TTS voice configuration to `avatar_config`, not a global config
-- implement full emotion-to-TTS instruction linkage now
-- use a dual-path lip-sync design:
-  - prefer structured timing or duration data if the active CosyVoice2 runtime exposes it
-  - fall back to waveform-envelope-derived timing if the current runtime does not expose stable timing data
+- 先使用临时样例参考音频打通链路，后续再替换为正式导览员声音
+- TTS 音色配置绑定到 `avatar_config`，而不是全局配置
+- 这次就实现完整的“情感 -> TTS 指令”联动
+- 口型同步采用双通路设计：
+  - 如果当前 CosyVoice2 运行时暴露了结构化时序或 duration 信息，优先使用
+  - 如果当前运行时没有稳定暴露这些字段，则退化到基于音频包络的高精度时序
 
-## Goals
+## 目标
 
-- replace the current local TTS backend with `CosyVoice2-0.5B + inference_instruct2`
-- keep the current WebSocket chat flow intact for frontend integration
-- store per-avatar TTS reference audio and related synthesis parameters
-- let backend emotion classification affect the generated speech style
-- improve lip-sync precision without blocking the milestone on a specific vendor output shape
-- preserve compatibility with the current frontend phoneme playback protocol
+- 将当前本地 TTS 后端替换为 `CosyVoice2-0.5B + inference_instruct2`
+- 保持当前 WebSocket 对话链路不变，方便前端继续联调
+- 为每个 avatar 存储参考音频和相关合成参数
+- 让后端情感分类结果真实影响发声风格
+- 在不被某个 vendor 特定输出结构卡死的前提下，提升口型同步精度
+- 保持与当前前端 `phonemes` 播放协议兼容
 
-## Non-Goals
+## 非目标
 
-- no full voice asset library in this phase
-- no voice upload UI in this phase
-- no training, fine-tuning, or voice cloning workflow in this phase
-- no admin sound preview page in this phase
-- no migration to Alembic in this phase
+- 本阶段不做完整的音色资源库
+- 本阶段不做参考音频上传 UI
+- 本阶段不做训练、微调或 voice cloning 流程
+- 本阶段不做独立的管理端试听页
+- 本阶段不迁移到 Alembic
 
-## Current Constraints
+## 当前约束
 
-### CosyVoice2 runtime constraint
+### CosyVoice2 运行时约束
 
-The checked-in local CosyVoice code confirms that `inference_instruct2` is the correct synthesis entry point for `CosyVoice2-0.5B`:
+仓库内当前接入的本地 CosyVoice 代码已经确认 `inference_instruct2` 是 `CosyVoice2-0.5B` 的正确合成入口：
 
 - [backend/storage/vendor/CosyVoice/cosyvoice/cli/cosyvoice.py](</E:/2026spring/software contest/AI-chat-live2d/backend/storage/vendor/CosyVoice/cosyvoice/cli/cosyvoice.py:177>)
 
-However, the currently inspected local Python generator path visibly yields `tts_speech` data and does not guarantee that `duration`, `alignment`, or `phoneme` fields are always exposed through the same public result shape:
+但从当前已检查的本地 Python 生成器路径来看，公开暴露的结果中可以明确看到 `tts_speech`，却不能保证 `duration`、`alignment`、`phoneme` 等字段会始终以稳定一致的方式暴露：
 
 - [backend/storage/vendor/CosyVoice/cosyvoice/cli/model.py](</E:/2026spring/software contest/AI-chat-live2d/backend/storage/vendor/CosyVoice/cosyvoice/cli/model.py:361>)
 - [backend/storage/models/CosyVoice2-0.5B/README.md](</E:/2026spring/software contest/AI-chat-live2d/backend/storage/models/CosyVoice2-0.5B/README.md:1>)
 
-Therefore the implementation must not hard-code the assumption that a stable `duration` field is always present in the current local runtime.
+因此，后续实现不能把“当前本地运行时一定稳定返回 `duration` 字段”当成硬前提。
 
-### Database migration constraint
+### 数据库迁移约束
 
-The project initializes tables with `Base.metadata.create_all()` and does not use Alembic:
+项目当前使用的是 `Base.metadata.create_all()` 初始化表结构，并未接入 Alembic：
 
 - [backend/app/db/session.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/db/session.py:1>)
 
-That means existing SQLite databases will not gain new columns automatically. This redesign must include a startup-compatible manual migration step for `avatar_config`.
+这意味着已存在的 SQLite 数据库不会自动补齐新列。因此，这次重构必须包含一个针对 `avatar_config` 的启动期轻量迁移步骤。
 
-## Proposed Architecture
+## 总体架构
 
-### End-to-end flow
+### 端到端流程
 
-The runtime flow remains:
+运行时主链路保持为：
 
 `ASR -> chat / RAG -> emotion -> streamed text -> TTS -> audio + phoneme frames -> Live2D`
 
-The key backend change is inside TTS synthesis:
+本次后端变化的核心位于 TTS 合成阶段：
 
-1. fetch `avatar_config`
-2. resolve reference audio path and reference transcript from avatar config
-3. map detected emotion to a Chinese instruction template
-4. call `CosyVoice2.inference_instruct2(...)`
-5. convert audio payload to WAV bytes
-6. derive lip-sync frames from:
-   - structured timing data if available
-   - otherwise waveform envelope timing
-7. send `audio` and `phonemes` through the existing WebSocket protocol
+1. 读取 `avatar_config`
+2. 从 avatar 配置中解析参考音频路径和参考文本
+3. 根据当前情感生成中文 TTS 指令模板
+4. 调用 `CosyVoice2.inference_instruct2(...)`
+5. 将音频结果转换为 WAV 字节流
+6. 从以下两种来源之一生成口型帧：
+   - 有结构化时序字段时，直接使用结构化时序
+   - 无结构化时序字段时，使用音频包络推导时序
+7. 继续通过现有 WebSocket 协议下发 `audio` 和 `phonemes`
 
-### Why avatar-bound config
+### 为什么采用 avatar 绑定配置
 
-Binding TTS settings to `avatar_config` is the lightest design that supports future work:
+把 TTS 配置绑定到 `avatar_config` 是当前最轻、同时又能兼顾后续扩展的方案：
 
-- replacing the temporary guide voice later
-- per-avatar voice tuning
-- frontend or admin voice switching in a later phase
+- 后续可以替换正式导览员音色
+- 后续可以做按角色维度的音色微调
+- 后续可以做前端或管理端的音色切换
 
-This avoids a second data model redesign when voice selection becomes a user-facing feature.
+这样可以避免以后在“声音切换”阶段再次重构数据模型。
 
-## Data Model Changes
+## 数据模型调整
 
-File:
+涉及文件：
 
 - [backend/app/db/models.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/db/models.py:1>)
 
-Extend `AvatarConfig` with the following fields:
+建议为 `AvatarConfig` 新增以下字段：
 
 - `tts_reference_audio_path: str`
-  - project-local path to the reference WAV file used by `inference_instruct2`
+  - `inference_instruct2` 使用的参考音频文件路径
 - `tts_reference_text: str`
-  - transcript matching the reference audio
+  - 参考音频对应文本，便于后续扩展零样本或更强控制能力
 - `tts_speed: float`
-  - default `1.0`
+  - 默认值 `1.0`
 - `tts_emotion_enabled: bool`
-  - default `true`
+  - 默认值 `true`
 
-Keep existing fields:
+保留现有字段：
 
 - `model_path`
 - `voice_id`
 - `persona`
 
-### `voice_id` compatibility role
+### `voice_id` 的兼容角色
 
-`voice_id` should remain in the schema for compatibility, but its meaning changes:
+`voice_id` 暂时不删除，但含义会变化：
 
-- short-term: display name or compatibility alias
-- not the primary CosyVoice2 synthesis selector anymore
+- 短期内作为展示名或兼容别名保留
+- 不再是 CosyVoice2 的主音色选择参数
 
-This avoids breaking existing frontend assumptions and old seeded rows immediately.
+这样可以避免现有前端假设和旧数据初始化逻辑立刻失效。
 
-## API Changes
+## API 调整
 
-Files:
+涉及文件：
 
 - [backend/app/api/routes/avatar.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/api/routes/avatar.py:1>)
 - [backend/app/schemas/avatar.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/schemas/avatar.py:1>)
 
-Continue to use:
+继续沿用现有接口：
 
 - `GET /api/v1/admin/avatar/config`
 - `PUT /api/v1/admin/avatar/config`
 
-Add the new TTS fields to both response and update payloads:
+并在返回与更新模型中加入新的 TTS 字段：
 
 - `tts_reference_audio_path`
 - `tts_reference_text`
 - `tts_speed`
 - `tts_emotion_enabled`
 
-### Validation rules
+### 校验规则
 
-- `tts_reference_audio_path` must not be empty when `TTS_ENGINE=cosyvoice`
-- `tts_speed` must be positive and bounded to a safe range such as `0.5 <= speed <= 1.5`
-- `tts_reference_audio_path` should resolve under the backend workspace or storage directory
-- if `tts_reference_audio_path` does not exist, the API should reject the update clearly
+- 当 `TTS_ENGINE=cosyvoice` 时，`tts_reference_audio_path` 不能为空
+- `tts_speed` 必须为正数，并限制在安全范围内，例如 `0.5 <= speed <= 1.5`
+- `tts_reference_audio_path` 必须解析到后端工作区或 storage 目录下
+- 如果 `tts_reference_audio_path` 指向的文件不存在，接口应明确拒绝更新
 
-## Configuration Changes
+## 配置项调整
 
-File:
+涉及文件：
 
 - [backend/app/core/config.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/core/config.py:1>)
 
-Environment configuration should move from SFT assumptions to CosyVoice2 assumptions:
+环境配置应从原来的 SFT 假设切换为 CosyVoice2 假设：
 
 - `TTS_ENGINE=cosyvoice`
 - `TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B`
 - `TTS_COSYVOICE_CODE_PATH=./storage/vendor/CosyVoice`
 - `TTS_COSYVOICE_DEVICE=cuda`
-- `TTS_COSYVOICE_SAMPLE_RATE` should follow the active model sample rate
+- `TTS_COSYVOICE_SAMPLE_RATE` 应与当前模型实际采样率保持一致
 
-Add backend defaults for avatar seeding:
+同时增加 avatar 初始化默认值：
 
-- default temporary reference audio path
-- default temporary reference text
-- default `tts_speed=1.0`
-- default `tts_emotion_enabled=true`
+- 默认临时参考音频路径
+- 默认临时参考文本
+- 默认 `tts_speed=1.0`
+- 默认 `tts_emotion_enabled=true`
 
-The `.env` file remains the place for engine-level defaults, but per-avatar voice behavior comes from the database row.
+`.env` 继续只负责引擎级默认值，角色级的音色行为由数据库中的 `avatar_config` 控制。
 
-## TTS Service Redesign
+## TTS 服务重构
 
-File:
+涉及文件：
 
 - [backend/app/services/tts.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/services/tts.py:1>)
 
-### Service responsibilities
+### 服务职责
 
-The TTS service should be expanded to:
+TTS 服务需要扩展为：
 
-- load `CosyVoice2` instead of relying on `inference_sft`
-- synthesize from `inference_instruct2`
-- build Chinese instruction prompts from emotion labels
-- resolve avatar-specific reference audio
-- extract or derive lip-sync timing
-- preserve fallback behavior if local CosyVoice fails
+- 加载 `CosyVoice2`，不再依赖 `inference_sft`
+- 使用 `inference_instruct2` 合成
+- 根据情感标签生成中文发声指令
+- 解析 avatar 级参考音频配置
+- 提取或推导口型同步时序
+- 在本地 CosyVoice 失败时保留降级能力
 
-### Emotion instruction mapping
+### 情感指令映射
 
-Recommended mapping:
+建议采用以下映射：
 
 - `happy` -> `用愉快、亲切、自然的语气介绍这段内容。<|endofprompt|>`
 - `excited` -> `用热情、兴奋、感染力强的语气介绍这段内容。<|endofprompt|>`
@@ -203,48 +203,48 @@ Recommended mapping:
 - `sad` -> `用温和、克制、略低沉的语气介绍这段内容。<|endofprompt|>`
 - `neutral` -> `用自然、友好、清晰的语气介绍这段内容。<|endofprompt|>`
 
-If `tts_emotion_enabled` is false, always use the neutral instruction.
+当 `tts_emotion_enabled` 为 false 时，统一使用 `neutral` 指令。
 
-### Method signature changes
+### 方法签名变化
 
-`synthesize_chunk(...)` should accept enough context to synthesize per-avatar speech:
+`synthesize_chunk(...)` 应接收足够的上下文，以支持按 avatar 动态合成：
 
 - `text`
 - `seq`
 - `emotion`
-- `voice_id` for compatibility
+- `voice_id`，仅作兼容保留
 - `reference_audio_path`
 - `reference_text`
 - `speed`
 
-The WebSocket route may either pass the full avatar config or pass extracted fields to the service. Passing explicit values is preferred to keep the TTS service decoupled from ORM objects.
+WebSocket 层可以传完整 avatar，也可以拆分出显式参数传入。推荐传显式参数，以保持 TTS 服务与 ORM 解耦。
 
-### CosyVoice runtime loading
+### CosyVoice 运行时加载
 
-Model loading should still:
+模型加载逻辑应继续保持：
 
-- import `cosyvoice.cli.cosyvoice`
-- instantiate `CosyVoice2`
-- resolve device from config
-- fail clearly when CUDA is requested but unavailable
+- 导入 `cosyvoice.cli.cosyvoice`
+- 实例化 `CosyVoice2`
+- 从配置中解析运行设备
+- 当请求 `cuda` 但环境不支持时，明确报错
 
-This is consistent with the current local loading pattern and avoids introducing a separate runtime wrapper prematurely.
+这与当前本地加载模式一致，也避免在本阶段额外引入新的运行时包装层。
 
-## Lip-Sync Timing Design
+## 口型同步设计
 
-### Protocol compatibility
+### 协议兼容性
 
-The frontend currently consumes:
+当前前端消费的是：
 
 - `audio`
 - `phonemes`
 
-and binds lip sync to real `audio.currentTime`:
+并且口型播放已经绑定到真实 `audio.currentTime`：
 
 - [frontend/src/App.vue](</E:/2026spring/software contest/AI-chat-live2d/frontend/src/App.vue:1>)
 - [frontend/src/components/Live2DStage.vue](</E:/2026spring/software contest/AI-chat-live2d/frontend/src/components/Live2DStage.vue:1>)
 
-This is already the correct playback model. The redesign should keep the same `phonemes` event shape:
+这本身就是正确方向。因此，这次重构应保持 `phonemes` 事件结构不变：
 
 - `ph`
 - `start`
@@ -252,23 +252,23 @@ This is already the correct playback model. The redesign should keep the same `p
 - `openY`
 - `form`
 
-### Timing source priority
+### 时序来源优先级
 
-Priority order:
+建议优先级如下：
 
-1. structured timing returned by the active CosyVoice2 runtime
-2. waveform-envelope-derived timing generated from the synthesized audio
-3. current text-driven fallback only as the final degradation path
+1. 当前 CosyVoice2 运行时返回的结构化时序
+2. 从合成音频中推导出的音频包络时序
+3. 当前基于文本的 fallback，仅作为最终降级方案
 
-### Structured timing path
+### 结构化时序路径
 
-If a runtime result contains stable structured timing fields, the backend should:
+如果运行结果中存在稳定可用的结构化时序字段，则后端应：
 
-- normalize vendor-specific keys into an internal list of timed units
-- convert each unit into a mouth shape
-- emit `phonemes` with direct `start/end`
+- 将 vendor 差异化字段统一规整为内部 timed-unit 列表
+- 把每个时序单元映射为口型形状
+- 直接生成带 `start/end` 的 `phonemes`
 
-Possible keys to probe safely:
+可以安全探测但不能强依赖的字段包括：
 
 - `duration`
 - `alignment`
@@ -276,181 +276,181 @@ Possible keys to probe safely:
 - `phonemes`
 - `phoneme_alignment`
 
-The implementation must treat these as optional and version-dependent.
+这些字段必须按“可选、版本相关”来处理。
 
-### Waveform-envelope fallback
+### 音频包络兜底路径
 
-If structured timing is not exposed in the current runtime, generate timing frames from the synthesized waveform:
+如果当前运行时没有暴露结构化时序，则改为从合成音频波形生成口型时序：
 
-1. decode audio to mono PCM
-2. compute short-window RMS or energy envelope
-3. normalize and smooth the curve
-4. segment the curve into fixed-timestep frames, such as 25 Hz or 50 Hz
-5. map energy levels to mouth openness
-6. emit short `phonemes` frames using generic shapes such as:
-   - energetic frame -> `a`
-   - medium frame -> `e`
-   - low frame -> `N`
-7. preserve `openY/form` directly in each frame
+1. 将音频解码为单声道 PCM
+2. 计算短窗 RMS 或能量包络
+3. 对曲线做归一化与平滑
+4. 将曲线按固定时间步长切片，例如 25 Hz 或 50 Hz
+5. 将能量等级映射为嘴巴开合程度
+6. 生成短时 `phonemes` 帧，例如：
+   - 高能量帧 -> `a`
+   - 中能量帧 -> `e`
+   - 低能量帧 -> `N`
+7. 直接在每帧中写入 `openY/form`
 
-This does not provide true phoneme identity, but it materially improves visible audio-mouth alignment and is robust against vendor output variation.
+这种方案不是真正的音素级对齐，但它能显著改善“嘴型跟着声音走”的观感，同时对 vendor 输出结构变化更稳健。
 
-### Final fallback
+### 最终 fallback
 
-Keep the existing text-driven fallback as the final degradation path in case:
+仍需保留当前基于文本的口型兜底，以应对：
 
-- audio synthesis fails but text still exists
-- runtime timing extraction fails unexpectedly
+- 音频合成失败，但文本仍然存在
+- 时序提取链路异常
 
-This preserves current resilience behavior.
+这样可以维持当前系统的韧性。
 
-## WebSocket Changes
+## WebSocket 调整
 
-File:
+涉及文件：
 
 - [backend/app/api/ws_router.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/api/ws_router.py:1>)
 
-Changes required:
+需要的改动包括：
 
-- pass avatar TTS config into `synthesize_chunk(...)`
-- pass `generated.emotion` into TTS synthesis
-- preserve the existing `audio` and `phonemes` message types
+- 将 avatar 的 TTS 配置传入 `synthesize_chunk(...)`
+- 将 `generated.emotion` 一并传入 TTS 合成
+- 保持现有 `audio` 与 `phonemes` 消息类型不变
 
-No protocol-breaking frontend message redesign is needed for this phase.
+本阶段不需要做破坏性协议升级。
 
-## Startup Migration Strategy
+## 启动期迁移策略
 
-Files:
+涉及文件：
 
 - [backend/app/db/session.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/db/session.py:1>)
-- new small DB compatibility helper if needed
+- 如有需要，可新增一个小型 DB 兼容辅助模块
 
-Implement a lightweight startup migration step for SQLite:
+实现一个轻量级 SQLite 启动迁移步骤：
 
-- inspect `avatar_config` columns
-- if missing:
+- 检查 `avatar_config` 当前列集合
+- 如缺失以下列，则自动补齐：
   - `tts_reference_audio_path`
   - `tts_reference_text`
   - `tts_speed`
   - `tts_emotion_enabled`
-- issue `ALTER TABLE` statements to add them
-- backfill default values for existing rows
+- 使用 `ALTER TABLE` 增列
+- 为已有行回填默认值
 
-This keeps existing `phase1.db` usable without asking the user to rebuild the database.
+这样可以保证现有 `phase1.db` 继续可用，而无需删库重建。
 
-## Frontend Scope For This Phase
+## 前端范围
 
-Files likely touched later:
+后续实现中可能涉及的文件：
 
 - [frontend/src/App.vue](</E:/2026spring/software contest/AI-chat-live2d/frontend/src/App.vue:1>)
 - [frontend/src/components/Live2DStage.vue](</E:/2026spring/software contest/AI-chat-live2d/frontend/src/components/Live2DStage.vue:1>)
 
-Required frontend work should stay minimal:
+本阶段前端改动应尽量保持轻量：
 
-- keep current `phonemes` playback handling
-- if needed, make the fallback smoother for denser frame streams
-- optionally expose small debug telemetry later, but not required for this redesign
+- 继续使用现有 `phonemes` 播放逻辑
+- 如后端帧更密集，可按需补一点平滑处理
+- 可选增加少量调试信息，但不是这次重构的必需项
 
-Because the current frontend already binds mouth animation to actual audio playback time, backend timing improvements should immediately translate into better sync without a protocol rewrite.
+由于当前前端已经绑定真实音频播放时间，因此只要后端时序更准确，前端就会自然获得更好的同步效果。
 
-## Error Handling
+## 错误处理
 
-### Invalid reference audio
+### 参考音频无效
 
-If the avatar reference audio path is missing or unreadable:
+当 avatar 的参考音频路径不存在或无法读取时：
 
-- TTS should fail clearly in logs
-- the websocket response should still degrade gracefully
-- if possible, fall back to edge TTS or mock fallback depending on the configured engine path
+- TTS 应在日志中明确报错
+- WebSocket 回复仍应尽量优雅降级
+- 如果配置允许，可回退到 edge TTS 或 mock fallback
 
-### CosyVoice runtime failure
+### CosyVoice 运行时失败
 
-If local CosyVoice2 throws at runtime:
+如果本地 CosyVoice2 运行时抛错：
 
-- preserve current service degradation strategy
-- emit fallback lip-sync frames when audio cannot be produced
-- do not crash the WebSocket session
+- 保持当前服务的降级策略
+- 当音频无法生成时，仍尽可能返回 fallback 口型帧
+- 不允许整个 WebSocket 会话直接崩溃
 
-### Unsupported timing output
+### 无结构化时序输出
 
-If a runtime output contains no structured timing data:
+如果运行结果中没有结构化时序字段：
 
-- log that the service is using waveform-envelope fallback
-- continue producing `phonemes`
+- 明确记录日志，说明当前启用了音频包络兜底
+- 继续返回 `phonemes`
 
-This is an expected operational path, not an error.
+这应被视为预期运行路径，而不是异常。
 
-## Acceptance Criteria
+## 验收标准
 
-### Functional
+### 功能验收
 
-- text chat produces local CosyVoice2 audio
-- audio style changes when emotion changes
-- avatar reference audio is read from `avatar_config`
-- admin avatar config API can read and update the new TTS fields
-- existing database upgrades automatically on startup
+- 文本对话能够产出本地 CosyVoice2 音频
+- 情感变化时，声音风格也会跟着变化
+- avatar 的参考音频配置真实来自 `avatar_config`
+- 管理接口能够读写新增的 TTS 字段
+- 旧数据库在启动时可自动完成兼容升级
 
-### Lip sync
+### 口型同步验收
 
-- frontend still receives `audio` and `phonemes`
-- mouth movement is visibly aligned to audio playback
-- target sync error remains under `80 ms` during manual verification
+- 前端仍然收到 `audio` 和 `phonemes`
+- 嘴型与音频播放有明显对齐关系
+- 人工验收时，目标同步误差控制在 `80 ms` 以内
 
-### Resilience
+### 韧性验收
 
-- if structured timing is unavailable, waveform-envelope fallback still drives the mouth
-- if local TTS fails, the session does not hard-crash
+- 即使没有结构化时序字段，音频包络兜底仍可驱动口型
+- 即使本地 TTS 失败，整个会话也不会硬崩溃
 
-## Testing Strategy
+## 测试策略
 
-### Backend automated tests
+### 后端自动化测试
 
-Extend:
+扩展：
 
 - [backend/tests/test_tts.py](</E:/2026spring/software contest/AI-chat-live2d/backend/tests/test_tts.py:1>)
 
-Add tests for:
+新增覆盖点包括：
 
-- emotion label to instruction text mapping
-- `inference_instruct2` call signature and argument ordering
-- avatar reference path resolution
-- structured timing normalization when timing keys are present
-- waveform-envelope fallback generation when timing keys are absent
-- migration helper adding new `avatar_config` columns for an old SQLite schema
+- 情感标签到指令文本的映射
+- `inference_instruct2` 调用签名与参数顺序
+- avatar 参考音频路径解析
+- 当存在时序字段时的结构化时序归一化
+- 当不存在时序字段时的音频包络 fallback 生成
+- 针对旧版 SQLite schema 的迁移补列逻辑
 
-### API tests
+### API 测试
 
-Add coverage for:
+新增覆盖：
 
-- `GET /admin/avatar/config` includes new fields
-- `PUT /admin/avatar/config` validates and persists them
+- `GET /admin/avatar/config` 返回新增字段
+- `PUT /admin/avatar/config` 能正确校验并持久化这些字段
 
-### Manual verification
+### 人工联调验证
 
-Manual acceptance script:
+人工验收步骤建议如下：
 
-1. start backend with `CosyVoice2-0.5B` on GPU
-2. seed avatar config with temporary reference audio
-3. ask prompts likely to generate each target emotion
-4. confirm:
-   - audio is generated
-   - emotion changes both expression and voice style
-   - lip sync follows audio without obvious drift
-5. verify existing DB upgrades without deleting `phase1.db`
+1. 在 GPU 上启动带 `CosyVoice2-0.5B` 的后端
+2. 用临时参考音频初始化 avatar 配置
+3. 分别提问容易触发不同情感的内容
+4. 核查：
+   - 音频成功生成
+   - 表情与声音风格同时变化
+   - 口型跟着声音走，没有明显漂移
+5. 验证在不删除 `phase1.db` 的情况下，旧库可以自动升级
 
-## Future Extension Path
+## 后续扩展路径
 
-This design intentionally sets up the next TTS tasks without implementing them now:
+本设计已经为后续 TTS 工作预留了自然延展方向，但本次不实现：
 
-- replace the temporary sample audio with the formal guide voice
-- add admin-managed voice profiles
-- add frontend or admin dropdown voice switching
-- add richer TTS control such as style, emotion intensity, and speaking mode
-- add audio preview and validation tooling for reference assets
+- 将临时参考音频替换为正式导览员声音
+- 增加管理端的音色资源管理
+- 增加前端或管理端的音色下拉切换
+- 增加更细粒度的 TTS 风格、情感强度、说话模式控制
+- 增加参考音频预览和校验工具
 
-## Implementation Impact Summary
+## 预计影响范围
 
-Primary backend files expected to change in implementation:
+后续实现中预计需要重点修改的后端文件：
 
 - [backend/app/core/config.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/core/config.py:1>)
 - [backend/app/db/models.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/db/models.py:1>)
@@ -461,4 +461,4 @@ Primary backend files expected to change in implementation:
 - [backend/app/services/tts.py](</E:/2026spring/software contest/AI-chat-live2d/backend/app/services/tts.py:1>)
 - [backend/tests/test_tts.py](</E:/2026spring/software contest/AI-chat-live2d/backend/tests/test_tts.py:1>)
 
-Frontend changes should likely remain limited unless runtime testing shows the denser lip-sync frame stream needs playback smoothing adjustments.
+前端大概率只需少量配合，除非后续联调发现更密集的口型帧流需要额外平滑处理。

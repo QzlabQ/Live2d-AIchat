@@ -51,28 +51,36 @@ python -m pip install -r requirements.knowledge.txt
 python -m pip install -r requirements.tts.txt --no-build-isolation
 ```
 
-如果你要在本项目里启用“本地 CosyVoice + 预置 speaker”模式，推荐下载 `CosyVoice-300M-SFT`，不要优先用 `CosyVoice2-0.5B`。
-- `CosyVoice-300M-SFT` 自带预置 speaker，适合我们当前后端的 `inference_sft + spk_id` 接法
-- `CosyVoice2-0.5B` 更偏向 `zero_shot / instruct` 用法，直接当固定 speaker SFT 模型会不匹配
+如果旧环境里已经装过 CPU 版 ONNX Runtime，建议切换 TTS 依赖前先清理一次：
+
+```powershell
+python -m pip uninstall -y onnxruntime onnxruntime-gpu
+python -m pip install -r requirements.tts.txt --no-build-isolation
+```
+
+如果你要在本项目里启用“本地 CosyVoice + 情感指令发声”模式，推荐下载 `CosyVoice2-0.5B`。
+- 后端当前使用 `inference_instruct2`，由自然语言情感指令控制语气
+- `voice_id` 只作为兼容展示字段保留，真实音色来自 avatar 配置里的参考音频和参考文本
 
 推荐下载命令：
 
 ```powershell
 conda activate ai-chat-gpu
-python -c "from modelscope import snapshot_download; snapshot_download('iic/CosyVoice-300M-SFT', local_dir='E:/2026spring/software contest/AI-chat-live2d/backend/storage/models/CosyVoice-300M-SFT')"
+python -c "from modelscope import snapshot_download; snapshot_download('iic/CosyVoice2-0.5B', local_dir='E:/2026spring/software contest/AI-chat-live2d/backend/storage/models/CosyVoice2-0.5B')"
 ```
 
 如果你用 Hugging Face：
 
 ```powershell
 conda activate ai-chat-gpu
-python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='FunAudioLLM/CosyVoice-300M-SFT', local_dir='E:/2026spring/software contest/AI-chat-live2d/backend/storage/models/CosyVoice-300M-SFT')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='FunAudioLLM/CosyVoice2-0.5B', local_dir='E:/2026spring/software contest/AI-chat-live2d/backend/storage/models/CosyVoice2-0.5B')"
 ```
 
 说明：
 
 - `requirements.txt` 里故意不再包含 `numpy`
 - `requirements.tts.txt` 是本项目为 CosyVoice 推理整理的最小运行时依赖集合
+- `requirements.tts.txt` 使用 `onnxruntime-gpu`，避免 CosyVoice 的 ONNX 前端固定落到 CPU provider
 - `openai-whisper` 在 Windows 下需要 `--no-build-isolation` 才能稳定构建
 - 在 `conda` 环境里，`numpy` 和 `torch` 这类二进制包优先用 `conda install`，不要再单独 `pip install numpy` / `pip install torch`
 - 否则很容易出现 Windows 下的 `DLL load failed`、`numpy C-extensions failed` 这类混装问题
@@ -112,12 +120,28 @@ python -m pip install -r requirements.asr.txt
 
 ## Phase 2 口型同步 / CosyVoice
 
+当前 TTS 主线已经切换到 `CosyVoice2-0.5B + inference_instruct2`。推荐 `.env` 使用下面这组最终配置：
+
+```env
+TTS_ENGINE=cosyvoice
+TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B
+TTS_COSYVOICE_CODE_PATH=./storage/vendor/CosyVoice
+TTS_COSYVOICE_DEVICE=cuda
+TTS_COSYVOICE_SAMPLE_RATE=24000
+DEFAULT_TTS_REFERENCE_AUDIO_PATH=./storage/vendor/CosyVoice/asset/zero_shot_prompt.wav
+DEFAULT_TTS_REFERENCE_TEXT=希望你以后能够做得比我还好。
+DEFAULT_TTS_SPEED=1.0
+DEFAULT_TTS_EMOTION_ENABLED=true
+```
+
+说明：`voice_id` 现在只作为兼容展示字段保留，真实发声由 `avatar_config` 中的参考音频、参考文本、语速和情感开关决定。
+
 这一轮已经补上：
 
 - 后端返回更真实的口型帧：`ph / start / end / openY / form`
 - `edge-tts` 下用 `WordBoundary + 拼音嘴型估计` 生成口型时间轴
 - 前端按真实音频 `currentTime` 驱动 Live2D 嘴型，而不是只靠本地计时器估算
-- `cosyvoice` 模式下优先本地推理；如果运行时返回对齐信息会直接用，否则退化为“按总时长估算口型帧”
+- `cosyvoice` 模式下优先使用结构化时序；没有时序字段时用音频波形能量包络生成 50Hz 口型帧
 
 如果你要启用本地 CosyVoice，并让 4060 走 GPU，建议按下面配置：
 
@@ -149,26 +173,29 @@ python -m pip install -r requirements.tts.txt --no-build-isolation
 3. 把模型目录放到：
 
 ```text
-backend/storage/models/CosyVoice-300M-SFT
+backend/storage/models/CosyVoice2-0.5B
 ```
 
 4. 把 `.env` 里的 TTS 配置改成：
 
 ```env
 TTS_ENGINE=cosyvoice
-TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice-300M-SFT
+TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B
 TTS_COSYVOICE_CODE_PATH=./storage/vendor/CosyVoice
-TTS_COSYVOICE_SPEAKER=中文女
 TTS_COSYVOICE_DEVICE=cuda
-TTS_COSYVOICE_SAMPLE_RATE=22050
+TTS_COSYVOICE_SAMPLE_RATE=24000
+DEFAULT_TTS_REFERENCE_AUDIO_PATH=./storage/vendor/CosyVoice/asset/zero_shot_prompt.wav
+DEFAULT_TTS_REFERENCE_TEXT=希望你以后能够做得比我还好。
+DEFAULT_TTS_SPEED=1.0
+DEFAULT_TTS_EMOTION_ENABLED=true
 ```
 
-- 当前项目更推荐 `CosyVoice-300M-SFT + 中文女` 这条链路，和官方 `example.py` / `runtime` 默认示例保持一致
-- 如果你不确定本地模型里有哪些 speaker，可先运行 `python -c "from cosyvoice.cli.cosyvoice import CosyVoice; m=CosyVoice('./storage/models/CosyVoice-300M-SFT'); print(m.list_available_spks())"`
+- `DEFAULT_TTS_REFERENCE_AUDIO_PATH` 是默认参考音频，新建数据库或迁移旧库时会写入 `avatar_config.tts_reference_audio_path`
+- `DEFAULT_TTS_REFERENCE_TEXT` 必须和参考音频内容匹配，默认参考音频对应文本是“希望你以后能够做得比我还好。”
 
 说明：
 
-- 如果 `avatar_config.voice_id` 里还是 `zh-CN-XiaoxiaoNeural` 这类 Edge 音色，后端会自动回退到 `TTS_COSYVOICE_SPEAKER`
+- 如果 `avatar_config.voice_id` 里还是 `zh-CN-XiaoxiaoNeural` 这类 Edge 音色，CosyVoice2 模式会忽略它；真实音色由参考音频决定
 - 如果 `TTS_COSYVOICE_DEVICE=auto`，会优先尝试 `cuda`，不可用时降到 `cpu`
 - 如果 `cosyvoice` 不是通过 site-packages 安装，后端会自动尝试从 `TTS_COSYVOICE_CODE_PATH` 导入
 - 如果本地 CosyVoice 尚未装好，服务会自动降级回 `edge-tts`，保证联调不断

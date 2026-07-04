@@ -72,7 +72,16 @@ async def process_text_message(websocket: WebSocket, db_session, session_id: str
 
     spoken_text = generated.spoken_text or generated.text
     for seq, chunk in enumerate(chat_service.chunk_text(spoken_text)):
-        tts_chunk = await tts_service.synthesize_chunk(chunk, seq=seq, voice_id=avatar.voice_id)
+        tts_chunk = await tts_service.synthesize_chunk(
+            chunk,
+            seq=seq,
+            voice_id=avatar.voice_id,
+            emotion=generated.emotion,
+            reference_audio_path=avatar.tts_reference_audio_path,
+            reference_text=avatar.tts_reference_text,
+            speed=avatar.tts_speed,
+            tts_emotion_enabled=avatar.tts_emotion_enabled,
+        )
         if tts_chunk.audio_bytes:
             await websocket.send_json(
                 {
