@@ -6,8 +6,12 @@ from app.services.emotion import EmotionAnalysis, EmotionAnalyzer
 
 
 class EmotionAnalyzerTestCase(unittest.TestCase):
+    @staticmethod
+    def create_analyzer() -> EmotionAnalyzer:
+        return EmotionAnalyzer(Settings(dashscope_api_key=None))
+
     def test_detects_happy_guidance_tone(self) -> None:
-        analyzer = EmotionAnalyzer(Settings())
+        analyzer = self.create_analyzer()
 
         result = asyncio.run(
             analyzer.analyze(
@@ -22,7 +26,7 @@ class EmotionAnalyzerTestCase(unittest.TestCase):
         self.assertIn("欢迎", result.keywords)
 
     def test_detects_thinking_for_history_answers(self) -> None:
-        analyzer = EmotionAnalyzer(Settings())
+        analyzer = self.create_analyzer()
 
         result = asyncio.run(
             analyzer.analyze(
@@ -35,7 +39,7 @@ class EmotionAnalyzerTestCase(unittest.TestCase):
         self.assertIn("历史", result.keywords)
 
     def test_detects_excited_for_route_recommendation(self) -> None:
-        analyzer = EmotionAnalyzer(Settings())
+        analyzer = self.create_analyzer()
 
         result = asyncio.run(
             analyzer.analyze(
@@ -48,7 +52,7 @@ class EmotionAnalyzerTestCase(unittest.TestCase):
         self.assertIn("路线", result.keywords)
 
     def test_defaults_to_neutral_when_signal_is_weak(self) -> None:
-        analyzer = EmotionAnalyzer(Settings())
+        analyzer = self.create_analyzer()
 
         result = asyncio.run(
             analyzer.analyze(
