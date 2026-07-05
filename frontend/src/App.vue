@@ -5,6 +5,7 @@ import Live2DStage from './components/Live2DStage.vue'
 import { useAudioRecorder } from './composables/useAudioRecorder'
 import { useChatSocket } from './composables/useChatSocket'
 import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
+import { buildEmotionLampStyle } from './lib/emotionLamp'
 import { EMOTION_VISUALS } from './lib/lipsync'
 import {
   DEFAULT_STREAM_AUDIO_POLICY,
@@ -16,6 +17,7 @@ import type {
   AudioEvent,
   ChatMessage,
   EmotionEvent,
+  EmotionStage,
   EmotionTelemetry,
   EmotionValue,
   PhonemeFrame,
@@ -49,6 +51,7 @@ function createWelcomeMessage(): ChatMessage {
 function createDefaultEmotionTelemetry(): EmotionTelemetry {
   return {
     value: 'neutral',
+    stage: 'final',
     confidence: 0.45,
     keywords: [],
     reason: '等待新一轮回答时，保持中性待机状态。',
@@ -559,6 +562,7 @@ function handleEmotion(payload: EmotionEvent) {
   latestEmotion.value = payload.value
   emotionTelemetry.value = {
     value: payload.value,
+    stage: payload.stage ?? 'final',
     confidence: payload.confidence ?? 0.45,
     keywords: payload.keywords ?? [],
     reason: payload.reason ?? '当前回答未附带更多情绪说明。',
@@ -681,9 +685,19 @@ const canRecord = computed(
 )
 const meterScale = computed(() => Math.max(0.05, recorder.level.value))
 const emotionVisual = computed(() => EMOTION_VISUALS[emotionTelemetry.value.value] ?? EMOTION_VISUALS.neutral)
+const emotionLampStyle = computed(() =>
+  buildEmotionLampStyle(emotionTelemetry.value, emotionVisual.value),
+)
 const emotionConfidenceLabel = computed(
   () => `${Math.round((emotionTelemetry.value.confidence || 0) * 100)}%`,
 )
+const emotionStageLabel = computed(() => {
+  const labels: Record<EmotionStage, string> = {
+    preview: '预判',
+    final: '正式',
+  }
+  return labels[emotionTelemetry.value.stage]
+})
 
 const connectionLabel = computed(() => {
   switch (socket.state.value) {
@@ -761,8 +775,8 @@ async function reconnectNow() {
   await socket.connect()
 }
 
-watch([latestEmotion, live2dRef], ([emotion, stage]) => {
-  stage?.setEmotion(emotion)
+watch([latestEmotion, () => emotionTelemetry.value.stage, live2dRef], ([emotion, stage, live2d]) => {
+  live2d?.setEmotion(emotion, stage)
 }, { immediate: true })
 
 onMounted(async () => {
@@ -821,7 +835,7 @@ onBeforeUnmount(() => {
           <div class="stage-caption">
             <div>
               <span class="caption-label">情绪映射</span>
-              <strong>{{ emotionVisual.label }} / {{ latestEmotion }}</strong>
+              <strong>{{ emotionVisual.label }} / {{ latestEmotion }} / {{ emotionStageLabel }}</strong>
             </div>
             <div>
               <span class="caption-label">模型路径</span>
@@ -842,15 +856,15 @@ onBeforeUnmount(() => {
             <div class="emotion-lamp-shell">
               <div
                 class="emotion-lamp"
-                :style="{
-                  background: emotionVisual.color,
-                  boxShadow: `0 0 28px ${emotionVisual.glow}`,
-                }"
+                :data-stage="emotionTelemetry.stage"
+                :data-emotion="emotionTelemetry.value"
+                :style="emotionLampStyle"
               >
                 <span class="emotion-lamp-core"></span>
               </div>
               <div class="emotion-meta">
                 <strong>{{ emotionVisual.label }}</strong>
+                <span>阶段 {{ emotionStageLabel }}</span>
                 <span>置信度 {{ emotionConfidenceLabel }}</span>
                 <span>来源 {{ emotionTelemetry.source }}</span>
               </div>

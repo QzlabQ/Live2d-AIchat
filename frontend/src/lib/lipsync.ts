@@ -1,4 +1,4 @@
-import type { EmotionValue, PhonemeFrame } from '../types/chat'
+import type { EmotionStage, EmotionValue, PhonemeFrame } from '../types/chat'
 
 export interface MouthPose {
   openY: number
@@ -11,7 +11,24 @@ export interface EmotionVisualPreset {
   glow: string
 }
 
+export interface Live2DExpressionParameter {
+  Id: string
+  Value: number
+  Blend?: 'Add' | 'Multiply' | 'Overwrite' | string
+}
+
+export interface Live2DExpressionFile {
+  Parameters?: Live2DExpressionParameter[]
+}
+
+export interface Live2DExpressionManifestEntry {
+  Name: string
+  File: string
+}
+
 const FALLBACK_POSE: MouthPose = { openY: 0.06, form: 0 }
+const PREVIEW_EMOTION_STRENGTH = 0.72
+const MOUTH_PARAMETER_IDS = new Set(['ParamMouthOpenY', 'PARAM_MOUTH_OPEN_Y', 'ParamMouthForm', 'PARAM_MOUTH_FORM'])
 
 const PHONEME_TO_MOUTH: Record<string, MouthPose> = {
   a: { openY: 0.92, form: 0.04 },
@@ -39,35 +56,43 @@ export const EMOTION_PRESETS: Record<EmotionValue, Record<string, number>> = {
     ParamEyeRSmile: 0,
   },
   happy: {
-    ParamAngleY: -2,
-    ParamBodyAngleX: 1.2,
-    ParamBrowLY: 0.35,
-    ParamBrowRY: 0.35,
-    ParamEyeLSmile: 1,
-    ParamEyeRSmile: 1,
+    ParamAngleY: -1.4,
+    ParamBodyAngleX: 1,
+    ParamAngleX: 1.2,
+    ParamBrowLY: 0.22,
+    ParamBrowRY: 0.22,
   },
   thinking: {
-    ParamAngleX: -4,
-    ParamAngleY: 1,
+    ParamAngleX: -3.6,
+    ParamAngleY: 0.8,
+    ParamBodyAngleX: -0.6,
     ParamBrowLAngle: -0.35,
     ParamBrowRAngle: -0.15,
-    ParamEyeBallX: -0.2,
-    ParamEyeBallY: -0.08,
+    ParamEyeBallX: -0.18,
+    ParamEyeBallY: -0.05,
   },
   excited: {
-    ParamAngleX: 3,
-    ParamBodyAngleX: 3,
-    ParamBrowLY: 0.45,
-    ParamBrowRY: 0.45,
-    ParamEyeLOpen: 1.2,
-    ParamEyeROpen: 1.2,
+    ParamAngleX: 2.6,
+    ParamAngleY: -0.8,
+    ParamBodyAngleX: 2.8,
+    ParamBrowLY: 0.35,
+    ParamBrowRY: 0.35,
   },
   sad: {
-    ParamAngleY: 2,
-    ParamBrowLY: -0.2,
-    ParamBrowRY: -0.2,
+    ParamAngleY: 1.6,
+    ParamBodyAngleX: -0.8,
+    ParamBrowLY: -0.12,
+    ParamBrowRY: -0.12,
     ParamEyeBallY: 0.2,
   },
+}
+
+export const EMOTION_EXPRESSION_MAP: Record<EmotionValue, string | null> = {
+  neutral: null,
+  happy: 'f04',
+  thinking: 'f07',
+  excited: 'f05',
+  sad: 'f03',
 }
 
 export const EMOTION_VISUALS: Record<EmotionValue, EmotionVisualPreset> = {
@@ -96,6 +121,63 @@ export const EMOTION_VISUALS: Record<EmotionValue, EmotionVisualPreset> = {
     color: 'linear-gradient(135deg, #677a9c 0%, #8f9bb6 100%)',
     glow: 'rgba(123, 144, 178, 0.42)',
   },
+}
+
+export function resolveModelAssetUrl(modelPath: string, assetPath: string): string {
+  return new URL(assetPath, new URL(modelPath, window.location.origin)).toString()
+}
+
+export function buildExpressionTarget(parameters: Live2DExpressionParameter[] = []): Record<string, number> {
+  const target: Record<string, number> = {}
+
+  for (const parameter of parameters) {
+    const id = parameter.Id
+    if (!id || MOUTH_PARAMETER_IDS.has(id)) {
+      continue
+    }
+
+    const baseValue = EMOTION_PRESETS.neutral[id] ?? (parameter.Blend === 'Multiply' ? 1 : 0)
+    if (parameter.Blend === 'Multiply') {
+      target[id] = baseValue * parameter.Value
+      continue
+    }
+
+    if (parameter.Blend === 'Overwrite') {
+      target[id] = parameter.Value
+      continue
+    }
+
+    target[id] = baseValue + parameter.Value
+  }
+
+  return target
+}
+
+export function buildEmotionTarget(
+  emotion: EmotionValue,
+  stage: EmotionStage,
+  expressionTargets: Record<string, Record<string, number>>,
+): Record<string, number> {
+  const neutral = EMOTION_PRESETS.neutral
+  const expressionName = EMOTION_EXPRESSION_MAP[emotion]
+  const expression = expressionName ? expressionTargets[expressionName] ?? {} : {}
+  const overlay = EMOTION_PRESETS[emotion] ?? neutral
+  const merged = {
+    ...neutral,
+    ...expression,
+    ...overlay,
+  }
+
+  if (stage === 'final') {
+    return merged
+  }
+
+  const scaled: Record<string, number> = {}
+  for (const [id, value] of Object.entries(merged)) {
+    const base = neutral[id] ?? 0
+    scaled[id] = base + (value - base) * PREVIEW_EMOTION_STRENGTH
+  }
+  return scaled
 }
 
 export function phonemeToMouth(ph: string): MouthPose {

@@ -3,8 +3,20 @@ import * as PIXI from 'pixi.js'
 import { Live2DModel } from 'pixi-live2d-display/cubism4'
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { EMOTION_PRESETS, currentPhoneme, finalFrameEnd, mouthPoseFromFrame } from '../lib/lipsync'
-import type { EmotionValue, PhonemeFrame } from '../types/chat'
+import {
+  buildEmotionTarget,
+  buildExpressionTarget,
+  currentPhoneme,
+  EMOTION_PRESETS,
+  finalFrameEnd,
+  mouthPoseFromFrame,
+  resolveModelAssetUrl,
+} from '../lib/lipsync'
+import type {
+  EmotionStage,
+  EmotionValue,
+  PhonemeFrame,
+} from '../types/chat'
 
 type RuntimeLive2DModel = Live2DModel &
   PIXI.Container & {
@@ -38,6 +50,7 @@ interface ModelSettings {
   url?: string
   FileReferences?: {
     DisplayInfo?: string
+    Expressions?: Array<{ Name: string; File: string }>
     Motions?: Record<string, Array<{ File: string; Sound?: string }>>
   }
 }
@@ -68,13 +81,12 @@ let currentOpen = 0.06
 let currentForm = 0
 const MOUTH_OPEN_IDS = ['ParamMouthOpenY', 'PARAM_MOUTH_OPEN_Y']
 const MOUTH_FORM_IDS = ['ParamMouthForm', 'PARAM_MOUTH_FORM']
-const EMOTION_PARAM_IDS = Array.from(
-  new Set(
-    Object.values(EMOTION_PRESETS).flatMap((preset) => Object.keys(preset)),
-  ),
-)
 const currentEmotionValues: Record<string, number> = {}
+const expressionTargets: Record<string, Record<string, number>> = {}
+let emotionParamIds = new Set(Object.keys(EMOTION_PRESETS.neutral))
 let targetEmotionValues: Record<string, number> = { ...EMOTION_PRESETS.neutral }
+let currentEmotion: EmotionValue = 'neutral'
+let currentEmotionStage: EmotionStage = 'final'
 
 function safeSetParameter(id: string, value: number) {
   if (!model) {
@@ -92,6 +104,14 @@ function safeSetParameterAliases(ids: string[], value: number) {
   for (const id of ids) {
     safeSetParameter(id, value)
   }
+}
+
+function rebuildEmotionTarget() {
+  targetEmotionValues = buildEmotionTarget(currentEmotion, currentEmotionStage, expressionTargets)
+  emotionParamIds = new Set([
+    ...Object.keys(currentEmotionValues),
+    ...Object.keys(targetEmotionValues),
+  ])
 }
 
 function setMouthPose(targetOpen: number, targetForm: number) {
@@ -149,7 +169,7 @@ function startBreathingLoop() {
     const t = performance.now() / 1000
     safeSetParameter('ParamBreath', (Math.sin(t * 1.2) + 1) / 2)
 
-    for (const id of EMOTION_PARAM_IDS) {
+    for (const id of emotionParamIds) {
       const current = currentEmotionValues[id] ?? 0
       const target = targetEmotionValues[id] ?? 0
       const next = current + (target - current) * 0.18
@@ -211,6 +231,18 @@ async function createModel() {
     }
   }
 
+  for (const expression of settings.FileReferences?.Expressions ?? []) {
+    const url = resolveModelAssetUrl(props.modelPath, expression.File)
+    const expressionResponse = await fetch(url)
+    if (!expressionResponse.ok) {
+      continue
+    }
+
+    const expressionData = await expressionResponse.json() as { Parameters?: Array<{ Id: string; Value: number; Blend?: string }> }
+    expressionTargets[expression.Name.toLowerCase()] = buildExpressionTarget(expressionData.Parameters ?? [])
+  }
+  rebuildEmotionTarget()
+
   model = (await Live2DModel.from(settings)) as RuntimeLive2DModel
   model.interactive = true
   model.cursor = 'pointer'
@@ -249,12 +281,10 @@ async function createModel() {
   resizeObserver.observe(stageHost.value)
 }
 
-function setEmotion(emotion: EmotionValue) {
-  const preset = EMOTION_PRESETS[emotion] ?? EMOTION_PRESETS.neutral
-  targetEmotionValues = {
-    ...EMOTION_PRESETS.neutral,
-    ...preset,
-  }
+function setEmotion(emotion: EmotionValue, stage: EmotionStage = 'final') {
+  currentEmotion = emotion
+  currentEmotionStage = stage
+  rebuildEmotionTarget()
 }
 
 function playPhonemes(frames: PhonemeFrame[], audio?: HTMLAudioElement | null) {

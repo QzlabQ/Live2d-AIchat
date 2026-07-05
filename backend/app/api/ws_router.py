@@ -13,7 +13,7 @@ from app.db.models import AvatarConfig, Message, Session
 from app.db.session import AsyncSessionFactory
 from app.services.asr import get_asr_service
 from app.services.chat import ReplyStreamEvent, get_chat_service
-from app.services.emotion import get_emotion_analyzer
+from app.services.emotion import EmotionAnalysis, get_emotion_analyzer
 from app.services.tts import TTSService, get_tts_service
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ class ReplyExecutionResult:
     sources: list[object] = field(default_factory=list)
     confidence: float = 0.0
     mode: str = "template"
+    emotion: EmotionAnalysis | None = None
     metrics: dict[str, int] = field(default_factory=dict)
 
 
@@ -147,6 +148,28 @@ async def stream_assistant_reply(
                 result.mode = event.mode
 
         await segment_queue.put(None)
+        if result.text:
+            try:
+                result.emotion = await chat_service.analyze_emotion(content, result.text)
+            except Exception:
+                result.emotion = EmotionAnalysis(
+                    label=locked_emotion,
+                    confidence=float(emotion_payload.get("confidence", 0.45)),
+                    keywords=list(emotion_payload.get("keywords", [])),
+                    reason=str(emotion_payload.get("reason", "")),
+                    source=str(emotion_payload.get("source", "heuristic")),
+                )
+            await send_json(
+                {
+                    "type": "emotion",
+                    "stage": "final",
+                    "value": result.emotion.label,
+                    "confidence": result.emotion.confidence,
+                    "keywords": result.emotion.keywords,
+                    "reason": result.emotion.reason,
+                    "source": result.emotion.source,
+                }
+            )
         mark_metric("text_done_ms")
         if use_streaming_audio:
             await send_json({"type": "text_done", "reply_id": reply_id})
@@ -262,6 +285,7 @@ async def process_text_message(
     reply_id = f"{session_id}-{int(started_at * 1000)}"
     emotion_payload = {
         "type": "emotion",
+        "stage": "preview",
         "value": locked.label,
         "confidence": locked.confidence,
         "keywords": locked.keywords,
@@ -288,7 +312,7 @@ async def process_text_message(
         session_id=session_id,
         role="assistant",
         content=result.text,
-        emotion=locked.label,
+        emotion=result.emotion.label if result.emotion else locked.label,
         latency_ms=latency_ms,
     )
     logger.info(
