@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from app.core.config import Settings
 from app.services.chat import DisplayChunker, RAGGuideChatService, ReplyStreamEvent, TTSSegmenter
+from app.services.emotion import EmotionAnalysis
 from app.services.rag import PreparedRAGAnswer
 from app.services.tts import StreamingTTSChunk
 from app.api.ws_router import ClientCapabilities, stream_assistant_reply
@@ -62,6 +63,15 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 yield ReplyStreamEvent(kind='tts_segment', content='第一句。')
                 yield ReplyStreamEvent(kind='final', text='第一句。', spoken_text='第一句。', sources=[], mode='rag', confidence=0.91)
 
+            async def analyze_emotion(self, user_text: str, reply_text: str) -> EmotionAnalysis:
+                return EmotionAnalysis(
+                    label='thinking',
+                    confidence=0.88,
+                    keywords=['历史'],
+                    reason='final emotion',
+                    source='llm',
+                )
+
         class FakeTTSService:
             async def stream_synthesize_segment(self, *args, **kwargs):
                 yield StreamingTTSChunk(
@@ -97,18 +107,33 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
             capabilities=ClientCapabilities(tts_streaming=True, audio_format='pcm16le'),
             reply_id='reply-1',
             locked_emotion='happy',
-            emotion_payload={'type': 'emotion', 'value': 'happy', 'confidence': 0.7, 'keywords': [], 'reason': 'quick', 'source': 'heuristic'},
+            emotion_payload={
+                'type': 'emotion',
+                'stage': 'preview',
+                'value': 'happy',
+                'confidence': 0.7,
+                'keywords': [],
+                'reason': 'quick',
+                'source': 'heuristic',
+            },
             started_at=0.0,
         )
 
         message_types = [item['type'] for item in websocket.messages]
+        emotion_messages = [item for item in websocket.messages if item['type'] == 'emotion']
 
         self.assertIn('tts_audio_chunk', message_types)
         self.assertIn('tts_viseme_chunk', message_types)
         self.assertIn('text_done', message_types)
         self.assertIn('audio_done', message_types)
+        self.assertEqual(len(emotion_messages), 2)
+        self.assertEqual(emotion_messages[0]['stage'], 'preview')
+        self.assertEqual(emotion_messages[0]['value'], 'happy')
+        self.assertEqual(emotion_messages[1]['stage'], 'final')
+        self.assertEqual(emotion_messages[1]['value'], 'thinking')
         self.assertEqual(result.text, '第一句。')
         self.assertEqual(result.mode, 'rag')
+        self.assertEqual(result.emotion.label, 'thinking')
 
 
 class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):

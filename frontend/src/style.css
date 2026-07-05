@@ -354,7 +354,22 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.46);
   overflow: hidden;
   isolation: isolate;
-  animation: lamp-float 4.2s ease-in-out infinite;
+  background: var(--lamp-body-background);
+  opacity: var(--lamp-shell-opacity, 0.92);
+  box-shadow:
+    0 0 calc(12px + var(--lamp-glow-alpha, 0.4) * 28px) var(--lamp-glow-color),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  animation:
+    lamp-float var(--lamp-float-duration, 4.4s) ease-in-out infinite,
+    lamp-pulse var(--lamp-pulse-duration, 4.8s) ease-in-out infinite;
+}
+
+.emotion-lamp[data-stage="preview"] {
+  filter: saturate(0.94);
+}
+
+.emotion-lamp[data-stage="final"] {
+  filter: saturate(1.04);
 }
 
 .emotion-lamp::before,
@@ -363,21 +378,23 @@ button {
   position: absolute;
   border-radius: 999px;
   filter: blur(2px);
-  opacity: 0.88;
+  opacity: calc(var(--lamp-glow-alpha, 0.4) + 0.12);
 }
 
 .emotion-lamp::before {
   inset: auto 0.55rem 0.75rem 0.55rem;
   height: 2rem;
   background: rgba(255, 255, 255, 0.24);
-  animation: lamp-wave 3.2s ease-in-out infinite alternate;
+  animation: lamp-wave var(--lamp-wave-duration, 3.8s) ease-in-out infinite alternate;
 }
 
 .emotion-lamp::after {
   inset: 0.9rem 0.9rem auto 0.9rem;
   height: 1.55rem;
   background: rgba(255, 255, 255, 0.2);
-  animation: lamp-wave 2.7s ease-in-out infinite alternate-reverse;
+  opacity: max(0.12, calc(var(--lamp-glow-alpha, 0.4) - 0.06));
+  animation:
+    lamp-wave calc(var(--lamp-wave-duration, 3.8s) - 0.55s) ease-in-out infinite alternate-reverse;
 }
 
 .emotion-lamp-core {
@@ -387,6 +404,8 @@ button {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.25);
   filter: blur(3px);
+  opacity: var(--lamp-core-opacity, 0.24);
+  animation: lamp-core-glow calc(var(--lamp-pulse-duration, 4.8s) + 0.6s) ease-in-out infinite;
 }
 
 .emotion-meta {
@@ -643,7 +662,31 @@ button {
   }
 
   to {
-    transform: translateY(-0.28rem) scaleX(1.08);
+    transform:
+      translateY(calc(var(--lamp-wave-offset, 0.24rem) * -1))
+      scaleX(var(--lamp-wave-scale, 1.05));
+  }
+}
+
+@keyframes lamp-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(var(--lamp-pulse-scale, 1.02));
+  }
+}
+
+@keyframes lamp-core-glow {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.06);
   }
 }
 

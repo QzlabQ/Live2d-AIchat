@@ -15,9 +15,11 @@ export interface PhonemeFrame {
 }
 
 export type EmotionValue = 'neutral' | 'happy' | 'thinking' | 'excited' | 'sad'
+export type EmotionStage = 'preview' | 'final'
 
 export interface EmotionTelemetry {
   value: EmotionValue
+  stage: EmotionStage
   confidence: number
   keywords: string[]
   reason: string
@@ -103,6 +105,7 @@ export interface PhonemesEvent {
 export interface EmotionEvent {
   type: 'emotion'
   value: EmotionValue
+  stage?: EmotionStage
   confidence?: number
   keywords?: string[]
   reason?: string
