@@ -48,7 +48,13 @@ class Settings(BaseSettings):
     tts_cosyvoice_model_path: str = "./storage/models/CosyVoice2-0.5B"
     tts_cosyvoice_code_path: str = "./storage/vendor/CosyVoice"
     tts_cosyvoice_device: str = "cuda"
+    tts_cosyvoice_onnx_provider: str = "cpu"
     tts_cosyvoice_sample_rate: int = 24000
+    tts_cosyvoice_fp16: bool = True
+    tts_cosyvoice_load_jit: bool = False
+    tts_segment_soft_min_chars: int = 12
+    tts_segment_soft_max_chars: int = 20
+    tts_segment_hard_max_chars: int = 28
 
     chat_mode: str = "template"
     rag_retrieval_top_k: int = 8
@@ -108,6 +114,9 @@ class Settings(BaseSettings):
         "rag_generation_max_tokens",
         "rag_reranker_batch_size",
         "tts_cosyvoice_sample_rate",
+        "tts_segment_soft_min_chars",
+        "tts_segment_soft_max_chars",
+        "tts_segment_hard_max_chars",
         mode="after",
     )
     @classmethod

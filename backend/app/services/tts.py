@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 import importlib
 from io import BytesIO
+import logging
+import os
 from pathlib import Path
 import re
 import sys
+import threading
+from time import perf_counter
 import wave
 
 from pypinyin import Style, lazy_pinyin
@@ -19,6 +24,7 @@ LATIN_VOWEL_RE = re.compile(r"[aeiouy]+", re.IGNORECASE)
 NON_ALPHA_RE = re.compile(r"[^a-z]")
 COSYVOICE_ALIGNMENT_KEYS = ("alignment", "alignments", "phonemes", "phoneme_alignment")
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+logger = logging.getLogger(__name__)
 
 MOUTH_POSES: dict[str, tuple[float, float]] = {
     "a": (0.92, 0.04),
@@ -39,11 +45,27 @@ class TTSChunk:
     mime_type: str = "audio/mpeg"
 
 
+@dataclass(slots=True)
+class StreamingTTSChunk:
+    seq: int
+    chunk_index: int
+    text: str
+    audio_bytes: bytes
+    phonemes: list[dict[str, float | str]]
+    offset_ms: int
+    sample_rate: int
+    channels: int = 1
+    encoding: str = "pcm16le"
+    is_final: bool = False
+    model_chunk_ready_ms: int = 0
+
+
 class TTSService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._engine_error: str | None = None
         self._cosyvoice_model: object | None = None
+        self._prompt_feature_cache: dict[tuple[str, str], dict[str, object]] = {}
 
     def status(self) -> str:
         if self.settings.tts_engine == "mock":
@@ -63,6 +85,24 @@ class TTSService:
         except Exception as exc:  # pragma: no cover - environment dependent
             self._engine_error = str(exc)
             return f"degraded:{self._engine_error}"
+
+    def warmup(self) -> None:
+        if self.settings.tts_engine != "cosyvoice":
+            return
+
+        cosyvoice = self._load_cosyvoice_model()
+        prompt_wav = self._resolve_reference_audio_path(None)
+        result = self._first_result(
+            cosyvoice.inference_instruct2(
+                "你好。",
+                self._build_cosyvoice_instruction("neutral", emotion_enabled=False),
+                prompt_wav,
+                stream=False,
+                speed=1.0,
+            )
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("CosyVoice warmup returned an unexpected result format.")
 
     async def _synthesize_edge(self, cleaned_text: str, seq: int, voice_id: str | None) -> TTSChunk:
         import edge_tts
@@ -103,18 +143,30 @@ class TTSService:
             )
 
         device = self._resolve_cosyvoice_device()
+        self._configure_cosyvoice_runtime_environment()
         module = self._import_cosyvoice_module()
         factory = getattr(module, "CosyVoice2", None)
         if factory is None:
             raise RuntimeError("未找到 cosyvoice.cli.cosyvoice.CosyVoice2，请检查本地 CosyVoice 安装。")
 
         try:
-            self._cosyvoice_model = factory(str(model_path), device=device)
+            self._cosyvoice_model = factory(
+                str(model_path),
+                load_jit=self.settings.tts_cosyvoice_load_jit,
+                fp16=self.settings.tts_cosyvoice_fp16,
+            )
         except TypeError:
             self._cosyvoice_model = factory(str(model_path))
-            self._move_cosyvoice_runtime(self._cosyvoice_model, device)
+
+        self._move_cosyvoice_runtime(self._cosyvoice_model, device)
 
         return self._cosyvoice_model
+
+    def _configure_cosyvoice_runtime_environment(self) -> None:
+        provider = self.settings.tts_cosyvoice_onnx_provider.strip().lower()
+        if provider not in {"cpu", "cuda", "auto"}:
+            provider = "cpu"
+        os.environ["COSYVOICE_ONNX_PROVIDER"] = provider
 
     def _import_cosyvoice_module(self):
         try:
@@ -333,6 +385,289 @@ class TTSService:
             wav_file.writeframes(pcm.tobytes())
         return buffer.getvalue()
 
+    def _pcm16_to_bytes(self, pcm) -> bytes:
+        return pcm.tobytes() if hasattr(pcm, "tobytes") else bytes(pcm)
+
+    def _coerce_cosyvoice_pcm_payload(self, payload: object, sample_rate: int):
+        try:
+            import numpy as np
+        except Exception as exc:  # pragma: no cover - runtime dependency
+            raise RuntimeError("CosyVoice audio decoding requires numpy.") from exc
+
+        if hasattr(payload, "detach"):
+            payload = payload.detach()
+        if hasattr(payload, "cpu"):
+            payload = payload.cpu()
+        if hasattr(payload, "numpy"):
+            payload = payload.numpy()
+
+        audio_array = np.asarray(payload).squeeze()
+        if audio_array.ndim != 1:
+            raise RuntimeError("CosyVoice audio data must be mono.")
+        if np.issubdtype(audio_array.dtype, np.integer):
+            pcm = audio_array.astype(np.int16)
+        else:
+            pcm = (np.clip(audio_array.astype(np.float32), -1.0, 1.0) * 32767).astype(np.int16)
+        duration_seconds = float(len(pcm) / max(sample_rate, 1))
+        return pcm, self._pcm16_to_bytes(pcm), duration_seconds
+
+    def _trim_pcm_silence(
+        self,
+        pcm: object,
+        sample_rate: int,
+        *,
+        leading_ms: int = 20,
+        trailing_ms: int = 20,
+        threshold_ratio: float = 0.01,
+    ):
+        try:
+            import numpy as np
+        except Exception as exc:  # pragma: no cover - runtime dependency
+            raise RuntimeError("Silence trimming requires numpy.") from exc
+
+        audio = np.asarray(pcm).astype(np.int16).squeeze()
+        if audio.size == 0:
+            return audio, {"trimmed_leading_ms": 0.0, "trimmed_trailing_ms": 0.0}
+
+        threshold = max(int(32767 * threshold_ratio), 64)
+        active = np.flatnonzero(np.abs(audio) >= threshold)
+        if active.size == 0:
+            return audio, {"trimmed_leading_ms": 0.0, "trimmed_trailing_ms": 0.0}
+
+        leading_pad = int(sample_rate * leading_ms / 1000)
+        trailing_pad = int(sample_rate * trailing_ms / 1000)
+        start = max(int(active[0]) - leading_pad, 0)
+        end = min(int(active[-1]) + trailing_pad + 1, len(audio))
+        trimmed = audio[start:end]
+        return trimmed, {
+            "trimmed_leading_ms": round(start * 1000 / max(sample_rate, 1), 3),
+            "trimmed_trailing_ms": round((len(audio) - end) * 1000 / max(sample_rate, 1), 3),
+        }
+
+    def _get_cached_prompt_features(
+        self,
+        frontend: object,
+        prompt_wav: str,
+        reference_text: str | None,
+    ) -> dict[str, object]:
+        cache_key = (str(Path(prompt_wav).resolve()), (reference_text or "").strip())
+        cached = self._prompt_feature_cache.get(cache_key)
+        if cached is not None:
+            logger.info("tts_prompt_cache prompt_cache_hit=1 prompt_cache_build_ms=0.0")
+            return cached
+
+        started_at = perf_counter()
+        cached = {
+            "speech_feat": frontend._extract_speech_feat(prompt_wav),
+            "speech_token": frontend._extract_speech_token(prompt_wav),
+            "embedding": frontend._extract_spk_embedding(prompt_wav),
+        }
+        build_ms = round((perf_counter() - started_at) * 1000, 3)
+        self._prompt_feature_cache[cache_key] = cached
+        logger.info("tts_prompt_cache prompt_cache_hit=0 prompt_cache_build_ms=%s", build_ms)
+        return cached
+
+    def _bind_prompt_feature_cache(
+        self,
+        frontend: object,
+        prompt_wav: str,
+        reference_text: str | None,
+    ):
+        if not all(
+            hasattr(frontend, attr)
+            for attr in ("_extract_speech_feat", "_extract_speech_token", "_extract_spk_embedding")
+        ):
+            return lambda: None
+
+        cached = self._get_cached_prompt_features(frontend, prompt_wav, reference_text)
+        resolved_prompt = str(Path(prompt_wav).resolve())
+        original_feat = frontend._extract_speech_feat
+        original_token = frontend._extract_speech_token
+        original_embedding = frontend._extract_spk_embedding
+
+        def matches(candidate: str) -> bool:
+            return str(Path(candidate).resolve()) == resolved_prompt
+
+        def cached_feat(candidate: str):
+            if matches(candidate):
+                return cached["speech_feat"]
+            return original_feat(candidate)
+
+        def cached_token(candidate: str):
+            if matches(candidate):
+                return cached["speech_token"]
+            return original_token(candidate)
+
+        def cached_embedding(candidate: str):
+            if matches(candidate):
+                return cached["embedding"]
+            return original_embedding(candidate)
+
+        frontend._extract_speech_feat = cached_feat
+        frontend._extract_speech_token = cached_token
+        frontend._extract_spk_embedding = cached_embedding
+
+        def restore() -> None:
+            frontend._extract_speech_feat = original_feat
+            frontend._extract_speech_token = original_token
+            frontend._extract_spk_embedding = original_embedding
+
+        return restore
+
+    async def _iter_cosyvoice_results_async(
+        self,
+        cleaned_text: str,
+        *,
+        emotion: str | None,
+        reference_audio_path: str | None,
+        reference_text: str | None,
+        speed: float | None,
+        emotion_enabled: bool,
+    ):
+        cosyvoice = self._load_cosyvoice_model()
+        prompt_wav = self._resolve_reference_audio_path(reference_audio_path)
+        instruct_text = self._build_cosyvoice_instruction(emotion, emotion_enabled=emotion_enabled)
+        queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def worker() -> None:
+            restore = self._bind_prompt_feature_cache(
+                getattr(cosyvoice, "frontend", object()),
+                prompt_wav,
+                reference_text,
+            )
+            try:
+                for result in cosyvoice.inference_instruct2(
+                    cleaned_text,
+                    instruct_text,
+                    prompt_wav,
+                    stream=True,
+                    speed=float(speed or 1.0),
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("data", result))
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+            except Exception as exc:  # pragma: no cover - runtime dependency
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+            finally:
+                restore()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        while True:
+            event_type, payload = await queue.get()
+            if event_type == "data":
+                yield payload
+                continue
+            if event_type == "error":
+                raise payload  # type: ignore[misc]
+            break
+
+    async def stream_synthesize_segment(
+        self,
+        text: str,
+        seq: int,
+        voice_id: str | None = None,
+        emotion: str | None = None,
+        reference_audio_path: str | None = None,
+        reference_text: str | None = None,
+        speed: float | None = None,
+        tts_emotion_enabled: bool = True,
+    ):
+        del voice_id
+        cleaned_text = text.strip()
+        if not cleaned_text:
+            return
+
+        if self.settings.tts_engine != "cosyvoice":
+            chunk = await self.synthesize_chunk(
+                cleaned_text,
+                seq=seq,
+                emotion=emotion,
+                reference_audio_path=reference_audio_path,
+                speed=speed,
+                tts_emotion_enabled=tts_emotion_enabled,
+            )
+            if chunk.audio_bytes or chunk.phonemes:
+                yield StreamingTTSChunk(
+                    seq=seq,
+                    chunk_index=0,
+                    text=cleaned_text,
+                    audio_bytes=b"",
+                    phonemes=chunk.phonemes,
+                    offset_ms=0,
+                    sample_rate=self.settings.tts_cosyvoice_sample_rate,
+                    is_final=True,
+                )
+            return
+
+        segment_started_at = perf_counter()
+        last_chunk: StreamingTTSChunk | None = None
+        offset_ms = 0
+        chunk_index = 0
+        async for result in self._iter_cosyvoice_results_async(
+            cleaned_text,
+            emotion=emotion,
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text,
+            speed=speed,
+            emotion_enabled=tts_emotion_enabled,
+        ):
+            if not isinstance(result, dict):
+                raise RuntimeError("CosyVoice returned an unexpected result format.")
+
+            audio_payload = result.get("audio")
+            if audio_payload is None:
+                audio_payload = result.get("tts_speech")
+            if audio_payload is None:
+                audio_payload = result.get("speech")
+            if audio_payload is None:
+                continue
+
+            sample_rate = int(
+                result.get("sample_rate")
+                or result.get("tts_sample_rate")
+                or result.get("sr")
+                or self.settings.tts_cosyvoice_sample_rate
+            )
+            pcm, _, _ = self._coerce_cosyvoice_pcm_payload(audio_payload, sample_rate)
+            leading_ms = 60 if chunk_index == 0 else 20
+            trimmed_pcm, trim_info = self._trim_pcm_silence(
+                pcm,
+                sample_rate=sample_rate,
+                leading_ms=leading_ms,
+                trailing_ms=20,
+            )
+            logger.info(
+                "tts_stream_chunk seq=%s idx=%s model_chunk_ready_ms=%s trim_leading_ms=%s trim_trailing_ms=%s",
+                seq,
+                chunk_index,
+                int((perf_counter() - segment_started_at) * 1000),
+                trim_info["trimmed_leading_ms"],
+                trim_info["trimmed_trailing_ms"],
+            )
+            audio_bytes = self._pcm16_to_bytes(trimmed_pcm)
+            phonemes = self._phonemes_from_waveform(trimmed_pcm, sample_rate) if len(trimmed_pcm) else []
+            current_chunk = StreamingTTSChunk(
+                seq=seq,
+                chunk_index=chunk_index,
+                text=cleaned_text,
+                audio_bytes=audio_bytes,
+                phonemes=phonemes,
+                offset_ms=offset_ms,
+                sample_rate=sample_rate,
+                is_final=False,
+                model_chunk_ready_ms=int((perf_counter() - segment_started_at) * 1000),
+            )
+            offset_ms += int(round(len(trimmed_pcm) * 1000 / max(sample_rate, 1)))
+            chunk_index += 1
+
+            last_chunk = current_chunk
+            yield current_chunk
+
+        if last_chunk is not None:
+            last_chunk.is_final = True
+
     async def synthesize_chunk(
         self,
         text: str,
@@ -399,19 +734,27 @@ class TTSService:
         speed: float | None = None,
         emotion_enabled: bool = True,
     ) -> TTSChunk:
-        del voice_id, reference_text
+        del voice_id
         cosyvoice = self._load_cosyvoice_model()
         prompt_wav = self._resolve_reference_audio_path(reference_audio_path)
         instruct_text = self._build_cosyvoice_instruction(emotion, emotion_enabled=emotion_enabled)
-        result = self._first_result(
-            cosyvoice.inference_instruct2(
-                cleaned_text,
-                instruct_text,
-                prompt_wav,
-                stream=False,
-                speed=float(speed or 1.0),
-            )
+        restore = self._bind_prompt_feature_cache(
+            getattr(cosyvoice, 'frontend', object()),
+            prompt_wav,
+            reference_text,
         )
+        try:
+            result = self._first_result(
+                cosyvoice.inference_instruct2(
+                    cleaned_text,
+                    instruct_text,
+                    prompt_wav,
+                    stream=False,
+                    speed=float(speed or 1.0),
+                )
+            )
+        finally:
+            restore()
         if not isinstance(result, dict):
             raise RuntimeError('CosyVoice returned an unexpected result format.')
 

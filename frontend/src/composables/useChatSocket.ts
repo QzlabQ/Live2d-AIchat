@@ -15,6 +15,7 @@ interface UseChatSocketOptions {
   baseUrl: string
   heartbeatMs: number
   reconnectBaseMs: number
+  onOpen?: () => void
   onMessage: (payload: ServerSocketMessage) => void
   onError: (message: string) => void
 }
@@ -114,6 +115,7 @@ export function useChatSocket(options: UseChatSocketOptions) {
         reconnectAttempt.value = 0
         lastError.value = ''
         startHeartbeat()
+        options.onOpen?.()
       }
 
       ws.onmessage = (event) => {

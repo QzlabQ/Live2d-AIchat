@@ -4,8 +4,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Live2DStage from './components/Live2DStage.vue'
 import { useAudioRecorder } from './composables/useAudioRecorder'
 import { useChatSocket } from './composables/useChatSocket'
-import { base64ToBlobUrl } from './lib/base64'
+import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
 import { EMOTION_VISUALS } from './lib/lipsync'
+import {
+  DEFAULT_STREAM_AUDIO_POLICY,
+  getScheduledLeadMs,
+  shouldResetBufferedPlayback,
+  shouldStartBufferedPlayback,
+} from './lib/streamAudioBuffer'
 import type {
   AudioEvent,
   ChatMessage,
@@ -15,6 +21,8 @@ import type {
   PhonemeFrame,
   PhonemesEvent,
   ServerSocketMessage,
+  TtsAudioChunkEvent,
+  TtsVisemeChunkEvent,
 } from './types/chat'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1'
@@ -53,6 +61,17 @@ interface QueuedAudio {
   url: string
 }
 
+interface ScheduledSource {
+  key: string
+  source: AudioBufferSourceNode
+}
+
+interface BufferedStreamAudio {
+  payload: TtsAudioChunkEvent
+  samples: Float32Array
+  durationMs: number
+}
+
 type AudioContextWindow = Window &
   typeof globalThis & {
     webkitAudioContext?: typeof AudioContext
@@ -71,17 +90,29 @@ const lastAsrPreview = ref('')
 const latestEmotion = ref<EmotionValue>('neutral')
 const emotionTelemetry = ref<EmotionTelemetry>(createDefaultEmotionTelemetry())
 const playbackError = ref('')
+const playbackTelemetry = ref({
+  bufferedAudioMs: 0,
+  scheduledLeadMs: 0,
+  underrunCount: 0,
+})
 
 const queuedAudio = ref<QueuedAudio[]>([])
 const knownAudioSeqs = new Set<number>()
 const pendingPhonemes = new Map<number, PhonemeFrame[]>()
 const phonemeFallbackTimers = new Map<number, number>()
 const failedAudioSeqs = new Set<number>()
+const pendingStreamVisemes = new Map<string, TtsVisemeChunkEvent>()
+const streamChunkSchedule = new Map<string, number>()
 let currentAudio: HTMLAudioElement | null = null
 let currentAudioSeq: number | null = null
 let audioPlaying = false
 let audioUnlockContext: AudioContext | null = null
 let audioUnlocked = false
+let activeStreamReplyId: string | null = null
+let streamNextStartTime = 0
+let scheduledSources: ScheduledSource[] = []
+let pendingStreamAudio: BufferedStreamAudio[] = []
+let streamPlaybackStarted = false
 
 function createMessageId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
@@ -100,9 +131,28 @@ function resetReplyMediaState() {
   currentAudio = null
   currentAudioSeq = null
   audioPlaying = false
+  activeStreamReplyId = null
+  streamNextStartTime = 0
+  streamPlaybackStarted = false
+  pendingStreamAudio = []
+  pendingStreamVisemes.clear()
+  streamChunkSchedule.clear()
+  scheduledSources.forEach(({ source }) => {
+    try {
+      source.stop()
+    } catch {
+      return
+    }
+  })
+  scheduledSources = []
   queuedAudio.value.forEach((item) => URL.revokeObjectURL(item.url))
   queuedAudio.value = []
   playbackError.value = ''
+  playbackTelemetry.value = {
+    bufferedAudioMs: 0,
+    scheduledLeadMs: 0,
+    underrunCount: 0,
+  }
 }
 
 function resetConversation() {
@@ -234,6 +284,21 @@ async function unlockAudioPlayback() {
   }
 }
 
+async function getAudioContext(): Promise<AudioContext | null> {
+  await unlockAudioPlayback()
+  if (!audioUnlockContext) {
+    const AudioContextCtor = window.AudioContext ?? (window as AudioContextWindow).webkitAudioContext
+    if (!AudioContextCtor) {
+      return null
+    }
+    audioUnlockContext = new AudioContextCtor()
+  }
+  if (audioUnlockContext.state === 'suspended') {
+    await audioUnlockContext.resume()
+  }
+  return audioUnlockContext
+}
+
 function playPhonemeFallbackNow(seq: number) {
   knownAudioSeqs.delete(seq)
   const frames = pendingPhonemes.get(seq)
@@ -333,6 +398,163 @@ function handlePhonemes(payload: PhonemesEvent) {
   queueFallbackLipSync(payload.seq, payload.data)
 }
 
+function streamChunkKey(payload: { reply_id: string; segment_id: number; chunk_index: number }) {
+  return `${payload.reply_id}:${payload.segment_id}:${payload.chunk_index}`
+}
+
+function pcm16ToFloat32(bytes: Uint8Array) {
+  const sampleCount = Math.floor(bytes.byteLength / 2)
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const samples = new Float32Array(sampleCount)
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    samples[index] = view.getInt16(index * 2, true) / 32768
+  }
+
+  return samples
+}
+
+function removeScheduledSource(key: string) {
+  scheduledSources = scheduledSources.filter((item) => item.key !== key)
+}
+
+function updateStreamPlaybackTelemetry(context: AudioContext | null) {
+  playbackTelemetry.value = {
+    bufferedAudioMs: Math.round(pendingStreamAudio.reduce((sum, chunk) => sum + chunk.durationMs, 0)),
+    scheduledLeadMs:
+      context && streamPlaybackStarted ? getScheduledLeadMs(context.currentTime, streamNextStartTime) : 0,
+    underrunCount: playbackTelemetry.value.underrunCount,
+  }
+}
+
+function applyStreamVisemes(payload: TtsVisemeChunkEvent, scheduledAt: number, context: AudioContext) {
+  live2dRef.value?.queueScheduledPhonemes?.(payload.frames, context, scheduledAt)
+}
+
+function flushBufferedStreamAudio(context: AudioContext) {
+  while (pendingStreamAudio.length > 0) {
+    const nextChunk = pendingStreamAudio.shift()
+    if (!nextChunk) {
+      break
+    }
+
+    const { payload, samples } = nextChunk
+    const key = streamChunkKey(payload)
+    const scheduledAt = Math.max(
+      context.currentTime + 0.03,
+      streamNextStartTime > 0
+        ? streamNextStartTime
+        : context.currentTime + DEFAULT_STREAM_AUDIO_POLICY.scheduleLookaheadMs / 1000,
+    )
+    const buffer = context.createBuffer(1, samples.length, payload.sample_rate)
+    buffer.copyToChannel(new Float32Array(samples), 0)
+
+    const source = context.createBufferSource()
+    const gain = context.createGain()
+    const ramp = 0.01
+    source.buffer = buffer
+    source.connect(gain).connect(context.destination)
+    gain.gain.setValueAtTime(0.0001, scheduledAt)
+    gain.gain.linearRampToValueAtTime(1, scheduledAt + ramp)
+    gain.gain.setValueAtTime(1, Math.max(scheduledAt + ramp, scheduledAt + buffer.duration - ramp))
+    gain.gain.linearRampToValueAtTime(0.0001, scheduledAt + buffer.duration)
+    source.start(scheduledAt)
+
+    streamChunkSchedule.set(key, scheduledAt)
+    scheduledSources.push({ key, source })
+    source.onended = () => removeScheduledSource(key)
+    streamNextStartTime = scheduledAt + buffer.duration
+
+    const pending = pendingStreamVisemes.get(key)
+    if (pending) {
+      applyStreamVisemes(pending, scheduledAt, context)
+      pendingStreamVisemes.delete(key)
+    }
+  }
+
+  updateStreamPlaybackTelemetry(context)
+}
+
+async function handleStreamingAudio(payload: TtsAudioChunkEvent) {
+  try {
+    const context = await getAudioContext()
+    if (!context) {
+      playbackError.value = '当前浏览器不支持流式音频播放。'
+      return
+    }
+
+    if (activeStreamReplyId !== payload.reply_id) {
+      activeStreamReplyId = payload.reply_id
+      streamNextStartTime = 0
+      streamPlaybackStarted = false
+      pendingStreamAudio = []
+      pendingStreamVisemes.clear()
+      streamChunkSchedule.clear()
+      scheduledSources.forEach(({ source }) => {
+        try {
+          source.stop()
+        } catch {
+          return
+        }
+      })
+      scheduledSources = []
+      updateStreamPlaybackTelemetry(context)
+    }
+
+    const bytes = base64ToUint8Array(payload.data)
+    const samples = pcm16ToFloat32(bytes)
+    if (!samples.length) {
+      return
+    }
+
+    const scheduledLeadMs = streamPlaybackStarted
+      ? getScheduledLeadMs(context.currentTime, streamNextStartTime)
+      : 0
+    if (streamPlaybackStarted && shouldResetBufferedPlayback(scheduledLeadMs)) {
+      streamPlaybackStarted = false
+      streamNextStartTime = 0
+      playbackTelemetry.value.underrunCount += 1
+    }
+
+    pendingStreamAudio.push({
+      payload,
+      samples,
+      durationMs: (samples.length / payload.sample_rate) * 1000,
+    })
+    updateStreamPlaybackTelemetry(context)
+
+    if (
+      !streamPlaybackStarted &&
+      !shouldStartBufferedPlayback(
+        {
+          bufferedAudioMs: playbackTelemetry.value.bufferedAudioMs,
+          pendingChunkCount: pendingStreamAudio.length,
+          isFinalChunkBuffered: payload.is_final,
+        },
+        DEFAULT_STREAM_AUDIO_POLICY,
+      )
+    ) {
+      return
+    }
+
+    streamPlaybackStarted = true
+    flushBufferedStreamAudio(context)
+  } catch (error) {
+    playbackError.value = error instanceof Error ? error.message : '流式音频播放失败。'
+  }
+}
+
+function handleStreamingVisemes(payload: TtsVisemeChunkEvent) {
+  const key = streamChunkKey(payload)
+  const scheduledAt = streamChunkSchedule.get(key)
+  const context = audioUnlockContext
+  if (scheduledAt !== undefined && context) {
+    applyStreamVisemes(payload, scheduledAt, context)
+    return
+  }
+  pendingStreamVisemes.set(key, payload)
+}
+
 function handleEmotion(payload: EmotionEvent) {
   latestEmotion.value = payload.value
   emotionTelemetry.value = {
@@ -372,6 +594,16 @@ function handleSocketMessage(payload: ServerSocketMessage) {
     return
   }
 
+  if (payload.type === 'tts_audio_chunk') {
+    void handleStreamingAudio(payload)
+    return
+  }
+
+  if (payload.type === 'tts_viseme_chunk') {
+    handleStreamingVisemes(payload)
+    return
+  }
+
   if (payload.type === 'phonemes') {
     handlePhonemes(payload)
     return
@@ -379,6 +611,16 @@ function handleSocketMessage(payload: ServerSocketMessage) {
 
   if (payload.type === 'emotion') {
     handleEmotion(payload)
+    return
+  }
+
+  if (payload.type === 'text_done') {
+    finalizeAssistantDraft()
+    void scrollChatToEnd()
+    return
+  }
+
+  if (payload.type === 'audio_done') {
     return
   }
 
@@ -399,6 +641,13 @@ const socket = useChatSocket({
   baseUrl: WS_BASE_URL,
   heartbeatMs: HEARTBEAT_MS,
   reconnectBaseMs: RECONNECT_BASE_MS,
+  onOpen: () => {
+    socket.send({
+      type: 'hello',
+      tts_streaming: true,
+      audio_format: 'pcm16le',
+    })
+  },
   onMessage: handleSocketMessage,
   onError: handleSocketError,
 })
@@ -523,6 +772,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   resetReplyMediaState()
+  void audioUnlockContext?.close()
 })
 </script>
 
@@ -613,6 +863,12 @@ onBeforeUnmount(() => {
           <article class="telemetry-card">
             <span class="telemetry-label">识别回显</span>
             <p>{{ lastAsrPreview || '开始录音后会在这里显示 ASR 文本。' }}</p>
+          </article>
+          <article class="telemetry-card">
+            <span class="telemetry-label">流式缓冲</span>
+            <p>缓冲 {{ playbackTelemetry.bufferedAudioMs }} ms</p>
+            <p>排程余量 {{ playbackTelemetry.scheduledLeadMs }} ms</p>
+            <p>断流次数 {{ playbackTelemetry.underrunCount }}</p>
           </article>
         </div>
       </section>

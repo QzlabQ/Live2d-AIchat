@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -97,6 +98,17 @@ class RAGAnswer:
     sources: list[RetrievedChunk]
     confidence: float
     used_llm: bool
+
+
+@dataclass(slots=True)
+class PreparedRAGAnswer:
+    answer_text: str
+    spoken_text: str
+    sources: list[RetrievedChunk]
+    confidence: float
+    used_llm: bool
+    llm_messages: list[dict[str, str]] | None = None
+    fallback_text: str = ""
 
 
 class LexicalReranker:
@@ -204,14 +216,66 @@ class DashScopeChatCompletionsClient:
             data = response.json()
 
         content = data["choices"][0]["message"]["content"]
-        if isinstance(content, str):
-            return content.strip()
-
-        if isinstance(content, list):
-            parts = [str(item.get("text", "")).strip() for item in content if isinstance(item, dict)]
-            return "".join(parts).strip()
+        text = self._extract_content_text(content)
+        if text:
+            return text.strip()
 
         raise RuntimeError("DashScope response content is empty.")
+
+    async def stream_complete(self, messages: list[dict[str, str]]):
+        if not self.settings.dashscope_api_key:
+            raise RuntimeError("DASHSCOPE_API_KEY is not configured.")
+
+        url = f"{self.settings.dashscope_base_url.rstrip('/')}/chat/completions"
+        payload = {
+            "model": self.settings.dashscope_model,
+            "messages": messages,
+            "temperature": self.settings.rag_generation_temperature,
+            "max_tokens": self.settings.rag_generation_max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.settings.dashscope_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                response.raise_for_status()
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+
+                    payload_obj = json.loads(data)
+                    choices = payload_obj.get("choices")
+                    if not isinstance(choices, list):
+                        continue
+
+                    for choice in choices:
+                        if not isinstance(choice, dict):
+                            continue
+                        delta = choice.get("delta")
+                        if not isinstance(delta, dict):
+                            continue
+
+                        text = self._extract_content_text(delta.get("content"))
+                        if text:
+                            yield text
+
+    def _extract_content_text(self, content: object) -> str:
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            parts = [str(item.get("text", "")) for item in content if isinstance(item, dict)]
+            return "".join(parts)
+
+        return ""
 
 
 class ScenicRAGService:
@@ -249,6 +313,30 @@ class ScenicRAGService:
         )
 
     async def answer(self, question: str, persona: str | None = None) -> RAGAnswer:
+        prepared = await self.prepare_stream_answer(question, persona=persona)
+        if prepared.llm_messages:
+            try:
+                answer_body = await self.llm.complete(prepared.llm_messages)
+            except Exception:
+                answer_body = prepared.fallback_text
+        else:
+            answer_body = prepared.answer_text
+
+        answer_body = sanitize_answer(answer_body)
+        if not answer_body:
+            return self._refuse(
+                "鏍规嵁褰撳墠鏅尯鐭ヨ瘑搴擄紝鏆傛椂鏃犳硶纭杩欎釜闂銆備綘涔熷彲浠ユ崲涓洿鍏蜂綋鐨勯棶娉曘€?"
+            )
+
+        display_text = append_citations(answer_body, prepared.sources)
+        return RAGAnswer(
+            answer_text=display_text,
+            spoken_text=answer_body,
+            sources=prepared.sources,
+            confidence=prepared.confidence,
+            used_llm=prepared.used_llm,
+        )
+
         query = normalize_question(question)
         if not query:
             return self._refuse("我刚刚没有听清，你可以再说一次吗？")
@@ -294,6 +382,65 @@ class ScenicRAGService:
             sources=selected,
             confidence=confidence,
             used_llm=used_llm,
+        )
+
+    async def prepare_stream_answer(self, question: str, persona: str | None = None) -> PreparedRAGAnswer:
+        query = normalize_question(question)
+        if not query:
+            return PreparedRAGAnswer(
+                answer_text="鎴戝垰鍒氭病鏈夊惉娓咃紝浣犲彲浠ュ啀璇翠竴娆″悧锛?",
+                spoken_text="鎴戝垰鍒氭病鏈夊惉娓咃紝浣犲彲浠ュ啀璇翠竴娆″悧锛?",
+                sources=[],
+                confidence=0.0,
+                used_llm=False,
+            )
+        if is_out_of_domain_question(query):
+            return PreparedRAGAnswer(
+                answer_text="鏍规嵁褰撳墠鏅尯鐭ヨ瘑搴擄紝鏆傛椂鏃犳硶纭杩欎釜闂銆備綘鍙互缁х画闂垜鏅偣銆佸巻鍙层€佹父瑙堣矾绾挎垨鍙傝寤鸿銆?",
+                spoken_text="鏍规嵁褰撳墠鏅尯鐭ヨ瘑搴擄紝鏆傛椂鏃犳硶纭杩欎釜闂銆備綘鍙互缁х画闂垜鏅偣銆佸巻鍙层€佹父瑙堣矾绾挎垨鍙傝寤鸿銆?",
+                sources=[],
+                confidence=0.0,
+                used_llm=False,
+            )
+
+        candidates = await self.retrieve(query)
+        if not self._has_grounded_context(query, candidates):
+            return PreparedRAGAnswer(
+                answer_text="鏍规嵁褰撳墠鏅尯鐭ヨ瘑搴擄紝鏆傛椂鏃犳硶纭杩欎釜闂銆備綘鍙互缁х画闂垜鏅偣銆佸巻鍙层€佹父瑙堣矾绾挎垨鍙傝寤鸿銆?",
+                spoken_text="鏍规嵁褰撳墠鏅尯鐭ヨ瘑搴擄紝鏆傛椂鏃犳硶纭杩欎釜闂銆備綘鍙互缁х画闂垜鏅偣銆佸巻鍙层€佹父瑙堣矾绾挎垨鍙傝寤鸿銆?",
+                sources=[],
+                confidence=0.0,
+                used_llm=False,
+            )
+
+        selected = candidates[: self.settings.rag_context_docs]
+        confidence = round(selected[0].rerank_score, 4) if selected else 0.0
+        context = self._format_context(selected)
+        fallback_text = sanitize_answer(self._build_extractive_answer(query, selected))
+        if not fallback_text:
+            fallback_text = "鏍规嵁褰撳墠鏅尯鐭ヨ瘑搴擄紝鏆傛椂鏃犳硶纭杩欎釜闂銆備綘涔熷彲浠ユ崲涓洿鍏蜂綋鐨勯棶娉曘€?"
+
+        if self.settings.dashscope_api_key:
+            return PreparedRAGAnswer(
+                answer_text="",
+                spoken_text="",
+                sources=selected,
+                confidence=confidence,
+                used_llm=True,
+                llm_messages=self._build_llm_messages(
+                    question=query,
+                    persona=persona or self.settings.default_avatar_persona,
+                    context=context,
+                ),
+                fallback_text=fallback_text,
+            )
+
+        return PreparedRAGAnswer(
+            answer_text=fallback_text,
+            spoken_text=fallback_text,
+            sources=selected,
+            confidence=confidence,
+            used_llm=False,
         )
 
     async def retrieve(self, question: str) -> list[RetrievedChunk]:
@@ -367,7 +514,11 @@ class ScenicRAGService:
         return self._reranker
 
     async def _generate_with_llm(self, question: str, persona: str, context: str) -> str:
-        messages = [
+        messages = self._build_llm_messages(question=question, persona=persona, context=context)
+        return await self.llm.complete(messages)
+
+    def _build_llm_messages(self, question: str, persona: str, context: str) -> list[dict[str, str]]:
+        return [
             {"role": message.type, "content": message.content}
             for message in self.prompt.format_messages(
                 persona=persona,
@@ -375,7 +526,6 @@ class ScenicRAGService:
                 context=context,
             )
         ]
-        return await self.llm.complete(messages)
 
     def _build_extractive_answer(self, question: str, sources: list[RetrievedChunk]) -> str:
         structured_answer = build_structured_answer(question, sources)

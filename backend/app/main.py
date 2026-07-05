@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -11,6 +12,7 @@ from app.api.ws_router import websocket_router
 from app.core.config import get_settings
 from app.db.seed import ensure_default_avatar_config
 from app.db.session import init_db, shutdown_db
+from app.services.tts import get_tts_service
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -21,6 +23,7 @@ async def lifespan(_: FastAPI):
     try:
         await init_db()
         await ensure_default_avatar_config()
+        await asyncio.to_thread(get_tts_service().warmup)
         logger.info("Database initialization finished.")
     except Exception:  # pragma: no cover - startup should remain resilient
         logger.exception("Backend startup finished with degraded database state.")

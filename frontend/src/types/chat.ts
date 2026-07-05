@@ -29,6 +29,12 @@ export interface SocketTextMessage {
   content: string
 }
 
+export interface SocketHelloMessage {
+  type: 'hello'
+  tts_streaming: boolean
+  audio_format: 'pcm16le'
+}
+
 export interface SocketAudioChunkMessage {
   type: 'audio_chunk'
   data: string
@@ -44,6 +50,7 @@ export interface SocketPingMessage {
 }
 
 export type ClientSocketMessage =
+  | SocketHelloMessage
   | SocketTextMessage
   | SocketAudioChunkMessage
   | SocketAudioEndMessage
@@ -66,6 +73,27 @@ export interface AudioEvent {
   seq: number
 }
 
+export interface TtsAudioChunkEvent {
+  type: 'tts_audio_chunk'
+  reply_id: string
+  segment_id: number
+  chunk_index: number
+  sample_rate: number
+  channels: number
+  encoding: 'pcm16le'
+  data: string
+  is_final: boolean
+}
+
+export interface TtsVisemeChunkEvent {
+  type: 'tts_viseme_chunk'
+  reply_id: string
+  segment_id: number
+  chunk_index: number
+  offset_ms: number
+  frames: PhonemeFrame[]
+}
+
 export interface PhonemesEvent {
   type: 'phonemes'
   seq: number
@@ -86,6 +114,16 @@ export interface DoneEvent {
   session_id: string
 }
 
+export interface TextDoneEvent {
+  type: 'text_done'
+  reply_id: string
+}
+
+export interface AudioDoneEvent {
+  type: 'audio_done'
+  reply_id: string
+}
+
 export interface ErrorEvent {
   type: 'error'
   code: string
@@ -100,8 +138,12 @@ export type ServerSocketMessage =
   | TextDeltaEvent
   | AsrResultEvent
   | AudioEvent
+  | TtsAudioChunkEvent
+  | TtsVisemeChunkEvent
   | PhonemesEvent
   | EmotionEvent
+  | TextDoneEvent
+  | AudioDoneEvent
   | DoneEvent
   | ErrorEvent
   | PongEvent

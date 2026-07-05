@@ -45,6 +45,8 @@ interface ModelSettings {
 interface LipSyncState {
   frames: PhonemeFrame[]
   audio: HTMLAudioElement | null
+  audioContext: AudioContext | null
+  useAudioContextClock: boolean
   startedAt: number
   stopAt: number
 }
@@ -156,16 +158,17 @@ function startBreathingLoop() {
     }
 
     if (lipSyncState) {
-      const { frames, audio, startedAt, stopAt } = lipSyncState
-      const elapsed =
-        audio && Number.isFinite(audio.currentTime) && audio.currentTime > 0
+      const { frames, audio, audioContext, startedAt, stopAt, useAudioContextClock } = lipSyncState
+      const elapsed = useAudioContextClock && audioContext
+        ? audioContext.currentTime
+        : audio && Number.isFinite(audio.currentTime) && audio.currentTime > 0
           ? audio.currentTime
           : (performance.now() - startedAt) / 1000
       const frame = currentPhoneme(frames, elapsed)
       const target = mouthPoseFromFrame(frame)
       setMouthPose(target.openY, target.form)
 
-      if (elapsed <= stopAt && !audio?.ended) {
+      if (elapsed <= stopAt && (useAudioContextClock || !audio?.ended)) {
         return
       }
 
@@ -264,14 +267,52 @@ function playPhonemes(frames: PhonemeFrame[], audio?: HTMLAudioElement | null) {
   lipSyncState = {
     frames,
     audio: audio ?? null,
+    audioContext: null,
+    useAudioContextClock: false,
     startedAt: performance.now(),
     stopAt: finalFrameEnd(frames) + 0.18,
+  }
+}
+
+function queueScheduledPhonemes(
+  frames: PhonemeFrame[],
+  audioContext: AudioContext,
+  scheduledAt: number,
+) {
+  if (!frames.length) {
+    return
+  }
+
+  const absoluteFrames = frames.map((frame) => ({
+    ...frame,
+    start: frame.start + scheduledAt,
+    end: frame.end + scheduledAt,
+  }))
+
+  if (
+    lipSyncState &&
+    lipSyncState.useAudioContextClock &&
+    lipSyncState.audioContext === audioContext
+  ) {
+    lipSyncState.frames = [...lipSyncState.frames, ...absoluteFrames].sort((left, right) => left.start - right.start)
+    lipSyncState.stopAt = Math.max(lipSyncState.stopAt, finalFrameEnd(absoluteFrames) + 0.18)
+    return
+  }
+
+  lipSyncState = {
+    frames: absoluteFrames,
+    audio: null,
+    audioContext,
+    useAudioContextClock: true,
+    startedAt: performance.now(),
+    stopAt: finalFrameEnd(absoluteFrames) + 0.18,
   }
 }
 
 defineExpose({
   setEmotion,
   playPhonemes,
+  queueScheduledPhonemes,
 })
 
 onMounted(async () => {

@@ -32,6 +32,9 @@ class EmotionAnalyzer:
     def __init__(self, settings: Settings):
         self.settings = settings
 
+    def analyze_quick(self, user_text: str, reply_text: str = "") -> EmotionAnalysis:
+        return self._analyze_with_heuristics(user_text=user_text, reply_text=reply_text)
+
     async def analyze(self, user_text: str, reply_text: str) -> EmotionAnalysis:
         if self.settings.dashscope_api_key:
             try:
