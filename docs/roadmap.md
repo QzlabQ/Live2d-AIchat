@@ -74,12 +74,19 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 
 - [x] 下载 CosyVoice2-0.5B 模型到 `./storage/models/CosyVoice2-0.5B`
       （HuggingFace: `FunAudioLLM/CosyVoice2-0.5B`，约 3.5GB）
-- [ ] 更新 `.env`：`TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B`
-- [ ] 修改 `backend/app/services/tts.py`：将 `inference_sft` 替换为 `inference_instruct2`，
+- [x] 更新 `.env`：`TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B`
+- [x] 修改 `backend/app/services/tts.py`：将 `inference_sft` 替换为 `inference_instruct2`，
       并添加情感指令映射：- `happy` → "用愉快活泼的语气介绍" - `excited` → "用热情兴奋的语气说" - `thinking` → "用平静思考的语气说" - `sad` → "用温柔低沉的语气说" - `neutral` → "用自然友好的语气说"
 - [ ] 利用 CosyVoice2 输出的 `duration` 字段提取真实音素时长（替换现有 WordBoundary 近似算法）
-- [ ] Live2D 口型参数驱动（PARAM_MOUTH_OPEN_Y / PARAM_MOUTH_FORM），见 [lipsync.md](lipsync.md)
+      当前状态：非流式回退链路已支持 `duration/alignment/phoneme_alignment` 解析，默认流式链路仍以波形包络口型为主，需继续补齐“优先吃结构化 timing”的主链路实现。
+- [x] Live2D 口型参数驱动（PARAM_MOUTH_OPEN_Y / PARAM_MOUTH_FORM），见 [lipsync.md](lipsync.md)
 - [ ] 联调口型与音频时间轴对齐，目标误差 < 80ms
+      当前状态：已经完成流式音频调度对齐与嘴型跟随，但缺少可复核的 `< 80ms` 量化验收记录，需补人工验收结果与测试口径。
+
+**TTS / 口型同步收尾计划**
+
+- [ ] 默认流式 TTS 链路优先消费 CosyVoice2 的 `duration/alignment`，仅在结构化 timing 缺失时回退到波形包络口型。
+- [ ] 增加一轮口型对齐专项联调，记录“音频开始时间 / 嘴型开始时间 / 主观误差”，把 `< 80ms` 验收结果落到文档。
 
 **表情系统**
 
