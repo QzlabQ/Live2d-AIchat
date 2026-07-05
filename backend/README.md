@@ -1,5 +1,7 @@
 # Backend Phase 1-2
 
+显卡升级与后续迁移说明见 [docs/gpu-upgrade.md](../docs/gpu-upgrade.md)。
+
 这个目录已经覆盖 `docs/roadmap.md` 中 Phase 1-2 的后端、知识库和 RAG 基础能力：
 
 - FastAPI 项目骨架与健康检查
@@ -80,7 +82,7 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download(repo
 
 - `requirements.txt` 里故意不再包含 `numpy`
 - `requirements.tts.txt` 是本项目为 CosyVoice 推理整理的最小运行时依赖集合
-- `requirements.tts.txt` 使用 `onnxruntime-gpu`，避免 CosyVoice 的 ONNX 前端固定落到 CPU provider
+- `requirements.tts.txt` 当前仍保留 `onnxruntime-gpu` 依赖，但本项目默认把 `TTS_COSYVOICE_ONNX_PROVIDER` 固定为 `cpu`，优先把 4060 显存留给 CosyVoice2 主模型
 - `openai-whisper` 在 Windows 下需要 `--no-build-isolation` 才能稳定构建
 - 在 `conda` 环境里，`numpy` 和 `torch` 这类二进制包优先用 `conda install`，不要再单独 `pip install numpy` / `pip install torch`
 - 否则很容易出现 Windows 下的 `DLL load failed`、`numpy C-extensions failed` 这类混装问题
@@ -127,7 +129,13 @@ TTS_ENGINE=cosyvoice
 TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B
 TTS_COSYVOICE_CODE_PATH=./storage/vendor/CosyVoice
 TTS_COSYVOICE_DEVICE=cuda
+TTS_COSYVOICE_ONNX_PROVIDER=cpu
 TTS_COSYVOICE_SAMPLE_RATE=24000
+TTS_COSYVOICE_FP16=true
+TTS_COSYVOICE_LOAD_JIT=false
+TTS_SEGMENT_SOFT_MIN_CHARS=12
+TTS_SEGMENT_SOFT_MAX_CHARS=20
+TTS_SEGMENT_HARD_MAX_CHARS=28
 DEFAULT_TTS_REFERENCE_AUDIO_PATH=./storage/vendor/CosyVoice/asset/zero_shot_prompt.wav
 DEFAULT_TTS_REFERENCE_TEXT=希望你以后能够做得比我还好。
 DEFAULT_TTS_SPEED=1.0
@@ -135,6 +143,13 @@ DEFAULT_TTS_EMOTION_ENABLED=true
 ```
 
 说明：`voice_id` 现在只作为兼容展示字段保留，真实发声由 `avatar_config` 中的参考音频、参考文本、语速和情感开关决定。
+
+### 4060 本机策略
+
+- 当前推荐把 `CosyVoice2` 主模型放在 `cuda`，但把 `TTS_COSYVOICE_ONNX_PROVIDER` 固定为 `cpu`，避免 ONNX 前端额外吃显存。
+- `RAG_RERANKER_DEVICE` 和 `KNOWLEDGE_EMBEDDING_DEVICE` 继续保持 `cpu` 即可，不需要为了“统一环境”把知识库和 reranker 一起切到 GPU。
+- 这轮优先优化的是现有本机链路：更短的 TTS 分段、更早的首包发出、参考音频前处理缓存、前端 jitter buffer。
+- `async_cosyvoice` / 官方 gRPC / Triton 暂时不接入。本轮先把本机 4060 方案跑顺，后续再做外部化。
 
 这一轮已经补上：
 
@@ -183,7 +198,13 @@ TTS_ENGINE=cosyvoice
 TTS_COSYVOICE_MODEL_PATH=./storage/models/CosyVoice2-0.5B
 TTS_COSYVOICE_CODE_PATH=./storage/vendor/CosyVoice
 TTS_COSYVOICE_DEVICE=cuda
+TTS_COSYVOICE_ONNX_PROVIDER=cpu
 TTS_COSYVOICE_SAMPLE_RATE=24000
+TTS_COSYVOICE_FP16=true
+TTS_COSYVOICE_LOAD_JIT=false
+TTS_SEGMENT_SOFT_MIN_CHARS=12
+TTS_SEGMENT_SOFT_MAX_CHARS=20
+TTS_SEGMENT_HARD_MAX_CHARS=28
 DEFAULT_TTS_REFERENCE_AUDIO_PATH=./storage/vendor/CosyVoice/asset/zero_shot_prompt.wav
 DEFAULT_TTS_REFERENCE_TEXT=希望你以后能够做得比我还好。
 DEFAULT_TTS_SPEED=1.0
