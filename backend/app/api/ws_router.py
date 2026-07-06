@@ -196,9 +196,6 @@ async def stream_assistant_reply(
             }
         )
 
-    await send_avatar_phase("thinking", "reply_started")
-    await send_json(emotion_payload)
-
     async def produce_text() -> None:
         async for event in chat_service.stream_reply(
             content,
@@ -285,8 +282,8 @@ async def stream_assistant_reply(
                     speed=avatar.tts_speed,
                     tts_emotion_enabled=avatar.tts_emotion_enabled,
                 ):
-                    mark_metric("tts_first_audio_chunk_ms")
                     if tts_chunk.audio_bytes:
+                        mark_metric("tts_first_audio_chunk_ms")
                         chunk_sent_at_ms = elapsed_ms()
                         if trace.audio_chunk_count == 0:
                             await send_avatar_phase("speaking", "first_audio_chunk")
@@ -336,6 +333,7 @@ async def stream_assistant_reply(
                     tts_emotion_enabled=avatar.tts_emotion_enabled,
                 )
                 if tts_chunk.audio_bytes:
+                    mark_metric("tts_first_audio_chunk_ms")
                     chunk_sent_at_ms = elapsed_ms()
                     if trace.audio_chunk_count == 0:
                         await send_avatar_phase("speaking", "first_audio_chunk")
@@ -357,15 +355,32 @@ async def stream_assistant_reply(
         if use_streaming_audio:
             await send_json({"type": "audio_done", "reply_id": reply_id})
 
-    producer_task = asyncio.create_task(produce_text())
-    consumer_task = asyncio.create_task(consume_tts())
-    await producer_task
-    await consumer_task
-    await send_avatar_phase("idle", "reply_done")
-    result.metrics = metrics
-    await send_json({"type": "done", "session_id": session_id})
-    get_avatar_trace_service().enqueue_trace(trace)
-    return result
+    producer_task: asyncio.Task[None] | None = None
+    consumer_task: asyncio.Task[None] | None = None
+
+    try:
+        await send_avatar_phase("thinking", "reply_started")
+        await send_json(emotion_payload)
+        producer_task = asyncio.create_task(produce_text())
+        consumer_task = asyncio.create_task(consume_tts())
+        await producer_task
+        await consumer_task
+        await send_avatar_phase("idle", "reply_done")
+        result.metrics = metrics
+        await send_json({"type": "done", "session_id": session_id})
+        return result
+    except Exception:
+        for task in (producer_task, consumer_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (producer_task, consumer_task) if task is not None),
+            return_exceptions=True,
+        )
+        raise
+    finally:
+        result.metrics = metrics
+        get_avatar_trace_service().enqueue_trace(trace)
 
 
 async def process_text_message(

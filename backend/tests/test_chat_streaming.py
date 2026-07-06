@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -310,6 +311,183 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("llm_first_delta_ms", trace_service.enqueued_payloads[0]["metrics"])
         self.assertIn("text_done_ms", trace_service.enqueued_payloads[0]["metrics"])
         self.assertIn("audio_done_ms", trace_service.enqueued_payloads[0]["metrics"])
+        self.assertNotIn("tts_first_audio_chunk_ms", trace_service.enqueued_payloads[0]["metrics"])
+
+    async def test_streaming_audio_metric_ignores_empty_chunks(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+
+            async def send_json(self, payload: dict[str, object]) -> None:
+                self.messages.append(payload)
+
+        class FakeChatService:
+            settings = SimpleNamespace(chat_mode="rag")
+
+            async def stream_reply(self, *args, **kwargs):
+                yield ReplyStreamEvent(kind="text_delta", content="Chunked audio.")
+                yield ReplyStreamEvent(kind="tts_segment", content="Chunked audio.")
+                yield ReplyStreamEvent(kind="final", text="Chunked audio.", spoken_text="Chunked audio.")
+
+            async def analyze_emotion(self, user_text: str, reply_text: str) -> EmotionAnalysis:
+                return EmotionAnalysis(
+                    label="neutral",
+                    confidence=0.5,
+                    keywords=[],
+                    reason="final emotion",
+                    source="llm",
+                )
+
+        class FakeTTSService:
+            settings = SimpleNamespace(tts_engine="cosyvoice")
+
+            async def stream_synthesize_segment(self, *args, **kwargs):
+                yield StreamingTTSChunk(
+                    seq=0,
+                    chunk_index=0,
+                    text="Chunked audio.",
+                    audio_bytes=b"",
+                    phonemes=[],
+                    offset_ms=0,
+                    sample_rate=24000,
+                    channels=1,
+                    encoding="pcm16le",
+                    is_final=False,
+                )
+                await asyncio.sleep(0.01)
+                yield StreamingTTSChunk(
+                    seq=0,
+                    chunk_index=1,
+                    text="Chunked audio.",
+                    audio_bytes=b"\x01\x02",
+                    phonemes=[],
+                    offset_ms=20,
+                    sample_rate=24000,
+                    channels=1,
+                    encoding="pcm16le",
+                    is_final=True,
+                )
+
+        websocket = FakeWebSocket()
+        trace_service = FakeTraceService()
+
+        with patch("app.api.ws_router.get_avatar_trace_service", return_value=trace_service):
+            await stream_assistant_reply(
+                websocket=websocket,
+                session_id="session-3",
+                avatar=SimpleNamespace(
+                    persona="guide",
+                    voice_id="voice",
+                    tts_reference_audio_path="prompt.wav",
+                    tts_reference_text="prompt text",
+                    tts_speed=1.0,
+                    tts_emotion_enabled=True,
+                ),
+                content="Chunked audio.",
+                query_text="Chunked audio.",
+                history=[],
+                chat_service=FakeChatService(),
+                tts_service=FakeTTSService(),
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                reply_id="reply-3",
+                locked_emotion="neutral",
+                emotion_payload={
+                    "type": "emotion",
+                    "stage": "preview",
+                    "value": "neutral",
+                    "confidence": 0.5,
+                    "keywords": [],
+                    "reason": "quick",
+                    "source": "heuristic",
+                },
+                started_at=0.0,
+            )
+
+        phase_messages = [item for item in websocket.messages if item["type"] == "avatar_phase"]
+        self.assertEqual(
+            [item["phase"] for item in phase_messages],
+            ["thinking", "speaking", "cooldown", "idle"],
+        )
+        self.assertEqual(trace_service.enqueued_payloads[0]["audio_chunk_count"], 1)
+        self.assertIn("tts_first_audio_chunk_ms", trace_service.enqueued_payloads[0]["metrics"])
+        self.assertGreaterEqual(
+            trace_service.enqueued_payloads[0]["metrics"]["tts_first_audio_chunk_ms"],
+            trace_service.enqueued_payloads[0]["metrics"]["avatar_phase_speaking_ms"],
+        )
+
+    async def test_trace_is_enqueued_even_when_streaming_reply_fails(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+
+            async def send_json(self, payload: dict[str, object]) -> None:
+                self.messages.append(payload)
+
+        class FakeChatService:
+            settings = SimpleNamespace(chat_mode="rag")
+
+            async def stream_reply(self, *args, **kwargs):
+                yield ReplyStreamEvent(kind="text_delta", content="Before failure.")
+                yield ReplyStreamEvent(kind="tts_segment", content="Before failure.")
+                yield ReplyStreamEvent(kind="final", text="Before failure.", spoken_text="Before failure.")
+
+            async def analyze_emotion(self, user_text: str, reply_text: str) -> EmotionAnalysis:
+                return EmotionAnalysis(
+                    label="neutral",
+                    confidence=0.5,
+                    keywords=[],
+                    reason="final emotion",
+                    source="llm",
+                )
+
+        class FailingTTSService:
+            settings = SimpleNamespace(tts_engine="cosyvoice")
+
+            async def stream_synthesize_segment(self, *args, **kwargs):
+                raise RuntimeError("tts failed")
+                yield  # pragma: no cover
+
+        websocket = FakeWebSocket()
+        trace_service = FakeTraceService()
+
+        with (
+            patch("app.api.ws_router.get_avatar_trace_service", return_value=trace_service),
+            self.assertRaises(RuntimeError),
+        ):
+            await stream_assistant_reply(
+                websocket=websocket,
+                session_id="session-4",
+                avatar=SimpleNamespace(
+                    persona="guide",
+                    voice_id="voice",
+                    tts_reference_audio_path="prompt.wav",
+                    tts_reference_text="prompt text",
+                    tts_speed=1.0,
+                    tts_emotion_enabled=True,
+                ),
+                content="This one fails.",
+                query_text="This one fails.",
+                history=[],
+                chat_service=FakeChatService(),
+                tts_service=FailingTTSService(),
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                reply_id="reply-4",
+                locked_emotion="neutral",
+                emotion_payload={
+                    "type": "emotion",
+                    "stage": "preview",
+                    "value": "neutral",
+                    "confidence": 0.5,
+                    "keywords": [],
+                    "reason": "quick",
+                    "source": "heuristic",
+                },
+                started_at=0.0,
+            )
+
+        self.assertEqual(len(trace_service.enqueued_payloads), 1)
+        self.assertEqual(trace_service.enqueued_payloads[0]["reply_id"], "reply-4")
+        self.assertIn("avatar_phase_thinking_ms", trace_service.enqueued_payloads[0]["metrics"])
 
 
 class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):
