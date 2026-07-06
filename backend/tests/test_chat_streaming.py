@@ -202,6 +202,11 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(trace_payload["streaming"])
         self.assertEqual(trace_payload["segment_count"], 1)
         self.assertEqual(trace_payload["audio_chunk_count"], 1)
+        self.assertIn("llm_first_delta_ms", trace_payload["metrics"])
+        self.assertIn("tts_first_segment_ms", trace_payload["metrics"])
+        self.assertIn("tts_first_audio_chunk_ms", trace_payload["metrics"])
+        self.assertIn("text_done_ms", trace_payload["metrics"])
+        self.assertIn("audio_done_ms", trace_payload["metrics"])
         self.assertIn("avatar_phase_thinking_ms", trace_payload["metrics"])
         self.assertIn("avatar_phase_speaking_ms", trace_payload["metrics"])
         self.assertIn("avatar_phase_cooldown_ms", trace_payload["metrics"])
@@ -302,6 +307,9 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
             ["avatar_phase_thinking_ms", "avatar_phase_cooldown_ms", "avatar_phase_idle_ms"],
         )
         self.assertEqual(trace_service.enqueued_payloads[0]["audio_chunk_count"], 0)
+        self.assertIn("llm_first_delta_ms", trace_service.enqueued_payloads[0]["metrics"])
+        self.assertIn("text_done_ms", trace_service.enqueued_payloads[0]["metrics"])
+        self.assertIn("audio_done_ms", trace_service.enqueued_payloads[0]["metrics"])
 
 
 class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):

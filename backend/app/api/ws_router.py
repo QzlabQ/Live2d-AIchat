@@ -177,8 +177,10 @@ async def stream_assistant_reply(
         return int((perf_counter() - started_at) * 1000)
 
     def mark_metric(name: str) -> None:
+        at_ms = elapsed_ms()
+        trace.mark(name, at_ms)
         if name not in metrics:
-            metrics[name] = elapsed_ms()
+            metrics[name] = trace.metrics[name]
 
     async def send_avatar_phase(phase: str, reason: str) -> None:
         at_ms = elapsed_ms()
@@ -359,8 +361,6 @@ async def stream_assistant_reply(
     consumer_task = asyncio.create_task(consume_tts())
     await producer_task
     await consumer_task
-    trace.mark("text_done_ms", metrics.get("text_done_ms", elapsed_ms()))
-    trace.mark("audio_done_ms", metrics.get("audio_done_ms", elapsed_ms()))
     await send_avatar_phase("idle", "reply_done")
     result.metrics = metrics
     await send_json({"type": "done", "session_id": session_id})
