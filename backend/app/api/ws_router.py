@@ -21,6 +21,8 @@ from app.services.conversation_state import (
     upsert_clarification_state,
 )
 from app.services.emotion import EmotionAnalysis, get_emotion_analyzer
+from app.services.avatar_trace import ReplyTrace, get_avatar_trace_service
+from app.services.rag import get_rag_service
 from app.services.tts import TTSService, get_tts_service
 
 logger = logging.getLogger(__name__)
@@ -159,15 +161,40 @@ async def stream_assistant_reply(
         and getattr(getattr(tts_service, "settings", None), "tts_engine", "cosyvoice") == "cosyvoice"
     )
     metrics: dict[str, int] = {}
+    trace = ReplyTrace(
+        reply_id=reply_id,
+        session_id=session_id,
+        streaming=use_streaming_audio,
+        chat_mode=str(getattr(getattr(chat_service, "settings", None), "chat_mode", "unknown")),
+        tts_engine=str(getattr(getattr(tts_service, "settings", None), "tts_engine", "unknown")),
+    )
 
     async def send_json(payload: dict[str, object]) -> None:
         async with send_lock:
             await websocket.send_json(payload)
 
+    def elapsed_ms() -> int:
+        return int((perf_counter() - started_at) * 1000)
+
     def mark_metric(name: str) -> None:
         if name not in metrics:
-            metrics[name] = int((perf_counter() - started_at) * 1000)
+            metrics[name] = elapsed_ms()
 
+    async def send_avatar_phase(phase: str, reason: str) -> None:
+        at_ms = elapsed_ms()
+        trace.mark(f"avatar_phase_{phase}_ms", at_ms)
+        metrics[f"avatar_phase_{phase}_ms"] = trace.metrics[f"avatar_phase_{phase}_ms"]
+        await send_json(
+            {
+                "type": "avatar_phase",
+                "reply_id": reply_id,
+                "phase": phase,
+                "at_ms": at_ms,
+                "reason": reason,
+            }
+        )
+
+    await send_avatar_phase("thinking", "reply_started")
     await send_json(emotion_payload)
 
     async def produce_text() -> None:
@@ -184,6 +211,7 @@ async def stream_assistant_reply(
 
             if event.kind == "tts_segment":
                 mark_metric("tts_first_segment_ms")
+                trace.segment_count += 1
                 await segment_queue.put(event.content)
                 continue
 
@@ -257,6 +285,10 @@ async def stream_assistant_reply(
                 ):
                     mark_metric("tts_first_audio_chunk_ms")
                     if tts_chunk.audio_bytes:
+                        chunk_sent_at_ms = elapsed_ms()
+                        if trace.audio_chunk_count == 0:
+                            await send_avatar_phase("speaking", "first_audio_chunk")
+                        trace.observe_audio_chunk(chunk_sent_at_ms)
                         send_started_at = perf_counter()
                         await send_json(
                             {
@@ -302,6 +334,10 @@ async def stream_assistant_reply(
                     tts_emotion_enabled=avatar.tts_emotion_enabled,
                 )
                 if tts_chunk.audio_bytes:
+                    chunk_sent_at_ms = elapsed_ms()
+                    if trace.audio_chunk_count == 0:
+                        await send_avatar_phase("speaking", "first_audio_chunk")
+                    trace.observe_audio_chunk(chunk_sent_at_ms)
                     await send_json(
                         {
                             "type": "audio",
@@ -315,6 +351,7 @@ async def stream_assistant_reply(
             seq += 1
 
         mark_metric("audio_done_ms")
+        await send_avatar_phase("cooldown", "audio_done")
         if use_streaming_audio:
             await send_json({"type": "audio_done", "reply_id": reply_id})
 
@@ -322,8 +359,12 @@ async def stream_assistant_reply(
     consumer_task = asyncio.create_task(consume_tts())
     await producer_task
     await consumer_task
+    trace.mark("text_done_ms", metrics.get("text_done_ms", elapsed_ms()))
+    trace.mark("audio_done_ms", metrics.get("audio_done_ms", elapsed_ms()))
+    await send_avatar_phase("idle", "reply_done")
     result.metrics = metrics
     await send_json({"type": "done", "session_id": session_id})
+    get_avatar_trace_service().enqueue_trace(trace)
     return result
 
 

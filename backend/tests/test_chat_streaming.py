@@ -10,6 +10,14 @@ from app.services.rag import PreparedRAGAnswer
 from app.services.tts import StreamingTTSChunk
 
 
+class FakeTraceService:
+    def __init__(self) -> None:
+        self.enqueued_payloads: list[dict[str, object]] = []
+
+    def enqueue_trace(self, trace) -> None:
+        self.enqueued_payloads.append(trace.to_payload())
+
+
 class TTSSegmenterTestCase(unittest.TestCase):
     def test_prefers_soft_boundary_even_when_strong_boundary_exists_later(self) -> None:
         segmenter = TTSSegmenter(soft_min_chars=12, soft_max_chars=20, hard_max_chars=28)
@@ -58,6 +66,8 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 self.messages.append(payload)
 
         class FakeChatService:
+            settings = SimpleNamespace(chat_mode="rag")
+
             async def stream_reply(
                 self,
                 user_text: str,
@@ -66,21 +76,21 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 query_text: str | None = None,
                 history: list[dict[str, str]] | None = None,
             ):
-                yield ReplyStreamEvent(kind="text_delta", content="第一句。")
-                yield ReplyStreamEvent(kind="tts_segment", content="第一句。")
+                yield ReplyStreamEvent(kind="text_delta", content="Hello there.")
+                yield ReplyStreamEvent(kind="tts_segment", content="Hello there.")
                 yield ReplyStreamEvent(
                     kind="final",
-                    text="第一句。如果你想问商铺时间，我也可以继续帮你看。",
-                    spoken_text="第一句。如果你想问商铺时间，我也可以继续帮你看。",
+                    text="Hello there. Ask me anything else.",
+                    spoken_text="Hello there. Ask me anything else.",
                     sources=[
                         SimpleNamespace(
                             filename="guide.docx",
-                            title="开放时间说明",
+                            title="Opening hours",
                             category="schedule",
                             chunk_index=0,
                             retrieval_score=0.88,
                             rerank_score=0.91,
-                            text="景区整体开放时间为9:00-21:30，商铺营业时间一般为9:30-21:00。",
+                            text="Open daily from 09:00 to 21:00.",
                         )
                     ],
                     mode="rag",
@@ -95,17 +105,19 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 return EmotionAnalysis(
                     label="thinking",
                     confidence=0.88,
-                    keywords=["历史"],
+                    keywords=["history"],
                     reason="final emotion",
                     source="llm",
                 )
 
         class FakeTTSService:
+            settings = SimpleNamespace(tts_engine="cosyvoice")
+
             async def stream_synthesize_segment(self, *args, **kwargs):
                 yield StreamingTTSChunk(
                     seq=0,
                     chunk_index=0,
-                    text="第一句。",
+                    text="Hello there.",
                     audio_bytes=b"\x01\x02\x03\x04",
                     phonemes=[{"ph": "a", "start": 0.0, "end": 0.1, "openY": 0.8, "form": 0.0}],
                     offset_ms=0,
@@ -124,41 +136,49 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
             tts_speed=1.0,
             tts_emotion_enabled=True,
         )
+        trace_service = FakeTraceService()
 
-        result = await stream_assistant_reply(
-            websocket=websocket,
-            session_id="session-1",
-            avatar=avatar,
-            content="介绍一下这里",
-            query_text="介绍一下这里",
-            history=[{"role": "user", "content": "介绍一下这里"}],
-            chat_service=FakeChatService(),
-            tts_service=FakeTTSService(),
-            capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
-            reply_id="reply-1",
-            locked_emotion="happy",
-            emotion_payload={
-                "type": "emotion",
-                "stage": "preview",
-                "value": "happy",
-                "confidence": 0.7,
-                "keywords": [],
-                "reason": "quick",
-                "source": "heuristic",
-            },
-            started_at=0.0,
-        )
+        with patch("app.api.ws_router.get_avatar_trace_service", return_value=trace_service):
+            result = await stream_assistant_reply(
+                websocket=websocket,
+                session_id="session-1",
+                avatar=avatar,
+                content="Introduce this place.",
+                query_text="Introduce this place.",
+                history=[{"role": "user", "content": "Introduce this place."}],
+                chat_service=FakeChatService(),
+                tts_service=FakeTTSService(),
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                reply_id="reply-1",
+                locked_emotion="happy",
+                emotion_payload={
+                    "type": "emotion",
+                    "stage": "preview",
+                    "value": "happy",
+                    "confidence": 0.7,
+                    "keywords": [],
+                    "reason": "quick",
+                    "source": "heuristic",
+                },
+                started_at=0.0,
+            )
 
         message_types = [item["type"] for item in websocket.messages]
         emotion_messages = [item for item in websocket.messages if item["type"] == "emotion"]
+        phase_messages = [item for item in websocket.messages if item["type"] == "avatar_phase"]
         reply_meta = next(item for item in websocket.messages if item["type"] == "reply_meta")
         sources_message = next(item for item in websocket.messages if item["type"] == "sources")
+        trace_payload = trace_service.enqueued_payloads[0]
 
         self.assertIn("tts_audio_chunk", message_types)
         self.assertIn("tts_viseme_chunk", message_types)
         self.assertIn("reply_meta", message_types)
         self.assertIn("text_done", message_types)
         self.assertIn("audio_done", message_types)
+        self.assertEqual(
+            [item["phase"] for item in phase_messages],
+            ["thinking", "speaking", "cooldown", "idle"],
+        )
         self.assertEqual(len(emotion_messages), 2)
         self.assertEqual(emotion_messages[0]["stage"], "preview")
         self.assertEqual(emotion_messages[0]["value"], "happy")
@@ -170,11 +190,118 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sources_message["reply_id"], "reply-1")
         self.assertEqual(
             sources_message["items"][0]["excerpt"],
-            "景区整体开放时间为9:00-21:30，商铺营业时间一般为9:30-21:00。",
+            "Open daily from 09:00 to 21:00.",
         )
-        self.assertEqual(result.text, "第一句。如果你想问商铺时间，我也可以继续帮你看。")
+        self.assertEqual(result.text, "Hello there. Ask me anything else.")
         self.assertEqual(result.mode, "rag")
         self.assertEqual(result.emotion.label, "thinking")
+        self.assertEqual(len(trace_service.enqueued_payloads), 1)
+        self.assertEqual(trace_payload["reply_id"], "reply-1")
+        self.assertEqual(trace_payload["chat_mode"], "rag")
+        self.assertEqual(trace_payload["tts_engine"], "cosyvoice")
+        self.assertTrue(trace_payload["streaming"])
+        self.assertEqual(trace_payload["segment_count"], 1)
+        self.assertEqual(trace_payload["audio_chunk_count"], 1)
+        self.assertIn("avatar_phase_thinking_ms", trace_payload["metrics"])
+        self.assertIn("avatar_phase_speaking_ms", trace_payload["metrics"])
+        self.assertIn("avatar_phase_cooldown_ms", trace_payload["metrics"])
+        self.assertIn("avatar_phase_idle_ms", trace_payload["metrics"])
+
+    async def test_streaming_without_audio_falls_back_to_cooldown_and_idle(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+
+            async def send_json(self, payload: dict[str, object]) -> None:
+                self.messages.append(payload)
+
+        class FakeChatService:
+            settings = SimpleNamespace(chat_mode="template")
+
+            async def stream_reply(
+                self,
+                user_text: str,
+                persona: str | None = None,
+                *,
+                query_text: str | None = None,
+                history: list[dict[str, str]] | None = None,
+            ):
+                yield ReplyStreamEvent(kind="text_delta", content="No audio.")
+                yield ReplyStreamEvent(
+                    kind="final",
+                    text="No audio available.",
+                    spoken_text="No audio available.",
+                )
+
+            async def analyze_emotion(self, user_text: str, reply_text: str) -> EmotionAnalysis:
+                return EmotionAnalysis(
+                    label="neutral",
+                    confidence=0.66,
+                    keywords=["audio"],
+                    reason="no audio",
+                    source="llm",
+                )
+
+        class FakeTTSService:
+            settings = SimpleNamespace(tts_engine="cosyvoice")
+
+            async def stream_synthesize_segment(self, *args, **kwargs):
+                if False:
+                    yield None
+
+        websocket = FakeWebSocket()
+        trace_service = FakeTraceService()
+
+        with patch("app.api.ws_router.get_avatar_trace_service", return_value=trace_service):
+            await stream_assistant_reply(
+                websocket=websocket,
+                session_id="session-2",
+                avatar=SimpleNamespace(
+                    persona="guide",
+                    voice_id="voice",
+                    tts_reference_audio_path="prompt.wav",
+                    tts_reference_text="prompt text",
+                    tts_speed=1.0,
+                    tts_emotion_enabled=True,
+                ),
+                content="Finish cleanly without audio.",
+                query_text="Finish cleanly without audio.",
+                history=[],
+                chat_service=FakeChatService(),
+                tts_service=FakeTTSService(),
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                reply_id="reply-2",
+                locked_emotion="neutral",
+                emotion_payload={
+                    "type": "emotion",
+                    "stage": "preview",
+                    "value": "neutral",
+                    "confidence": 0.6,
+                    "keywords": [],
+                    "reason": "quick",
+                    "source": "heuristic",
+                },
+                started_at=0.0,
+            )
+
+        phase_messages = [item for item in websocket.messages if item["type"] == "avatar_phase"]
+        phase_metric_names = [
+            name
+            for name in trace_service.enqueued_payloads[0]["metrics"]
+            if name.startswith("avatar_phase_")
+        ]
+
+        self.assertEqual(
+            [item["phase"] for item in phase_messages],
+            ["thinking", "cooldown", "idle"],
+        )
+        self.assertNotIn("speaking", [item["phase"] for item in phase_messages])
+        self.assertIn("audio_done", [item["type"] for item in websocket.messages])
+        self.assertEqual(
+            phase_metric_names,
+            ["avatar_phase_thinking_ms", "avatar_phase_cooldown_ms", "avatar_phase_idle_ms"],
+        )
+        self.assertEqual(trace_service.enqueued_payloads[0]["audio_chunk_count"], 0)
 
 
 class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):

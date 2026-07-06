@@ -12,6 +12,7 @@ from app.api.ws_router import websocket_router
 from app.core.config import get_settings
 from app.db.seed import ensure_default_avatar_config
 from app.db.session import init_db, shutdown_db
+from app.services.avatar_trace import get_avatar_trace_service
 from app.services.tts import get_tts_service
 
 logger = logging.getLogger(__name__)
@@ -20,14 +21,17 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    trace_service = get_avatar_trace_service()
     try:
         await init_db()
         await ensure_default_avatar_config()
         await asyncio.to_thread(get_tts_service().warmup)
+        await trace_service.start()
         logger.info("Database initialization finished.")
     except Exception:  # pragma: no cover - startup should remain resilient
         logger.exception("Backend startup finished with degraded database state.")
     yield
+    await trace_service.stop()
     await shutdown_db()
 
 
