@@ -98,6 +98,8 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
   - `happy` → 眉毛上扬 + 嘴角上扬
   - `thinking` → 眼神偏移 + 眉毛微蹙
   - `excited` → 眼睛睁大 + 手势
+- [x] 动作协调：游客发问后先进入 `thinking`，首个真实音频 chunk 到达后切到 `speaking`，播放结束后 `cooldown -> idle`
+- [x] 后端 reply trace：异步记录 `llm_first_delta_ms / tts_first_segment_ms / tts_first_audio_chunk_ms / text_done_ms / audio_done_ms / avatar_phase_*`，落盘到 `backend/logs/avatar_trace.log`
 
 **里程碑验收**：问"这里有什么历史故事？"→ 口型同步回答，表情自然
 
