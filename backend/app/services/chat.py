@@ -230,6 +230,7 @@ class BaseGuideChatService:
         followup_question: str,
         missing_slots: list[str],
         confidence_note: str,
+        fallback_text: str = "",
     ) -> AsyncIterator[ReplyStreamEvent]:
         display = DisplayChunker(flush_chars=self.settings.websocket_chunk_size)
         tts_segmenter = TTSSegmenter(
@@ -238,14 +239,39 @@ class BaseGuideChatService:
             hard_max_chars=self.settings.tts_segment_hard_max_chars,
         )
         full_parts: list[str] = []
+        emitted_output = False
+        iterator = pieces.__aiter__()
 
-        async for piece in pieces:
+        while True:
+            try:
+                piece = await anext(iterator)
+            except StopAsyncIteration:
+                break
+            except Exception:
+                if fallback_text and not emitted_output:
+                    display = DisplayChunker(flush_chars=self.settings.websocket_chunk_size)
+                    tts_segmenter = TTSSegmenter(
+                        soft_min_chars=self.settings.tts_segment_soft_min_chars,
+                        soft_max_chars=self.settings.tts_segment_soft_max_chars,
+                        hard_max_chars=self.settings.tts_segment_hard_max_chars,
+                    )
+                    full_parts = [fallback_text]
+                    for chunk in display.feed(fallback_text):
+                        emitted_output = True
+                        yield ReplyStreamEvent(kind="text_delta", content=chunk)
+                    for segment in tts_segmenter.feed(fallback_text):
+                        emitted_output = True
+                        yield ReplyStreamEvent(kind="tts_segment", content=segment)
+                break
+
             if not piece:
                 continue
             full_parts.append(piece)
             for chunk in display.feed(piece):
+                emitted_output = True
                 yield ReplyStreamEvent(kind="text_delta", content=chunk)
             for segment in tts_segmenter.feed(piece):
+                emitted_output = True
                 yield ReplyStreamEvent(kind="tts_segment", content=segment)
 
         for chunk in display.flush():
@@ -354,12 +380,31 @@ class RAGGuideChatService(BaseGuideChatService):
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> AsyncIterator[ReplyStreamEvent]:
-        prepared = await get_rag_service().prepare_stream_answer(
+        rag_service = get_rag_service()
+        prepared = await rag_service.prepare_stream_answer(
             query_text or user_text,
             persona=persona,
             history=history or [],
         )
         fallback_text = prepared.answer_text or prepared.fallback_text or prepared.spoken_text
+
+        if prepared.llm_messages:
+            llm_client = getattr(rag_service, "llm", None)
+            if llm_client is not None and hasattr(llm_client, "stream_complete"):
+                async for event in self._stream_from_pieces(
+                    llm_client.stream_complete(prepared.llm_messages),
+                    sources=prepared.sources,
+                    confidence=prepared.confidence,
+                    mode="rag",
+                    reply_kind=prepared.reply_kind,
+                    needs_followup=prepared.needs_followup,
+                    followup_question=prepared.followup_question,
+                    missing_slots=prepared.missing_slots,
+                    confidence_note=prepared.confidence_note,
+                    fallback_text=fallback_text,
+                ):
+                    yield event
+                return
 
         async for event in self._stream_from_pieces(
             self._iter_pieces(self.chunk_text(fallback_text)),

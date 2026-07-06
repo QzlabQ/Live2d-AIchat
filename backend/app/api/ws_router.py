@@ -197,6 +197,7 @@ async def stream_assistant_reply(
         )
 
     async def produce_text() -> None:
+        mark_metric("llm_stream_start_ms")
         async for event in chat_service.stream_reply(
             content,
             persona=avatar.persona,
