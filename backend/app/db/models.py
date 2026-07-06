@@ -48,6 +48,39 @@ class Message(Base):
     session: Mapped[Session] = relationship(back_populates="messages")
 
 
+class ConversationState(Base):
+    __tablename__ = "conversation_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    state_type: Mapped[str] = mapped_column(String(40), nullable=False, default="rag_clarification")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    original_question: Mapped[str] = mapped_column(Text, nullable=False)
+    assistant_followup_question: Mapped[str] = mapped_column(Text, nullable=False)
+    missing_slots: Mapped[list[str]] = mapped_column(
+        MutableList.as_mutable(JSON), default=list, nullable=False
+    )
+    provisional_answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    used_source_indexes: Mapped[list[int]] = mapped_column(
+        MutableList.as_mutable(JSON), default=list, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    session: Mapped[Session] = relationship()
+
+
 class AvatarConfig(Base):
     __tablename__ = "avatar_config"
 

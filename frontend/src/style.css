@@ -510,6 +510,61 @@ button {
   overflow-wrap: anywhere;
 }
 
+.bubble-sources {
+  margin-top: 0.85rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(22, 48, 70, 0.1);
+}
+
+.bubble-subsection-title {
+  margin: 0 0 0.55rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sea-soft);
+}
+
+.source-card {
+  padding: 0.72rem 0.8rem;
+  border-radius: 0.9rem;
+  background: rgba(25, 74, 103, 0.06);
+}
+
+.source-card + .source-card {
+  margin-top: 0.55rem;
+}
+
+.source-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: baseline;
+}
+
+.source-card-head strong {
+  color: var(--ink-strong);
+  font-size: 0.92rem;
+}
+
+.source-card-head span {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.source-excerpt,
+.followup-hint {
+  margin: 0.42rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.followup-hint {
+  margin-top: 0.75rem;
+  color: var(--sea-soft);
+}
+
 .cursor {
   display: inline-block;
   margin-left: 0.15rem;

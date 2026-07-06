@@ -13,6 +13,13 @@ from app.db.models import AvatarConfig, Message, Session
 from app.db.session import AsyncSessionFactory
 from app.services.asr import get_asr_service
 from app.services.chat import ReplyStreamEvent, get_chat_service
+from app.services.conversation_state import (
+    cancel_pending_clarification_state,
+    get_active_clarification_state,
+    load_recent_history,
+    resolve_pending_clarification_state,
+    upsert_clarification_state,
+)
 from app.services.emotion import EmotionAnalysis, get_emotion_analyzer
 from app.services.tts import TTSService, get_tts_service
 
@@ -34,6 +41,11 @@ class ReplyExecutionResult:
     mode: str = "template"
     emotion: EmotionAnalysis | None = None
     metrics: dict[str, int] = field(default_factory=dict)
+    reply_kind: str = "answer"
+    needs_followup: bool = False
+    followup_question: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    confidence_note: str = "confirmed"
 
 
 async def send_error(websocket: WebSocket, code: str, message: str) -> None:
@@ -75,11 +87,37 @@ def resolve_client_capabilities(payload: dict[str, object]) -> ClientCapabilitie
     )
 
 
-def serialize_sources(sources: list[object], mode: str) -> dict[str, object] | None:
+def build_source_excerpt(text: str, limit: int = 140) -> str:
+    cleaned = " ".join(str(text).split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"
+
+
+def serialize_reply_meta(
+    *,
+    reply_id: str,
+    reply_kind: str,
+    needs_followup: bool,
+    missing_slots: list[str],
+    confidence_note: str,
+) -> dict[str, object]:
+    return {
+        "type": "reply_meta",
+        "reply_id": reply_id,
+        "reply_kind": reply_kind,
+        "needs_followup": needs_followup,
+        "missing_slots": missing_slots,
+        "confidence_note": confidence_note,
+    }
+
+
+def serialize_sources(sources: list[object], mode: str, reply_id: str) -> dict[str, object] | None:
     if not sources:
         return None
     return {
         "type": "sources",
+        "reply_id": reply_id,
         "mode": mode,
         "items": [
             {
@@ -89,6 +127,7 @@ def serialize_sources(sources: list[object], mode: str) -> dict[str, object] | N
                 "chunk_index": item.chunk_index,
                 "retrieval_score": item.retrieval_score,
                 "rerank_score": item.rerank_score,
+                "excerpt": build_source_excerpt(getattr(item, "text", "")),
             }
             for item in sources
         ],
@@ -101,6 +140,8 @@ async def stream_assistant_reply(
     session_id: str,
     avatar,
     content: str,
+    query_text: str,
+    history: list[dict[str, str]],
     chat_service,
     tts_service: TTSService,
     capabilities: ClientCapabilities,
@@ -130,7 +171,12 @@ async def stream_assistant_reply(
     await send_json(emotion_payload)
 
     async def produce_text() -> None:
-        async for event in chat_service.stream_reply(content, persona=avatar.persona):
+        async for event in chat_service.stream_reply(
+            content,
+            persona=avatar.persona,
+            query_text=query_text,
+            history=history,
+        ):
             if event.kind == "text_delta":
                 mark_metric("llm_first_delta_ms")
                 await send_json({"type": "text_delta", "content": event.content})
@@ -146,6 +192,11 @@ async def stream_assistant_reply(
                 result.sources = event.sources
                 result.confidence = event.confidence
                 result.mode = event.mode
+                result.reply_kind = event.reply_kind
+                result.needs_followup = event.needs_followup
+                result.followup_question = event.followup_question
+                result.missing_slots = list(event.missing_slots)
+                result.confidence_note = event.confidence_note
 
         await segment_queue.put(None)
         if result.text:
@@ -171,11 +222,20 @@ async def stream_assistant_reply(
                 }
             )
         mark_metric("text_done_ms")
-        if use_streaming_audio:
-            await send_json({"type": "text_done", "reply_id": reply_id})
-        sources_payload = serialize_sources(result.sources, result.mode)
+        await send_json(
+            serialize_reply_meta(
+                reply_id=reply_id,
+                reply_kind=result.reply_kind,
+                needs_followup=result.needs_followup,
+                missing_slots=result.missing_slots,
+                confidence_note=result.confidence_note,
+            )
+        )
+        sources_payload = serialize_sources(result.sources, result.mode, reply_id)
         if sources_payload is not None:
             await send_json(sources_payload)
+        if use_streaming_audio:
+            await send_json({"type": "text_done", "reply_id": reply_id})
 
     async def consume_tts() -> None:
         seq = 0
@@ -280,6 +340,24 @@ async def process_text_message(
 
     await save_message(db_session, session_id=session_id, role="user", content=content)
     avatar = await get_avatar_config(db_session)
+    history = await load_recent_history(db_session, session_id=session_id, limit=6)
+    query_text = content
+    continued_clarification = False
+
+    active_state = await get_active_clarification_state(db_session, session_id=session_id)
+    if active_state is not None:
+        resolution = await get_rag_service().clarification_resolver.resolve(
+            original_question=active_state.original_question,
+            assistant_followup_question=active_state.assistant_followup_question,
+            user_reply=content,
+        )
+        if resolution.continues_clarification:
+            continued_clarification = True
+            query_text = resolution.resolved_question
+            if history and history[-1]["role"] == "user":
+                history[-1]["content"] = query_text
+        else:
+            await cancel_pending_clarification_state(db_session, session_id=session_id)
 
     locked = get_emotion_analyzer().analyze_quick(user_text=content)
     reply_id = f"{session_id}-{int(started_at * 1000)}"
@@ -297,6 +375,8 @@ async def process_text_message(
         session_id=session_id,
         avatar=avatar,
         content=content,
+        query_text=query_text,
+        history=history,
         chat_service=chat_service,
         tts_service=tts_service,
         capabilities=capabilities,
@@ -305,6 +385,20 @@ async def process_text_message(
         emotion_payload=emotion_payload,
         started_at=started_at,
     )
+
+    if continued_clarification:
+        await resolve_pending_clarification_state(db_session, session_id=session_id)
+
+    if result.needs_followup and result.followup_question:
+        await upsert_clarification_state(
+            db_session,
+            session_id=session_id,
+            original_question=query_text,
+            assistant_followup_question=result.followup_question,
+            missing_slots=result.missing_slots,
+            provisional_answer=result.text,
+            used_source_indexes=list(range(1, len(result.sources) + 1)),
+        )
 
     latency_ms = int((perf_counter() - started_at) * 1000)
     await save_message(

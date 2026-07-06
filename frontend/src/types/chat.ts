@@ -4,6 +4,19 @@ export interface ChatMessage {
   content: string
   streaming?: boolean
   meta?: string
+  sources?: SourceItem[]
+  replyKind?: string
+  needsFollowup?: boolean
+}
+
+export interface SourceItem {
+  filename: string
+  title: string
+  excerpt: string
+  category?: string
+  chunkIndex?: number
+  retrievalScore?: number | null
+  rerankScore?: number | null
 }
 
 export interface PhonemeFrame {
@@ -112,6 +125,30 @@ export interface EmotionEvent {
   source?: 'heuristic' | 'llm'
 }
 
+export interface ReplyMetaEvent {
+  type: 'reply_meta'
+  reply_id: string
+  reply_kind: string
+  needs_followup: boolean
+  missing_slots?: string[]
+  confidence_note?: string
+}
+
+export interface SourcesEvent {
+  type: 'sources'
+  reply_id: string
+  mode?: string
+  items: Array<{
+    filename: string
+    title: string
+    excerpt: string
+    category?: string
+    chunk_index?: number
+    retrieval_score?: number | null
+    rerank_score?: number | null
+  }>
+}
+
 export interface DoneEvent {
   type: 'done'
   session_id: string
@@ -145,6 +182,8 @@ export type ServerSocketMessage =
   | TtsVisemeChunkEvent
   | PhonemesEvent
   | EmotionEvent
+  | ReplyMetaEvent
+  | SourcesEvent
   | TextDoneEvent
   | AudioDoneEvent
   | DoneEvent

@@ -4,7 +4,7 @@ import asyncio
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 import httpx
@@ -98,6 +98,11 @@ class RAGAnswer:
     sources: list[RetrievedChunk]
     confidence: float
     used_llm: bool
+    reply_kind: str = "answer"
+    needs_followup: bool = False
+    followup_question: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    confidence_note: str = "confirmed"
 
 
 @dataclass(slots=True)
@@ -109,6 +114,29 @@ class PreparedRAGAnswer:
     used_llm: bool
     llm_messages: list[dict[str, str]] | None = None
     fallback_text: str = ""
+
+    reply_kind: str = "answer"
+    needs_followup: bool = False
+    followup_question: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    confidence_note: str = "confirmed"
+
+
+@dataclass(slots=True)
+class RAGReplyDecision:
+    reply_kind: str = "answer"
+    needs_followup: bool = False
+    spoken_answer: str = ""
+    followup_question: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    used_source_indexes: list[int] = field(default_factory=list)
+    confidence_note: str = "confirmed"
+
+
+@dataclass(slots=True)
+class ClarificationResolution:
+    continues_clarification: bool
+    resolved_question: str
 
 
 class LexicalReranker:
@@ -983,6 +1011,14 @@ def append_citations(answer: str, sources: list[RetrievedChunk]) -> str:
         used.add(key)
         lines.append(f"[{index}] {source.title}（{source.filename}）")
     return "\n".join(lines)
+
+
+from app.services.rag_humanized import (  # noqa: E402
+    ClarificationResolver,
+    HumanizedScenicRAGService,
+)
+
+ScenicRAGService = HumanizedScenicRAGService
 
 
 @lru_cache

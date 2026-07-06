@@ -9,8 +9,8 @@ from app.core.config import Settings, get_settings
 from app.services.emotion import EmotionAnalysis, get_emotion_analyzer
 from app.services.rag import RetrievedChunk, get_rag_service
 
-DISPLAY_PUNCTUATION_RE = re.compile(r"[。！？；!?;\n]")
-TTS_STRONG_BOUNDARY_RE = re.compile(r"[。！？；!?;]")
+DISPLAY_PUNCTUATION_RE = re.compile(r"(?<=[。！？!?；;\n])")
+TTS_STRONG_BOUNDARY_RE = re.compile(r"[。！？!?；;]")
 TTS_SOFT_BOUNDARY_RE = re.compile(r"[，、,]")
 TTS_FALLBACK_BOUNDARY_RE = re.compile(r"[\s、，,和及与并且然后再接着]")
 
@@ -24,6 +24,11 @@ class GeneratedReply:
     sources: list[RetrievedChunk] = field(default_factory=list)
     confidence: float = 0.0
     mode: str = "template"
+    reply_kind: str = "answer"
+    needs_followup: bool = False
+    followup_question: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    confidence_note: str = "confirmed"
 
 
 @dataclass(slots=True)
@@ -35,6 +40,11 @@ class ReplyStreamEvent:
     sources: list[RetrievedChunk] = field(default_factory=list)
     confidence: float = 0.0
     mode: str = "template"
+    reply_kind: str = "answer"
+    needs_followup: bool = False
+    followup_question: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    confidence_note: str = "confirmed"
 
 
 class DisplayChunker:
@@ -181,13 +191,30 @@ class BaseGuideChatService:
     async def analyze_emotion(self, user_text: str, reply_text: str) -> EmotionAnalysis:
         return await get_emotion_analyzer().analyze(user_text=user_text, reply_text=reply_text)
 
-    async def stream_reply(self, user_text: str, persona: str | None = None) -> AsyncIterator[ReplyStreamEvent]:
-        generated = await self.generate_reply(user_text, persona=persona)
+    async def stream_reply(
+        self,
+        user_text: str,
+        persona: str | None = None,
+        *,
+        query_text: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[ReplyStreamEvent]:
+        generated = await self.generate_reply(
+            user_text,
+            persona=persona,
+            query_text=query_text,
+            history=history,
+        )
         async for event in self._stream_from_pieces(
             self._iter_pieces(self.chunk_text(generated.spoken_text or generated.text)),
             sources=generated.sources,
             confidence=generated.confidence,
             mode=generated.mode,
+            reply_kind=generated.reply_kind,
+            needs_followup=generated.needs_followup,
+            followup_question=generated.followup_question,
+            missing_slots=generated.missing_slots,
+            confidence_note=generated.confidence_note,
         ):
             yield event
 
@@ -198,6 +225,11 @@ class BaseGuideChatService:
         sources: list[RetrievedChunk],
         confidence: float,
         mode: str,
+        reply_kind: str,
+        needs_followup: bool,
+        followup_question: str,
+        missing_slots: list[str],
+        confidence_note: str,
     ) -> AsyncIterator[ReplyStreamEvent]:
         display = DisplayChunker(flush_chars=self.settings.websocket_chunk_size)
         tts_segmenter = TTSSegmenter(
@@ -229,6 +261,11 @@ class BaseGuideChatService:
             sources=sources,
             confidence=confidence,
             mode=mode,
+            reply_kind=reply_kind,
+            needs_followup=needs_followup,
+            followup_question=followup_question,
+            missing_slots=list(missing_slots),
+            confidence_note=confidence_note,
         )
 
     async def _iter_pieces(self, pieces: Iterable[str]) -> AsyncIterator[str]:
@@ -238,10 +275,17 @@ class BaseGuideChatService:
 
 
 class TemplateGuideChatService(BaseGuideChatService):
-    async def generate_reply(self, user_text: str, persona: str | None = None) -> GeneratedReply:
+    async def generate_reply(
+        self,
+        user_text: str,
+        persona: str | None = None,
+        *,
+        query_text: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> GeneratedReply:
         text = " ".join(user_text.strip().split())
         if not text:
-            reply = "我刚刚没有听清，你可以再说一次吗？"
+            reply = "我刚才没有听清，你可以再说一遍吗？"
             emotion = await self.analyze_emotion(user_text, reply)
             return GeneratedReply(reply, emotion.label, emotion)
 
@@ -256,12 +300,12 @@ class TemplateGuideChatService(BaseGuideChatService):
             return GeneratedReply(reply, emotion.label, emotion)
 
         if any(token in text for token in ("路线", "怎么逛", "推荐", "先去")):
-            reply = "如果你是第一次来，建议先从核心景点主线开始，再根据体力和兴趣补充周边区域。这样体验会更完整也更轻松。"
+            reply = "如果你是第一次来，建议先从核心景点主线开始，再根据体力和兴趣补充周边区域，这样体验会更完整也更轻松。"
             emotion = await self.analyze_emotion(user_text, reply)
             return GeneratedReply(reply, emotion.label, emotion)
 
         if any(token in text for token in ("时间", "营业", "开放", "几点")):
-            reply = "开放时间这类信息后续会接入景区知识库和后台配置。现在你也可以继续问我景点简介或参观建议。"
+            reply = "开放时间这类信息接入知识库后会更准确。你也可以继续问我某个景点的介绍，或者我先给你推荐一条游览路线。"
             emotion = await self.analyze_emotion(user_text, reply)
             return GeneratedReply(reply, emotion.label, emotion)
 
@@ -277,8 +321,15 @@ class TemplateGuideChatService(BaseGuideChatService):
 
 
 class RAGGuideChatService(BaseGuideChatService):
-    async def generate_reply(self, user_text: str, persona: str | None = None) -> GeneratedReply:
-        answer = await get_rag_service().answer(user_text, persona=persona)
+    async def generate_reply(
+        self,
+        user_text: str,
+        persona: str | None = None,
+        *,
+        query_text: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> GeneratedReply:
+        answer = await get_rag_service().answer(query_text or user_text, persona=persona, history=history or [])
         emotion = await self.analyze_emotion(user_text, answer.spoken_text or answer.answer_text)
         return GeneratedReply(
             text=answer.answer_text,
@@ -288,31 +339,38 @@ class RAGGuideChatService(BaseGuideChatService):
             sources=answer.sources,
             confidence=answer.confidence,
             mode="rag",
+            reply_kind=answer.reply_kind,
+            needs_followup=answer.needs_followup,
+            followup_question=answer.followup_question,
+            missing_slots=answer.missing_slots,
+            confidence_note=answer.confidence_note,
         )
 
-    async def stream_reply(self, user_text: str, persona: str | None = None) -> AsyncIterator[ReplyStreamEvent]:
-        rag_service = get_rag_service()
-        prepared = await rag_service.prepare_stream_answer(user_text, persona=persona)
-        if prepared.llm_messages:
-            try:
-                async for event in self._stream_from_pieces(
-                    rag_service.llm.stream_complete(prepared.llm_messages),
-                    sources=prepared.sources,
-                    confidence=prepared.confidence,
-                    mode="rag",
-                ):
-                    yield event
-                return
-            except Exception:
-                pass
-
-        fallback_text = prepared.fallback_text or prepared.spoken_text or prepared.answer_text
+    async def stream_reply(
+        self,
+        user_text: str,
+        persona: str | None = None,
+        *,
+        query_text: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[ReplyStreamEvent]:
+        prepared = await get_rag_service().prepare_stream_answer(
+            query_text or user_text,
+            persona=persona,
+            history=history or [],
+        )
+        fallback_text = prepared.answer_text or prepared.fallback_text or prepared.spoken_text
 
         async for event in self._stream_from_pieces(
             self._iter_pieces(self.chunk_text(fallback_text)),
             sources=prepared.sources,
             confidence=prepared.confidence,
             mode="rag",
+            reply_kind=prepared.reply_kind,
+            needs_followup=prepared.needs_followup,
+            followup_question=prepared.followup_question,
+            missing_slots=prepared.missing_slots,
+            confidence_note=prepared.confidence_note,
         ):
             yield event
 

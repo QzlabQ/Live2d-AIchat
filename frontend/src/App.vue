@@ -5,6 +5,7 @@ import Live2DStage from './components/Live2DStage.vue'
 import { useAudioRecorder } from './composables/useAudioRecorder'
 import { useChatSocket } from './composables/useChatSocket'
 import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
+import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageMeta'
 import { buildEmotionLampStyle } from './lib/emotionLamp'
 import { EMOTION_VISUALS } from './lib/lipsync'
 import {
@@ -213,6 +214,10 @@ function finalizeAssistantDraft() {
   }
 
   assistantDraftId.value = null
+}
+
+function patchLatestAssistantMessage(patch: Parameters<typeof attachAssistantMessageMeta>[2]) {
+  return attachAssistantMessageMeta(messages.value, assistantDraftId.value, patch)
 }
 
 async function createSession() {
@@ -618,6 +623,23 @@ function handleSocketMessage(payload: ServerSocketMessage) {
     return
   }
 
+  if (payload.type === 'reply_meta') {
+    patchLatestAssistantMessage({
+      replyKind: payload.reply_kind,
+      needsFollowup: payload.needs_followup,
+    })
+    void scrollChatToEnd()
+    return
+  }
+
+  if (payload.type === 'sources') {
+    patchLatestAssistantMessage({
+      sources: normalizeSources(payload.items),
+    })
+    void scrollChatToEnd()
+    return
+  }
+
   if (payload.type === 'text_done') {
     finalizeAssistantDraft()
     void scrollChatToEnd()
@@ -918,6 +940,23 @@ onBeforeUnmount(() => {
             <p class="bubble-content">
               {{ message.content }}
               <span v-if="message.streaming" class="cursor">|</span>
+            </p>
+            <section v-if="message.sources?.length" class="bubble-sources">
+              <p class="bubble-subsection-title">资料依据</p>
+              <article
+                v-for="(source, index) in message.sources"
+                :key="`${message.id}-source-${index}`"
+                class="source-card"
+              >
+                <div class="source-card-head">
+                  <strong>{{ source.title || '未命名资料' }}</strong>
+                  <span>{{ source.filename }}</span>
+                </div>
+                <p class="source-excerpt">{{ source.excerpt }}</p>
+              </article>
+            </section>
+            <p v-if="message.needsFollowup" class="followup-hint">
+              还可继续补充范围，我再帮你细看。
             </p>
           </article>
         </div>
