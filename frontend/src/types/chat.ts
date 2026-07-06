@@ -29,6 +29,7 @@ export interface PhonemeFrame {
 
 export type EmotionValue = 'neutral' | 'happy' | 'thinking' | 'excited' | 'sad'
 export type EmotionStage = 'preview' | 'final'
+export type ConversationPhase = 'idle' | 'thinking' | 'speaking' | 'cooldown'
 
 export interface EmotionTelemetry {
   value: EmotionValue
@@ -125,6 +126,13 @@ export interface EmotionEvent {
   source?: 'heuristic' | 'llm'
 }
 
+export interface AvatarPhaseEvent {
+  type: 'avatar_phase'
+  phase: ConversationPhase
+  reply_id?: string
+  timestamp_ms?: number
+}
+
 export interface ReplyMetaEvent {
   type: 'reply_meta'
   reply_id: string
@@ -182,6 +190,7 @@ export type ServerSocketMessage =
   | TtsVisemeChunkEvent
   | PhonemesEvent
   | EmotionEvent
+  | AvatarPhaseEvent
   | ReplyMetaEvent
   | SourcesEvent
   | TextDoneEvent

@@ -12,6 +12,7 @@ import {
   mouthPoseFromFrame,
   resolveModelAssetUrl,
 } from '../lib/lipsync'
+import type { AvatarPresentation } from '../lib/avatarPresentation'
 import type {
   EmotionStage,
   EmotionValue,
@@ -87,6 +88,15 @@ let emotionParamIds = new Set(Object.keys(EMOTION_PRESETS.neutral))
 let targetEmotionValues: Record<string, number> = { ...EMOTION_PRESETS.neutral }
 let currentEmotion: EmotionValue = 'neutral'
 let currentEmotionStage: EmotionStage = 'final'
+let currentAvatarPresentation: AvatarPresentation = {
+  phase: 'idle',
+  emotion: 'neutral',
+  emotionStage: 'final',
+  allowIdleMotion: true,
+  motionIntensity: 'normal',
+  lipSyncActive: false,
+  activeReplyId: null,
+}
 
 function safeSetParameter(id: string, value: number) {
   if (!model) {
@@ -148,7 +158,7 @@ function playIdleMotion() {
 
   window.clearInterval(idleTimer)
   idleTimer = window.setInterval(() => {
-    if (!model) {
+    if (!model || !currentAvatarPresentation.allowIdleMotion) {
       return
     }
 
@@ -158,6 +168,21 @@ function playIdleMotion() {
       return
     }
   }, 12000)
+}
+
+function applyLightPhaseMotion(t: number) {
+  if (currentAvatarPresentation.motionIntensity !== 'light') {
+    return
+  }
+
+  const speakingScale = currentAvatarPresentation.phase === 'speaking' ? 1 : 0.55
+  const angleBase = currentEmotionValues.ParamAngleX ?? targetEmotionValues.ParamAngleX ?? 0
+  const bodyBase = currentEmotionValues.ParamBodyAngleX ?? targetEmotionValues.ParamBodyAngleX ?? 0
+  const eyeBase = currentEmotionValues.ParamEyeBallY ?? targetEmotionValues.ParamEyeBallY ?? 0
+
+  safeSetParameter('ParamAngleX', angleBase + Math.sin(t * 1.6) * 0.38 * speakingScale)
+  safeSetParameter('ParamBodyAngleX', bodyBase + Math.sin(t * 1.2 + 0.4) * 0.28 * speakingScale)
+  safeSetParameter('ParamEyeBallY', eyeBase + Math.sin(t * 0.9) * 0.025 * speakingScale)
 }
 
 function startBreathingLoop() {
@@ -176,6 +201,7 @@ function startBreathingLoop() {
       currentEmotionValues[id] = next
       safeSetParameter(id, next)
     }
+    applyLightPhaseMotion(t)
 
     if (lipSyncState) {
       const { frames, audio, audioContext, startedAt, stopAt, useAudioContextClock } = lipSyncState
@@ -247,6 +273,10 @@ async function createModel() {
   model.interactive = true
   model.cursor = 'pointer'
   model.on('pointertap', () => {
+    if (currentAvatarPresentation.motionIntensity !== 'normal') {
+      return
+    }
+
     try {
       model?.motion('Tap')
     } catch {
@@ -285,6 +315,20 @@ function setEmotion(emotion: EmotionValue, stage: EmotionStage = 'final') {
   currentEmotion = emotion
   currentEmotionStage = stage
   rebuildEmotionTarget()
+}
+
+function setAvatarPresentation(presentation: AvatarPresentation) {
+  const wasIdleMotionAllowed = currentAvatarPresentation.allowIdleMotion
+  currentAvatarPresentation = presentation
+  setEmotion(presentation.emotion, presentation.emotionStage)
+
+  if (!wasIdleMotionAllowed && presentation.allowIdleMotion && model) {
+    try {
+      model.motion('Idle')
+    } catch {
+      return
+    }
+  }
 }
 
 function playPhonemes(frames: PhonemeFrame[], audio?: HTMLAudioElement | null) {
@@ -341,6 +385,7 @@ function queueScheduledPhonemes(
 
 defineExpose({
   setEmotion,
+  setAvatarPresentation,
   playPhonemes,
   queueScheduledPhonemes,
 })

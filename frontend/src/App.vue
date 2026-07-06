@@ -9,6 +9,11 @@ import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageM
 import { buildEmotionLampStyle } from './lib/emotionLamp'
 import { EMOTION_VISUALS } from './lib/lipsync'
 import {
+  computeAvatarPresentation,
+  createDefaultConversationPhaseState,
+  reduceAvatarPhaseEvent,
+} from './lib/avatarPresentation'
+import {
   DEFAULT_STREAM_AUDIO_POLICY,
   getScheduledLeadMs,
   shouldResetBufferedPlayback,
@@ -16,6 +21,7 @@ import {
 } from './lib/streamAudioBuffer'
 import type {
   AudioEvent,
+  AvatarPhaseEvent,
   ChatMessage,
   EmotionEvent,
   EmotionStage,
@@ -93,6 +99,9 @@ const assistantDraftId = ref<string | null>(null)
 const lastAsrPreview = ref('')
 const latestEmotion = ref<EmotionValue>('neutral')
 const emotionTelemetry = ref<EmotionTelemetry>(createDefaultEmotionTelemetry())
+const conversationPhaseState = ref(createDefaultConversationPhaseState())
+const avatarPresentationNowMs = ref(Date.now())
+const avatarSpeechActive = ref(false)
 const playbackError = ref('')
 const playbackTelemetry = ref({
   bufferedAudioMs: 0,
@@ -117,12 +126,73 @@ let streamNextStartTime = 0
 let scheduledSources: ScheduledSource[] = []
 let pendingStreamAudio: BufferedStreamAudio[] = []
 let streamPlaybackStarted = false
+let avatarCooldownTimer = 0
 
 function createMessageId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
 }
 
+function clearAvatarCooldownTimer() {
+  if (avatarCooldownTimer) {
+    window.clearTimeout(avatarCooldownTimer)
+    avatarCooldownTimer = 0
+  }
+}
+
+function applyAvatarPhase(event: AvatarPhaseEvent) {
+  const previous = conversationPhaseState.value
+  const next = reduceAvatarPhaseEvent(previous, event)
+  if (next === previous) {
+    return
+  }
+
+  conversationPhaseState.value = next
+  avatarPresentationNowMs.value = event.timestamp_ms ?? Date.now()
+
+  if (event.phase === 'speaking') {
+    avatarSpeechActive.value = true
+  } else if (event.phase === 'idle' || event.phase === 'cooldown') {
+    avatarSpeechActive.value = false
+  }
+
+  clearAvatarCooldownTimer()
+  if (next.phase !== 'cooldown' || next.cooldownUntilMs === null) {
+    return
+  }
+
+  const delayMs = Math.max(0, next.cooldownUntilMs - avatarPresentationNowMs.value)
+  avatarCooldownTimer = window.setTimeout(() => {
+    const nowMs = Date.now()
+    avatarPresentationNowMs.value = nowMs
+    conversationPhaseState.value = reduceAvatarPhaseEvent(conversationPhaseState.value, {
+      type: 'avatar_phase',
+      phase: 'idle',
+      reply_id: next.activeReplyId ?? undefined,
+      timestamp_ms: nowMs,
+    })
+    avatarSpeechActive.value = false
+    avatarCooldownTimer = 0
+  }, delayMs)
+}
+
+function resetAvatarPresentationState() {
+  clearAvatarCooldownTimer()
+  avatarSpeechActive.value = false
+  avatarPresentationNowMs.value = Date.now()
+  conversationPhaseState.value = createDefaultConversationPhaseState()
+}
+
+function beginLocalThinkingPhase() {
+  applyAvatarPhase({
+    type: 'avatar_phase',
+    phase: 'thinking',
+    reply_id: createMessageId('local-reply'),
+    timestamp_ms: Date.now(),
+  })
+}
+
 function resetReplyMediaState() {
+  resetAvatarPresentationState()
   for (const timer of phonemeFallbackTimers.values()) {
     window.clearTimeout(timer)
   }
@@ -493,6 +563,12 @@ async function handleStreamingAudio(payload: TtsAudioChunkEvent) {
 
     if (activeStreamReplyId !== payload.reply_id) {
       activeStreamReplyId = payload.reply_id
+      applyAvatarPhase({
+        type: 'avatar_phase',
+        phase: 'speaking',
+        reply_id: payload.reply_id,
+        timestamp_ms: Date.now(),
+      })
       streamNextStartTime = 0
       streamPlaybackStarted = false
       pendingStreamAudio = []
@@ -553,6 +629,7 @@ async function handleStreamingAudio(payload: TtsAudioChunkEvent) {
 }
 
 function handleStreamingVisemes(payload: TtsVisemeChunkEvent) {
+  avatarSpeechActive.value = true
   const key = streamChunkKey(payload)
   const scheduledAt = streamChunkSchedule.get(key)
   const context = audioUnlockContext
@@ -623,6 +700,11 @@ function handleSocketMessage(payload: ServerSocketMessage) {
     return
   }
 
+  if (payload.type === 'avatar_phase') {
+    applyAvatarPhase(payload)
+    return
+  }
+
   if (payload.type === 'reply_meta') {
     patchLatestAssistantMessage({
       replyKind: payload.reply_kind,
@@ -647,11 +729,22 @@ function handleSocketMessage(payload: ServerSocketMessage) {
   }
 
   if (payload.type === 'audio_done') {
+    applyAvatarPhase({
+      type: 'avatar_phase',
+      phase: 'cooldown',
+      reply_id: payload.reply_id,
+      timestamp_ms: Date.now(),
+    })
     return
   }
 
   if (payload.type === 'done') {
     finalizeAssistantDraft()
+    applyAvatarPhase({
+      type: 'avatar_phase',
+      phase: 'idle',
+      timestamp_ms: Date.now(),
+    })
     void scrollChatToEnd()
   }
 }
@@ -707,6 +800,14 @@ const canRecord = computed(
 )
 const meterScale = computed(() => Math.max(0.05, recorder.level.value))
 const emotionVisual = computed(() => EMOTION_VISUALS[emotionTelemetry.value.value] ?? EMOTION_VISUALS.neutral)
+const avatarPresentation = computed(() =>
+  computeAvatarPresentation(conversationPhaseState.value, {
+    emotion: latestEmotion.value,
+    emotionStage: emotionTelemetry.value.stage,
+    lipSyncActive: avatarSpeechActive.value,
+    nowMs: avatarPresentationNowMs.value,
+  }),
+)
 const emotionLampStyle = computed(() =>
   buildEmotionLampStyle(emotionTelemetry.value, emotionVisual.value),
 )
@@ -758,6 +859,7 @@ async function sendText() {
   })
 
   resetReplyMediaState()
+  beginLocalThinkingPhase()
   composer.value = ''
   finalizeAssistantDraft()
 
@@ -782,6 +884,7 @@ async function toggleRecording() {
 
   void unlockAudioPlayback()
   resetReplyMediaState()
+  beginLocalThinkingPhase()
   finalizeAssistantDraft()
   await recorder.start()
 }
@@ -797,8 +900,8 @@ async function reconnectNow() {
   await socket.connect()
 }
 
-watch([latestEmotion, () => emotionTelemetry.value.stage, live2dRef], ([emotion, stage, live2d]) => {
-  live2d?.setEmotion(emotion, stage)
+watch([avatarPresentation, live2dRef], ([presentation, live2d]) => {
+  live2d?.setAvatarPresentation(presentation)
 }, { immediate: true })
 
 onMounted(async () => {
@@ -807,6 +910,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  clearAvatarCooldownTimer()
   resetReplyMediaState()
   void audioUnlockContext?.close()
 })
