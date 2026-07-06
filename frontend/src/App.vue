@@ -147,7 +147,7 @@ function applyAvatarPhase(event: AvatarPhaseEvent) {
   }
 
   conversationPhaseState.value = next
-  avatarPresentationNowMs.value = event.timestamp_ms ?? Date.now()
+  avatarPresentationNowMs.value = event.at_ms ?? Date.now()
 
   if (event.phase === 'speaking') {
     avatarSpeechActive.value = true
@@ -168,7 +168,8 @@ function applyAvatarPhase(event: AvatarPhaseEvent) {
       type: 'avatar_phase',
       phase: 'idle',
       reply_id: next.activeReplyId ?? undefined,
-      timestamp_ms: nowMs,
+      at_ms: nowMs,
+      reason: 'cooldown_elapsed',
     })
     avatarSpeechActive.value = false
     avatarCooldownTimer = 0
@@ -187,7 +188,8 @@ function beginLocalThinkingPhase() {
     type: 'avatar_phase',
     phase: 'thinking',
     reply_id: createMessageId('local-reply'),
-    timestamp_ms: Date.now(),
+    at_ms: Date.now(),
+    reason: 'local_reply_started',
   })
 }
 
@@ -567,7 +569,8 @@ async function handleStreamingAudio(payload: TtsAudioChunkEvent) {
         type: 'avatar_phase',
         phase: 'speaking',
         reply_id: payload.reply_id,
-        timestamp_ms: Date.now(),
+        at_ms: Date.now(),
+        reason: 'stream_audio_started',
       })
       streamNextStartTime = 0
       streamPlaybackStarted = false
@@ -733,7 +736,8 @@ function handleSocketMessage(payload: ServerSocketMessage) {
       type: 'avatar_phase',
       phase: 'cooldown',
       reply_id: payload.reply_id,
-      timestamp_ms: Date.now(),
+      at_ms: Date.now(),
+      reason: 'audio_done_fallback',
     })
     return
   }
@@ -743,7 +747,8 @@ function handleSocketMessage(payload: ServerSocketMessage) {
     applyAvatarPhase({
       type: 'avatar_phase',
       phase: 'idle',
-      timestamp_ms: Date.now(),
+      at_ms: Date.now(),
+      reason: 'reply_done_fallback',
     })
     void scrollChatToEnd()
   }

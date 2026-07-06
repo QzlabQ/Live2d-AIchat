@@ -59,7 +59,7 @@ export function reduceAvatarPhaseEvent(
     return state
   }
 
-  const timestampMs = event.timestamp_ms ?? Date.now()
+  const timestampMs = event.at_ms ?? Date.now()
   const activeReplyId =
     event.phase === 'idle' ? null : event.reply_id ?? state.activeReplyId
 

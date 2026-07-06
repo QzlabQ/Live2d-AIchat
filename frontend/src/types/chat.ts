@@ -130,7 +130,8 @@ export interface AvatarPhaseEvent {
   type: 'avatar_phase'
   phase: ConversationPhase
   reply_id?: string
-  timestamp_ms?: number
+  at_ms?: number
+  reason?: string
 }
 
 export interface ReplyMetaEvent {

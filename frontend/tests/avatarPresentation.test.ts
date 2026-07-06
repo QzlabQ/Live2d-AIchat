@@ -12,7 +12,8 @@ test('thinking phase suppresses idle motion and forces thinking baseline', () =>
     type: 'avatar_phase',
     phase: 'thinking',
     reply_id: 'reply-1',
-    timestamp_ms: 1000,
+    at_ms: 1000,
+    reason: 'reply_started',
   })
 
   const presentation = computeAvatarPresentation(state, {
@@ -32,7 +33,8 @@ test('speaking phase keeps final emotion but only allows light action', () => {
     type: 'avatar_phase',
     phase: 'speaking',
     reply_id: 'reply-1',
-    timestamp_ms: 1000,
+    at_ms: 1000,
+    reason: 'first_audio_chunk',
   })
 
   const presentation = computeAvatarPresentation(state, {
@@ -53,21 +55,48 @@ test('stale reply idle event is ignored after a newer reply is active', () => {
     type: 'avatar_phase',
     phase: 'thinking',
     reply_id: 'reply-old',
-    timestamp_ms: 1000,
+    at_ms: 1000,
+    reason: 'reply_started',
   })
   const secondReplyThinking = reduceAvatarPhaseEvent(firstReplyThinking, {
     type: 'avatar_phase',
     phase: 'thinking',
     reply_id: 'reply-new',
-    timestamp_ms: 1200,
+    at_ms: 1200,
+    reason: 'reply_started',
   })
   const afterStaleIdle = reduceAvatarPhaseEvent(secondReplyThinking, {
     type: 'avatar_phase',
     phase: 'idle',
     reply_id: 'reply-old',
-    timestamp_ms: 1300,
+    at_ms: 1300,
+    reason: 'reply_done',
   })
 
   assert.equal(afterStaleIdle.phase, 'thinking')
   assert.equal(afterStaleIdle.activeReplyId, 'reply-new')
+})
+
+test('cooldown expiry uses backend at_ms instead of local wall clock fallback', () => {
+  const cooldownState = reduceAvatarPhaseEvent(createDefaultConversationPhaseState(), {
+    type: 'avatar_phase',
+    phase: 'cooldown',
+    reply_id: 'reply-1',
+    at_ms: 1000,
+    reason: 'audio_done',
+  })
+
+  const stillCooling = computeAvatarPresentation(cooldownState, {
+    emotion: 'neutral',
+    emotionStage: 'final',
+    nowMs: 1500,
+  })
+  const cooledDown = computeAvatarPresentation(cooldownState, {
+    emotion: 'neutral',
+    emotionStage: 'final',
+    nowMs: 2200,
+  })
+
+  assert.equal(stillCooling.phase, 'cooldown')
+  assert.equal(cooledDown.phase, 'idle')
 })
