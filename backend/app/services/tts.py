@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 import importlib
@@ -9,6 +9,7 @@ from io import BytesIO
 import logging
 import os
 from pathlib import Path
+import queue
 import re
 import sys
 import threading
@@ -66,6 +67,10 @@ class TTSService:
         self._engine_error: str | None = None
         self._cosyvoice_model: object | None = None
         self._prompt_feature_cache: dict[tuple[str, str], dict[str, object]] = {}
+
+    @property
+    def supports_reply_streaming(self) -> bool:
+        return self.settings.tts_engine == "cosyvoice"
 
     def status(self) -> str:
         if self.settings.tts_engine == "mock":
@@ -170,7 +175,9 @@ class TTSService:
 
     def _import_cosyvoice_module(self):
         try:
-            return importlib.import_module("cosyvoice.cli.cosyvoice")
+            module = importlib.import_module("cosyvoice.cli.cosyvoice")
+            self._patch_cosyvoice_runtime_support(module)
+            return module
         except ModuleNotFoundError as original_exc:
             code_path = self._resolve_backend_path(self.settings.tts_cosyvoice_code_path)
             if not code_path.exists():
@@ -186,12 +193,54 @@ class TTSService:
                 sys.path.insert(0, str(matcha_path))
 
             try:
-                return importlib.import_module("cosyvoice.cli.cosyvoice")
+                module = importlib.import_module("cosyvoice.cli.cosyvoice")
+                self._patch_cosyvoice_runtime_support(module)
+                return module
             except ModuleNotFoundError as patched_exc:
                 raise RuntimeError(
                     "已找到 CosyVoice 代码目录，但仍无法导入 cosyvoice.cli.cosyvoice。"
                     "请确认仓库完整克隆（含 third_party 子模块）并已安装 CosyVoice 运行时依赖。"
                 ) from patched_exc
+
+    def _patch_cosyvoice_runtime_support(self, cosyvoice_module: object) -> None:
+        frontend_module = importlib.import_module("cosyvoice.cli.frontend")
+        frontend_class = getattr(frontend_module, "CosyVoiceFrontEnd", None)
+        if frontend_class is not None and not hasattr(frontend_class, "iter_text_normalize"):
+            def iter_text_normalize(self, text_generator, text_frontend=True):
+                for text in text_generator:
+                    for normalized in self.text_normalize(text, split=True, text_frontend=text_frontend):
+                        if normalized:
+                            yield normalized
+
+            setattr(frontend_class, "iter_text_normalize", iter_text_normalize)
+
+        def inference_instruct2_reply(
+            self,
+            text_iterator,
+            instruct_text,
+            prompt_wav,
+            zero_shot_spk_id='',
+            stream=False,
+            speed=1.0,
+            text_frontend=True,
+        ):
+            normalize = getattr(self.frontend, "iter_text_normalize", None)
+            if callable(normalize):
+                text_iterator = normalize(text_iterator, text_frontend=text_frontend)
+            model_input = self.frontend.frontend_instruct2(
+                text_iterator,
+                instruct_text,
+                prompt_wav,
+                self.sample_rate,
+                zero_shot_spk_id,
+            )
+            for model_output in self.model.tts(**model_input, stream=stream, speed=speed):
+                yield model_output
+
+        for class_name in ("CosyVoice2", "CosyVoice3"):
+            cosyvoice_class = getattr(cosyvoice_module, class_name, None)
+            if cosyvoice_class is not None and not hasattr(cosyvoice_class, "inference_instruct2_reply"):
+                setattr(cosyvoice_class, "inference_instruct2_reply", inference_instruct2_reply)
 
     def _resolve_cosyvoice_device(self) -> str:
         requested = self.settings.tts_cosyvoice_device.strip().lower()
@@ -514,6 +563,189 @@ class TTSService:
 
         return restore
 
+    def _extract_cosyvoice_audio_result(
+        self,
+        result: dict[str, object],
+        *,
+        sample_rate_fallback: int,
+    ) -> tuple[object, int] | None:
+        audio_payload = result.get("audio")
+        if audio_payload is None:
+            audio_payload = result.get("tts_speech")
+        if audio_payload is None:
+            audio_payload = result.get("speech")
+        if audio_payload is None:
+            return None
+
+        sample_rate = int(
+            result.get("sample_rate")
+            or result.get("tts_sample_rate")
+            or result.get("sr")
+            or sample_rate_fallback
+        )
+        return audio_payload, sample_rate
+
+    def _build_streaming_chunk_from_result(
+        self,
+        *,
+        seq: int,
+        chunk_index: int,
+        text: str,
+        result: dict[str, object],
+        offset_ms: int,
+        stream_started_at: float,
+    ) -> tuple[StreamingTTSChunk | None, int]:
+        extracted = self._extract_cosyvoice_audio_result(
+            result,
+            sample_rate_fallback=self.settings.tts_cosyvoice_sample_rate,
+        )
+        if extracted is None:
+            return None, offset_ms
+
+        audio_payload, sample_rate = extracted
+        pcm, _, _ = self._coerce_cosyvoice_pcm_payload(audio_payload, sample_rate)
+        leading_ms = 60 if chunk_index == 0 else 20
+        trimmed_pcm, trim_info = self._trim_pcm_silence(
+            pcm,
+            sample_rate=sample_rate,
+            leading_ms=leading_ms,
+            trailing_ms=20,
+        )
+        audio_bytes = self._pcm16_to_bytes(trimmed_pcm)
+        phonemes = self._phonemes_from_waveform(trimmed_pcm, sample_rate) if len(trimmed_pcm) else []
+        current_chunk = StreamingTTSChunk(
+            seq=seq,
+            chunk_index=chunk_index,
+            text=text,
+            audio_bytes=audio_bytes,
+            phonemes=phonemes,
+            offset_ms=offset_ms,
+            sample_rate=sample_rate,
+            is_final=False,
+            model_chunk_ready_ms=int((perf_counter() - stream_started_at) * 1000),
+        )
+        next_offset_ms = offset_ms + int(round(len(trimmed_pcm) * 1000 / max(sample_rate, 1)))
+        logger.info(
+            "tts_stream_chunk seq=%s idx=%s model_chunk_ready_ms=%s trim_leading_ms=%s trim_trailing_ms=%s",
+            seq,
+            chunk_index,
+            current_chunk.model_chunk_ready_ms,
+            trim_info["trimmed_leading_ms"],
+            trim_info["trimmed_trailing_ms"],
+        )
+        return current_chunk, next_offset_ms
+
+    async def _iter_clean_reply_segments(
+        self,
+        segments: AsyncIterator[tuple[int, str]],
+    ) -> AsyncIterator[tuple[int, str]]:
+        async for seq, text in segments:
+            cleaned = text.strip()
+            if cleaned:
+                yield seq, cleaned
+
+    async def _iter_cosyvoice_reply_results_async(
+        self,
+        segments: AsyncIterator[tuple[int, str]],
+        *,
+        emotion: str | None,
+        reference_audio_path: str | None,
+        reference_text: str | None,
+        speed: float | None,
+        emotion_enabled: bool,
+    ) -> AsyncIterator[tuple[int, str, dict[str, object]]]:
+        iterator = self._iter_clean_reply_segments(segments).__aiter__()
+        try:
+            first_segment = await anext(iterator)
+        except StopAsyncIteration:
+            return
+
+        cosyvoice = self._load_cosyvoice_model()
+        prompt_wav = self._resolve_reference_audio_path(reference_audio_path)
+        instruct_text = self._build_cosyvoice_instruction(emotion, emotion_enabled=emotion_enabled)
+        output_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+        input_queue: queue.Queue[object] = queue.Queue()
+        input_done = object()
+        loop = asyncio.get_running_loop()
+        active_segment: dict[str, object] = {
+            "seq": first_segment[0],
+            "text": first_segment[1],
+        }
+        first_result_pending = {"value": True}
+
+        def text_iterator():
+            while True:
+                item = input_queue.get()
+                if item is input_done:
+                    return
+                seq, text = item
+                active_segment["seq"] = seq
+                active_segment["text"] = text
+                yield text
+
+        def worker() -> None:
+            restore = self._bind_prompt_feature_cache(
+                getattr(cosyvoice, "frontend", object()),
+                prompt_wav,
+                reference_text,
+            )
+            try:
+                inference = getattr(cosyvoice, "inference_instruct2_reply", None)
+                if inference is None:
+                    inference = getattr(cosyvoice, "inference_instruct2")
+                for result in inference(
+                    text_iterator(),
+                    instruct_text,
+                    prompt_wav,
+                    stream=True,
+                    speed=float(speed or 1.0),
+                ):
+                    if first_result_pending["value"]:
+                        payload = (first_segment[0], first_segment[1], result)
+                        first_result_pending["value"] = False
+                    else:
+                        payload = (
+                            int(active_segment["seq"]),
+                            str(active_segment["text"]),
+                            result,
+                        )
+                    loop.call_soon_threadsafe(output_queue.put_nowait, ("data", payload))
+                loop.call_soon_threadsafe(output_queue.put_nowait, ("done", None))
+            except Exception as exc:  # pragma: no cover - runtime dependency
+                loop.call_soon_threadsafe(output_queue.put_nowait, ("error", exc))
+            finally:
+                restore()
+
+        async def feed_segments() -> None:
+            try:
+                input_queue.put(first_segment)
+                async for segment in iterator:
+                    input_queue.put(segment)
+            finally:
+                input_queue.put(input_done)
+
+        feeder_task = asyncio.create_task(feed_segments())
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        try:
+            while True:
+                event_type, payload = await output_queue.get()
+                if event_type == "data":
+                    seq, text, result = payload
+                    if isinstance(result, dict):
+                        yield seq, text, result
+                        continue
+                    raise RuntimeError("CosyVoice returned an unexpected result format.")
+                if event_type == "error":
+                    raise payload  # type: ignore[misc]
+                break
+        finally:
+            if not feeder_task.done():
+                feeder_task.cancel()
+            await asyncio.gather(feeder_task, return_exceptions=True)
+            thread.join(timeout=0.2)
+
     async def _iter_cosyvoice_results_async(
         self,
         cleaned_text: str,
@@ -554,14 +786,17 @@ class TTSService:
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
 
-        while True:
-            event_type, payload = await queue.get()
-            if event_type == "data":
-                yield payload
-                continue
-            if event_type == "error":
-                raise payload  # type: ignore[misc]
-            break
+        try:
+            while True:
+                event_type, payload = await queue.get()
+                if event_type == "data":
+                    yield payload
+                    continue
+                if event_type == "error":
+                    raise payload  # type: ignore[misc]
+                break
+        finally:
+            thread.join(timeout=0.2)
 
     async def stream_synthesize_segment(
         self,
@@ -616,52 +851,75 @@ class TTSService:
             if not isinstance(result, dict):
                 raise RuntimeError("CosyVoice returned an unexpected result format.")
 
-            audio_payload = result.get("audio")
-            if audio_payload is None:
-                audio_payload = result.get("tts_speech")
-            if audio_payload is None:
-                audio_payload = result.get("speech")
-            if audio_payload is None:
-                continue
-
-            sample_rate = int(
-                result.get("sample_rate")
-                or result.get("tts_sample_rate")
-                or result.get("sr")
-                or self.settings.tts_cosyvoice_sample_rate
-            )
-            pcm, _, _ = self._coerce_cosyvoice_pcm_payload(audio_payload, sample_rate)
-            leading_ms = 60 if chunk_index == 0 else 20
-            trimmed_pcm, trim_info = self._trim_pcm_silence(
-                pcm,
-                sample_rate=sample_rate,
-                leading_ms=leading_ms,
-                trailing_ms=20,
-            )
-            logger.info(
-                "tts_stream_chunk seq=%s idx=%s model_chunk_ready_ms=%s trim_leading_ms=%s trim_trailing_ms=%s",
-                seq,
-                chunk_index,
-                int((perf_counter() - segment_started_at) * 1000),
-                trim_info["trimmed_leading_ms"],
-                trim_info["trimmed_trailing_ms"],
-            )
-            audio_bytes = self._pcm16_to_bytes(trimmed_pcm)
-            phonemes = self._phonemes_from_waveform(trimmed_pcm, sample_rate) if len(trimmed_pcm) else []
-            current_chunk = StreamingTTSChunk(
+            current_chunk, offset_ms = self._build_streaming_chunk_from_result(
                 seq=seq,
                 chunk_index=chunk_index,
                 text=cleaned_text,
-                audio_bytes=audio_bytes,
-                phonemes=phonemes,
+                result=result,
                 offset_ms=offset_ms,
-                sample_rate=sample_rate,
-                is_final=False,
-                model_chunk_ready_ms=int((perf_counter() - segment_started_at) * 1000),
+                stream_started_at=segment_started_at,
             )
-            offset_ms += int(round(len(trimmed_pcm) * 1000 / max(sample_rate, 1)))
-            chunk_index += 1
+            if current_chunk is None:
+                continue
 
+            chunk_index += 1
+            last_chunk = current_chunk
+            yield current_chunk
+
+        if last_chunk is not None:
+            last_chunk.is_final = True
+
+    async def stream_synthesize_reply(
+        self,
+        segments: AsyncIterator[tuple[int, str]],
+        *,
+        voice_id: str | None = None,
+        emotion: str | None = None,
+        reference_audio_path: str | None = None,
+        reference_text: str | None = None,
+        speed: float | None = None,
+        tts_emotion_enabled: bool = True,
+    ) -> AsyncIterator[StreamingTTSChunk]:
+        del voice_id
+
+        if self.settings.tts_engine != "cosyvoice":
+            async for seq, segment in self._iter_clean_reply_segments(segments):
+                async for chunk in self.stream_synthesize_segment(
+                    segment,
+                    seq=seq,
+                    emotion=emotion,
+                    reference_audio_path=reference_audio_path,
+                    reference_text=reference_text,
+                    speed=speed,
+                    tts_emotion_enabled=tts_emotion_enabled,
+                ):
+                    yield chunk
+            return
+
+        reply_started_at = perf_counter()
+        last_chunk: StreamingTTSChunk | None = None
+        offset_ms = 0
+        chunk_index = 0
+        async for seq, text, result in self._iter_cosyvoice_reply_results_async(
+            segments,
+            emotion=emotion,
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text,
+            speed=speed,
+            emotion_enabled=tts_emotion_enabled,
+        ):
+            current_chunk, offset_ms = self._build_streaming_chunk_from_result(
+                seq=seq,
+                chunk_index=chunk_index,
+                text=text,
+                result=result,
+                offset_ms=offset_ms,
+                stream_started_at=reply_started_at,
+            )
+            if current_chunk is None:
+                continue
+
+            chunk_index += 1
             last_chunk = current_chunk
             yield current_chunk
 

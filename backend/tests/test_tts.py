@@ -250,6 +250,97 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(remaining), 1)
         self.assertTrue(remaining[0].is_final)
 
+    async def test_cosyvoice_reply_streaming_reuses_single_vendor_session(self) -> None:
+        class FakeCosyVoiceModel:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def inference_instruct2_reply(self, text_iterator, instruct_text, prompt_wav, stream=False, speed=1.0):
+                received = list(text_iterator)
+                self.calls.append(
+                    {
+                        'texts': received,
+                        'instruct_text': instruct_text,
+                        'prompt_wav': prompt_wav,
+                        'stream': stream,
+                        'speed': speed,
+                    }
+                )
+                yield {'tts_speech': [0.0] * 2400 + [0.3] * 2400, 'sample_rate': 24000}
+                yield {'tts_speech': [0.0] * 800 + [0.2] * 2400 + [0.0] * 800, 'sample_rate': 24000}
+
+        async def segment_stream():
+            yield 0, 'welcome to the'
+            yield 1, ' botanical garden'
+
+        with TemporaryDirectory() as temp_dir:
+            prompt_wav = Path(temp_dir) / 'prompt.wav'
+            prompt_wav.write_bytes(b'fake wav')
+
+            service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
+            model = FakeCosyVoiceModel()
+            service._load_cosyvoice_model = lambda: model
+
+            chunks = [
+                item
+                async for item in service.stream_synthesize_reply(
+                    segment_stream(),
+                    emotion='happy',
+                    reference_audio_path=str(prompt_wav),
+                    speed=1.0,
+                )
+            ]
+
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(model.calls[0]['texts'], ['welcome to the', 'botanical garden'])
+        self.assertTrue(model.calls[0]['stream'])
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual([item.chunk_index for item in chunks], [0, 1])
+        self.assertEqual([item.seq for item in chunks], [0, 1])
+        self.assertTrue(chunks[-1].is_final)
+
+    async def test_cosyvoice_reply_streaming_emits_first_chunk_before_reply_completion(self) -> None:
+        release_second_segment = asyncio.Event()
+
+        class FakeCosyVoiceModel:
+            def inference_instruct2_reply(self, text_iterator, instruct_text, prompt_wav, stream=False, speed=1.0):
+                first = next(text_iterator)
+                yield {'tts_speech': [0.3] * 2400, 'sample_rate': 24000}
+                assert first == 'welcome to the'
+                second = next(text_iterator)
+                assert second == 'botanical garden'
+                yield {'tts_speech': [0.2] * 2400, 'sample_rate': 24000}
+
+        async def segment_stream():
+            yield 0, 'welcome to the'
+            await release_second_segment.wait()
+            yield 1, 'botanical garden'
+
+        with TemporaryDirectory() as temp_dir:
+            prompt_wav = Path(temp_dir) / 'prompt.wav'
+            prompt_wav.write_bytes(b'fake wav')
+
+            service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
+            service._load_cosyvoice_model = lambda: FakeCosyVoiceModel()
+
+            stream = service.stream_synthesize_reply(
+                segment_stream(),
+                emotion='happy',
+                reference_audio_path=str(prompt_wav),
+                speed=1.0,
+            )
+
+            first = await asyncio.wait_for(stream.__anext__(), timeout=0.3)
+            release_second_segment.set()
+            remaining = [item async for item in stream]
+
+        self.assertEqual(first.seq, 0)
+        self.assertEqual(first.chunk_index, 0)
+        self.assertFalse(first.is_final)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].seq, 1)
+        self.assertTrue(remaining[0].is_final)
+
     def test_trim_pcm_silence_preserves_core_audio(self) -> None:
         service = TTSService(Settings(tts_engine='mock', tts_cosyvoice_sample_rate=1000))
 

@@ -214,6 +214,108 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("avatar_phase_cooldown_ms", trace_payload["metrics"])
         self.assertIn("avatar_phase_idle_ms", trace_payload["metrics"])
 
+    async def test_streaming_capability_prefers_reply_scoped_tts_session(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+
+            async def send_json(self, payload: dict[str, object]) -> None:
+                self.messages.append(payload)
+
+        class FakeChatService:
+            settings = SimpleNamespace(chat_mode="rag")
+
+            async def stream_reply(self, *args, **kwargs):
+                yield ReplyStreamEvent(kind="text_delta", content="Hello")
+                yield ReplyStreamEvent(kind="tts_segment", content="Hello")
+                yield ReplyStreamEvent(kind="text_delta", content=" there.")
+                yield ReplyStreamEvent(kind="tts_segment", content="there.")
+                yield ReplyStreamEvent(
+                    kind="final",
+                    text="Hello there.",
+                    spoken_text="Hello there.",
+                    mode="rag",
+                    confidence=0.9,
+                )
+
+            async def analyze_emotion(self, user_text: str, reply_text: str) -> EmotionAnalysis:
+                return EmotionAnalysis(
+                    label="happy",
+                    confidence=0.8,
+                    keywords=["hello"],
+                    reason="final emotion",
+                    source="llm",
+                )
+
+        class FakeTTSService:
+            settings = SimpleNamespace(tts_engine="cosyvoice")
+            supports_reply_streaming = True
+
+            def __init__(self) -> None:
+                self.segments: list[tuple[int, str]] = []
+
+            async def stream_synthesize_reply(self, segments, **kwargs):
+                async for seq, text in segments:
+                    self.segments.append((seq, text))
+                    yield StreamingTTSChunk(
+                        seq=seq,
+                        chunk_index=len(self.segments) - 1,
+                        text=text,
+                        audio_bytes=b"\x01\x02",
+                        phonemes=[],
+                        offset_ms=(len(self.segments) - 1) * 20,
+                        sample_rate=24000,
+                        channels=1,
+                        encoding="pcm16le",
+                        is_final=seq == 1,
+                    )
+
+            async def stream_synthesize_segment(self, *args, **kwargs):
+                raise AssertionError("reply-scoped streaming should be preferred")
+
+        websocket = FakeWebSocket()
+        trace_service = FakeTraceService()
+        tts_service = FakeTTSService()
+
+        with patch("app.api.ws_router.get_avatar_trace_service", return_value=trace_service):
+            await stream_assistant_reply(
+                websocket=websocket,
+                session_id="session-reply",
+                avatar=SimpleNamespace(
+                    persona="guide",
+                    voice_id="voice",
+                    tts_reference_audio_path="prompt.wav",
+                    tts_reference_text="prompt text",
+                    tts_speed=1.0,
+                    tts_emotion_enabled=True,
+                ),
+                content="Say hello.",
+                query_text="Say hello.",
+                history=[],
+                chat_service=FakeChatService(),
+                tts_service=tts_service,
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                reply_id="reply-reply",
+                locked_emotion="happy",
+                emotion_payload={
+                    "type": "emotion",
+                    "stage": "preview",
+                    "value": "happy",
+                    "confidence": 0.7,
+                    "keywords": [],
+                    "reason": "quick",
+                    "source": "heuristic",
+                },
+                started_at=0.0,
+            )
+
+        audio_chunks = [item for item in websocket.messages if item["type"] == "tts_audio_chunk"]
+        self.assertEqual(tts_service.segments, [(0, "Hello"), (1, "there.")])
+        self.assertEqual([item["segment_id"] for item in audio_chunks], [0, 1])
+        self.assertEqual([item["chunk_index"] for item in audio_chunks], [0, 1])
+        self.assertIn("audio_done", [item["type"] for item in websocket.messages])
+        self.assertEqual(trace_service.enqueued_payloads[0]["segment_count"], 2)
+
     async def test_streaming_without_audio_falls_back_to_cooldown_and_idle(self) -> None:
         class FakeWebSocket:
             def __init__(self) -> None:
