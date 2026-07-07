@@ -151,6 +151,7 @@ async def stream_assistant_reply(
     locked_emotion: str,
     emotion_payload: dict[str, object],
     started_at: float,
+    initial_metrics: dict[str, int] | None = None,
 ) -> ReplyExecutionResult:
     send_lock = asyncio.Lock()
     segment_queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -168,6 +169,10 @@ async def stream_assistant_reply(
         chat_mode=str(getattr(getattr(chat_service, "settings", None), "chat_mode", "unknown")),
         tts_engine=str(getattr(getattr(tts_service, "settings", None), "tts_engine", "unknown")),
     )
+    if initial_metrics:
+        for name, at_ms in initial_metrics.items():
+            trace.mark(name, at_ms)
+            metrics[name] = trace.metrics[name]
 
     async def send_json(payload: dict[str, object]) -> None:
         async with send_lock:
@@ -389,10 +394,13 @@ async def process_text_message(
     session_id: str,
     content: str,
     capabilities: ClientCapabilities,
+    *,
+    started_at: float | None = None,
+    initial_metrics: dict[str, int] | None = None,
 ) -> None:
     chat_service = get_chat_service()
     tts_service = get_tts_service()
-    started_at = perf_counter()
+    started_at = started_at or perf_counter()
 
     await save_message(db_session, session_id=session_id, role="user", content=content)
     avatar = await get_avatar_config(db_session)
@@ -439,6 +447,7 @@ async def process_text_message(
         reply_id=reply_id,
         locked_emotion=locked.label,
         emotion_payload=emotion_payload,
+        initial_metrics=initial_metrics,
         started_at=started_at,
     )
 
@@ -484,14 +493,28 @@ async def process_audio_buffer(
         await send_error(websocket, "ASR_FAILED", "未接收到可识别的音频数据。")
         return
 
-    transcript = await get_asr_service().transcribe_pcm16(bytes(audio_buffer))
+    started_at = perf_counter()
+    asr_result = await get_asr_service().transcribe_with_metrics(bytes(audio_buffer))
     audio_buffer.clear()
+    transcript = asr_result.text
     if not transcript:
         await send_error(websocket, "ASR_FAILED", "语音识别未返回有效文本。")
         return
 
     await websocket.send_json({"type": "asr_result", "content": transcript})
-    await process_text_message(websocket, db_session, session_id, transcript, capabilities)
+    await process_text_message(
+        websocket,
+        db_session,
+        session_id,
+        transcript,
+        capabilities,
+        started_at=started_at,
+        initial_metrics={
+            "asr_model_load_ms": asr_result.model_load_ms,
+            "asr_transcribe_ms": asr_result.asr_transcribe_ms,
+            "asr_total_ms": asr_result.asr_total_ms,
+        },
+    )
 
 
 @websocket_router.websocket("/ws/chat/{session_id}")

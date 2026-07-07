@@ -90,6 +90,10 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
             def warmup(self) -> None:
                 events.append("tts_warmup")
 
+        class FakeASRService:
+            async def warmup(self) -> None:
+                events.append("asr_warmup")
+
         async def fake_init_db() -> None:
             events.append("init_db")
 
@@ -106,6 +110,7 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
             patch("app.main.init_db", side_effect=fake_init_db),
             patch("app.main.ensure_default_avatar_config", side_effect=fake_seed),
             patch("app.main.get_tts_service", return_value=FakeTTSService()),
+            patch("app.main.get_asr_service", return_value=FakeASRService()),
             patch("app.main.asyncio.to_thread", side_effect=fake_to_thread),
             patch("app.main.get_avatar_trace_service", return_value=FakeTraceService()),
             patch("app.main.shutdown_db", side_effect=fake_shutdown_db),
@@ -115,7 +120,16 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             events,
-            ["init_db", "seed", "tts_warmup", "trace_start", "inside", "trace_stop", "shutdown_db"],
+            [
+                "init_db",
+                "seed",
+                "tts_warmup",
+                "asr_warmup",
+                "trace_start",
+                "inside",
+                "trace_stop",
+                "shutdown_db",
+            ],
         )
 
 

@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from functools import lru_cache
+from time import perf_counter
 
 import numpy as np
 
 from app.core.config import Settings, get_settings
+
+
+@dataclass(slots=True)
+class ASRTranscriptionResult:
+    text: str
+    model_load_ms: int = 0
+    asr_transcribe_ms: int = 0
+    asr_total_ms: int = 0
 
 
 class ASRService:
@@ -13,6 +23,7 @@ class ASRService:
         self.settings = settings
         self._model = None
         self._model_error: str | None = None
+        self._load_lock = asyncio.Lock()
 
     def status(self) -> str:
         if self.settings.asr_engine == "mock":
@@ -29,20 +40,56 @@ class ASRService:
         return "ready"
 
     async def transcribe_pcm16(self, audio_bytes: bytes, sample_rate: int = 16000) -> str:
+        result = await self.transcribe_with_metrics(audio_bytes, sample_rate=sample_rate)
+        return result.text
+
+    async def transcribe_with_metrics(
+        self, audio_bytes: bytes, sample_rate: int = 16000
+    ) -> ASRTranscriptionResult:
         if not audio_bytes:
-            return ""
+            return ASRTranscriptionResult(text="")
 
         if self.settings.asr_engine == "mock":
-            return self.settings.asr_mock_transcript
+            return ASRTranscriptionResult(text=self.settings.asr_mock_transcript)
 
-        await self._load_model()
+        total_started_at = perf_counter()
+        model_load_ms = await self.ensure_model_loaded()
         if self._model is None:
-            return self.settings.asr_mock_transcript
+            return ASRTranscriptionResult(
+                text=self.settings.asr_mock_transcript,
+                model_load_ms=model_load_ms,
+                asr_total_ms=int((perf_counter() - total_started_at) * 1000),
+            )
 
         audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        return await asyncio.to_thread(self._transcribe_sync, audio_array, sample_rate)
+        transcribe_started_at = perf_counter()
+        text = await asyncio.to_thread(self._transcribe_sync, audio_array, sample_rate)
+        transcribe_ms = int((perf_counter() - transcribe_started_at) * 1000)
+        total_ms = int((perf_counter() - total_started_at) * 1000)
+        return ASRTranscriptionResult(
+            text=text,
+            model_load_ms=model_load_ms,
+            asr_transcribe_ms=transcribe_ms,
+            asr_total_ms=total_ms,
+        )
 
-    async def _load_model(self) -> None:
+    async def warmup(self) -> int:
+        if self.settings.asr_engine == "mock":
+            return 0
+        return await self.ensure_model_loaded()
+
+    async def ensure_model_loaded(self) -> int:
+        if self._model is not None or self._model_error is not None:
+            return 0
+
+        async with self._load_lock:
+            if self._model is not None or self._model_error is not None:
+                return 0
+            started_at = perf_counter()
+            await asyncio.to_thread(self._load_model_sync)
+            return int((perf_counter() - started_at) * 1000)
+
+    def _load_model_sync(self) -> None:
         if self._model is not None or self._model_error is not None:
             return
 

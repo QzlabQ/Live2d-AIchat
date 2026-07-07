@@ -1,10 +1,11 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from app.api.ws_router import ClientCapabilities, stream_assistant_reply
+from app.api.ws_router import ClientCapabilities, process_audio_buffer, stream_assistant_reply
 from app.core.config import Settings
+from app.services.asr import ASRTranscriptionResult
 from app.services.chat import RAGGuideChatService, ReplyStreamEvent, TTSSegmenter
 from app.services.emotion import EmotionAnalysis
 from app.services.rag import PreparedRAGAnswer
@@ -161,6 +162,11 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                     "reason": "quick",
                     "source": "heuristic",
                 },
+                initial_metrics={
+                    "asr_model_load_ms": 84,
+                    "asr_transcribe_ms": 146,
+                    "asr_total_ms": 230,
+                },
                 started_at=0.0,
             )
 
@@ -204,6 +210,9 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace_payload["segment_count"], 1)
         self.assertEqual(trace_payload["audio_chunk_count"], 1)
         self.assertIn("llm_first_delta_ms", trace_payload["metrics"])
+        self.assertEqual(trace_payload["metrics"]["asr_model_load_ms"], 84)
+        self.assertEqual(trace_payload["metrics"]["asr_transcribe_ms"], 146)
+        self.assertEqual(trace_payload["metrics"]["asr_total_ms"], 230)
         self.assertIn("tts_first_segment_ms", trace_payload["metrics"])
         self.assertIn("tts_first_audio_chunk_ms", trace_payload["metrics"])
         self.assertIn("text_done_ms", trace_payload["metrics"])
@@ -488,6 +497,69 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(trace_service.enqueued_payloads), 1)
         self.assertEqual(trace_service.enqueued_payloads[0]["reply_id"], "reply-4")
         self.assertIn("avatar_phase_thinking_ms", trace_service.enqueued_payloads[0]["metrics"])
+
+
+class ProcessAudioBufferTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_process_audio_buffer_passes_asr_metrics_into_text_pipeline(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+
+            async def send_json(self, payload: dict[str, object]) -> None:
+                self.messages.append(payload)
+
+        websocket = FakeWebSocket()
+        captured: dict[str, object] = {}
+        fake_asr_service = SimpleNamespace(
+            transcribe_with_metrics=AsyncMock(
+                return_value=ASRTranscriptionResult(
+                    text="语音识别结果",
+                    model_load_ms=612,
+                    asr_transcribe_ms=288,
+                    asr_total_ms=900,
+                )
+            )
+        )
+
+        async def fake_process_text_message(
+            websocket,
+            db_session,
+            session_id: str,
+            content: str,
+            capabilities: ClientCapabilities,
+            *,
+            started_at: float | None = None,
+            initial_metrics: dict[str, int] | None = None,
+        ) -> None:
+            captured["session_id"] = session_id
+            captured["content"] = content
+            captured["started_at"] = started_at
+            captured["initial_metrics"] = initial_metrics
+
+        with (
+            patch("app.api.ws_router.get_asr_service", return_value=fake_asr_service),
+            patch("app.api.ws_router.process_text_message", side_effect=fake_process_text_message),
+        ):
+            await process_audio_buffer(
+                websocket=websocket,
+                db_session=object(),
+                session_id="session-audio",
+                audio_buffer=bytearray(b"\x01\x00\x02\x00"),
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+            )
+
+        self.assertEqual(websocket.messages, [{"type": "asr_result", "content": "语音识别结果"}])
+        self.assertEqual(captured["session_id"], "session-audio")
+        self.assertEqual(captured["content"], "语音识别结果")
+        self.assertIsNotNone(captured["started_at"])
+        self.assertEqual(
+            captured["initial_metrics"],
+            {
+                "asr_model_load_ms": 612,
+                "asr_transcribe_ms": 288,
+                "asr_total_ms": 900,
+            },
+        )
 
 
 class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):

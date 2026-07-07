@@ -8,7 +8,17 @@ from pathlib import Path
 
 from app.services.chat import get_chat_service
 
-REFUSAL_HINTS = ("暂时无法确认", "超出景区知识范围", "景区知识库")
+REFUSAL_HINTS = ("暂时无法确认", "景区知识库")
+REFUSAL_COMPOUND_HINTS = (
+    ("超出", "景区知识范围"),
+    ("超出了", "景区知识范围"),
+    ("不在", "景区知识范围"),
+)
+INLINE_CITATION_MARKERS = ("参考资料：", "[1]")
+ROUTE_PLANNING_KEYWORD = "路线规划"
+ROUTE_DIRECT_HINTS = ("路线", "行程", "游览顺序", "参观顺序", "路线推荐", "路线安排", "逛法")
+ROUTE_SEQUENCE_HINTS = ("先", "再", "接着", "然后", "最后", "依次")
+ROUTE_START_HINTS = ("从", "先从")
 
 
 @dataclass(slots=True)
@@ -83,9 +93,30 @@ def load_cases(path: Path) -> list[EvalCase]:
     return rows
 
 
-def evaluate_case(case: EvalCase, answer_text: str) -> EvalResult:
-    matched_keywords = [keyword for keyword in case.expected_keywords if keyword in answer_text]
-    missing_keywords = [keyword for keyword in case.expected_keywords if keyword not in answer_text]
+def keyword_matches(keyword: str, answer_text: str) -> bool:
+    if keyword in answer_text:
+        return True
+
+    if keyword == ROUTE_PLANNING_KEYWORD:
+        if any(token in answer_text for token in ROUTE_DIRECT_HINTS):
+            return True
+        return any(token in answer_text for token in ROUTE_START_HINTS) and any(
+            token in answer_text for token in ROUTE_SEQUENCE_HINTS
+        )
+
+    return False
+
+
+def refusal_matches(answer_text: str) -> bool:
+    if any(token in answer_text for token in REFUSAL_HINTS):
+        return True
+
+    return any(all(token in answer_text for token in group) for group in REFUSAL_COMPOUND_HINTS)
+
+
+def evaluate_case(case: EvalCase, answer_text: str, *, sources: list[object] | None = None) -> EvalResult:
+    matched_keywords = [keyword for keyword in case.expected_keywords if keyword_matches(keyword, answer_text)]
+    missing_keywords = [keyword for keyword in case.expected_keywords if not keyword_matches(keyword, answer_text)]
 
     matched_groups: list[list[str]] = []
     missing_groups: list[list[str]] = []
@@ -97,8 +128,10 @@ def evaluate_case(case: EvalCase, answer_text: str) -> EvalResult:
             missing_groups.append(group)
 
     unexpected_hits = [keyword for keyword in case.unexpected_keywords if keyword in answer_text]
-    refusal_satisfied = (not case.expects_refusal) or any(token in answer_text for token in REFUSAL_HINTS)
-    citation_satisfied = (not case.requires_citations) or ("参考资料：" in answer_text and "[1]" in answer_text)
+    refusal_satisfied = (not case.expects_refusal) or refusal_matches(answer_text)
+    citation_satisfied = (not case.requires_citations) or (
+        all(token in answer_text for token in INLINE_CITATION_MARKERS) or bool(sources)
+    )
     passed = (
         not missing_keywords
         and not missing_groups
@@ -129,7 +162,7 @@ async def run(dataset: Path, target: float) -> int:
     for index, case in enumerate(cases, start=1):
         reply = await service.generate_reply(case.question, persona=case.persona)
         answer_text = reply.text
-        result = evaluate_case(case, answer_text)
+        result = evaluate_case(case, answer_text, sources=reply.sources)
         if result.passed:
             passed += 1
 

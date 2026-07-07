@@ -120,6 +120,31 @@ python -m pip install -r requirements.asr.txt
 
 然后把 `.env` 里的 `ASR_ENGINE=mock` 改成 `ASR_ENGINE=faster-whisper`
 
+推荐把模型先下载到本地目录，避免第一次语音输入时才开始联网下载：
+
+```text
+backend/storage/models/faster-whisper-small
+```
+
+推荐下载命令：
+
+```powershell
+cd backend
+conda activate ai-chat-gpu
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Systran/faster-whisper-small', local_dir='./storage/models/faster-whisper-small')"
+```
+
+对应 `.env` 建议改成：
+
+```env
+ASR_ENGINE=faster-whisper
+ASR_MODEL_NAME=./storage/models/faster-whisper-small
+ASR_DEVICE=cpu
+ASR_COMPUTE_TYPE=int8
+```
+
+当前后端启动时会主动预加载 ASR 模型，所以只要本地目录和 `.env` 配好，语音首轮不会再等到第一次录音结束后才触发模型下载/加载。
+
 ## Phase 2 口型同步 / CosyVoice
 
 当前 TTS 主线已经切换到 `CosyVoice2-0.5B + inference_instruct2`。推荐 `.env` 使用下面这组最终配置：
@@ -373,6 +398,20 @@ python -m scripts.evaluate_rag --dataset .\evals\phase2_rag_eval.50.jsonl --targ
 - `GET /api/v1/admin/knowledge`
 - `DELETE /api/v1/admin/knowledge/{doc_id}`
 - `WS /ws/chat/{session_id}`
+
+## Trace 与日志
+
+- 结构化 reply trace 落盘在 `backend/logs/avatar_trace.log`
+- 这是一行一条 JSON，适合后续脚本分析
+- 语音链路现在会一起记录：
+  - `asr_model_load_ms`
+  - `asr_transcribe_ms`
+  - `asr_total_ms`
+  - `llm_first_delta_ms`
+  - `tts_first_segment_ms`
+  - `tts_first_audio_chunk_ms`
+  - `audio_done_ms`
+- 普通后端运行日志里仍会输出 `reply_metrics ...` 摘要，适合肉眼快速看
 
 ## 联调建议
 
