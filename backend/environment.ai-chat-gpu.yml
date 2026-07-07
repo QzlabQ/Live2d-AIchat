@@ -1,0 +1,12 @@
+name: ai-chat-gpu
+channels:
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy=1.24.3
+  - pytorch=2.3.1=py3.11_cuda12.1_cudnn8_0
+  - torchvision=0.18.1=py311_cu121
+  - torchaudio=2.3.1=py311_cu121
+  - pytorch-cuda=12.1

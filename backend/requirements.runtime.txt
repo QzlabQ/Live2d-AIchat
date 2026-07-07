@@ -1,0 +1,4 @@
+-r requirements.txt
+-r requirements.asr.txt
+-r requirements.knowledge.txt
+-r requirements.tts.txt
