@@ -209,6 +209,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(trace_payload["streaming"])
         self.assertEqual(trace_payload["segment_count"], 1)
         self.assertEqual(trace_payload["audio_chunk_count"], 1)
+        self.assertIn("llm_stream_start_ms", trace_payload["metrics"])
         self.assertIn("llm_first_delta_ms", trace_payload["metrics"])
         self.assertEqual(trace_payload["metrics"]["asr_model_load_ms"], 84)
         self.assertEqual(trace_payload["metrics"]["asr_transcribe_ms"], 146)
@@ -221,6 +222,108 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("avatar_phase_speaking_ms", trace_payload["metrics"])
         self.assertIn("avatar_phase_cooldown_ms", trace_payload["metrics"])
         self.assertIn("avatar_phase_idle_ms", trace_payload["metrics"])
+
+    async def test_streaming_capability_prefers_reply_scoped_tts_session(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+
+            async def send_json(self, payload: dict[str, object]) -> None:
+                self.messages.append(payload)
+
+        class FakeChatService:
+            settings = SimpleNamespace(chat_mode="rag")
+
+            async def stream_reply(self, *args, **kwargs):
+                yield ReplyStreamEvent(kind="text_delta", content="Hello")
+                yield ReplyStreamEvent(kind="tts_segment", content="Hello")
+                yield ReplyStreamEvent(kind="text_delta", content=" there.")
+                yield ReplyStreamEvent(kind="tts_segment", content="there.")
+                yield ReplyStreamEvent(
+                    kind="final",
+                    text="Hello there.",
+                    spoken_text="Hello there.",
+                    mode="rag",
+                    confidence=0.9,
+                )
+
+            async def analyze_emotion(self, user_text: str, reply_text: str) -> EmotionAnalysis:
+                return EmotionAnalysis(
+                    label="happy",
+                    confidence=0.8,
+                    keywords=["hello"],
+                    reason="final emotion",
+                    source="llm",
+                )
+
+        class FakeTTSService:
+            settings = SimpleNamespace(tts_engine="cosyvoice")
+            supports_reply_streaming = True
+
+            def __init__(self) -> None:
+                self.segments: list[tuple[int, str]] = []
+
+            async def stream_synthesize_reply(self, segments, **kwargs):
+                async for seq, text in segments:
+                    self.segments.append((seq, text))
+                    yield StreamingTTSChunk(
+                        seq=seq,
+                        chunk_index=len(self.segments) - 1,
+                        text=text,
+                        audio_bytes=b"\x01\x02",
+                        phonemes=[],
+                        offset_ms=(len(self.segments) - 1) * 20,
+                        sample_rate=24000,
+                        channels=1,
+                        encoding="pcm16le",
+                        is_final=seq == 1,
+                    )
+
+            async def stream_synthesize_segment(self, *args, **kwargs):
+                raise AssertionError("reply-scoped streaming should be preferred")
+
+        websocket = FakeWebSocket()
+        trace_service = FakeTraceService()
+        tts_service = FakeTTSService()
+
+        with patch("app.api.ws_router.get_avatar_trace_service", return_value=trace_service):
+            await stream_assistant_reply(
+                websocket=websocket,
+                session_id="session-reply",
+                avatar=SimpleNamespace(
+                    persona="guide",
+                    voice_id="voice",
+                    tts_reference_audio_path="prompt.wav",
+                    tts_reference_text="prompt text",
+                    tts_speed=1.0,
+                    tts_emotion_enabled=True,
+                ),
+                content="Say hello.",
+                query_text="Say hello.",
+                history=[],
+                chat_service=FakeChatService(),
+                tts_service=tts_service,
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                reply_id="reply-reply",
+                locked_emotion="happy",
+                emotion_payload={
+                    "type": "emotion",
+                    "stage": "preview",
+                    "value": "happy",
+                    "confidence": 0.7,
+                    "keywords": [],
+                    "reason": "quick",
+                    "source": "heuristic",
+                },
+                started_at=0.0,
+            )
+
+        audio_chunks = [item for item in websocket.messages if item["type"] == "tts_audio_chunk"]
+        self.assertEqual(tts_service.segments, [(0, "Hello"), (1, "there.")])
+        self.assertEqual([item["segment_id"] for item in audio_chunks], [0, 1])
+        self.assertEqual([item["chunk_index"] for item in audio_chunks], [0, 1])
+        self.assertIn("audio_done", [item["type"] for item in websocket.messages])
+        self.assertEqual(trace_service.enqueued_payloads[0]["segment_count"], 2)
 
     async def test_streaming_without_audio_falls_back_to_cooldown_and_idle(self) -> None:
         class FakeWebSocket:
@@ -563,6 +666,117 @@ class ProcessAudioBufferTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_reply_prefers_llm_stream_deltas_when_llm_messages_exist(self) -> None:
+        service = RAGGuideChatService(Settings(chat_mode="rag"))
+        prepared = PreparedRAGAnswer(
+            answer_text="",
+            spoken_text="",
+            sources=[],
+            confidence=0.74,
+            used_llm=True,
+            llm_messages=[{"role": "user", "content": "open time?"}],
+            fallback_text="fallback answer from retrieval.",
+        )
+        captured_messages: list[list[dict[str, str]]] = []
+
+        async def fake_stream_complete(messages: list[dict[str, str]]):
+            captured_messages.append(messages)
+            for chunk in ("streamed answer", " with detail."):
+                yield chunk
+
+        fake_rag_service = SimpleNamespace(
+            prepare_stream_answer=self._async_return(prepared),
+            llm=SimpleNamespace(stream_complete=fake_stream_complete),
+        )
+
+        with patch("app.services.chat.get_rag_service", return_value=fake_rag_service):
+            events = [event async for event in service.stream_reply("open time?", persona="guide")]
+
+        text_deltas = [event.content for event in events if event.kind == "text_delta"]
+        tts_segments = [event.content for event in events if event.kind == "tts_segment"]
+        finals = [event for event in events if event.kind == "final"]
+
+        self.assertEqual(len(captured_messages), 1)
+        self.assertTrue(text_deltas)
+        self.assertTrue(tts_segments)
+        self.assertEqual("".join(text_deltas), "streamed answer with detail.")
+        self.assertEqual(len(finals), 1)
+        self.assertEqual(finals[0].text, "streamed answer with detail.")
+
+    async def test_stream_reply_falls_back_after_llm_stream_error(self) -> None:
+        service = RAGGuideChatService(Settings(chat_mode="rag"))
+        prepared = PreparedRAGAnswer(
+            answer_text="",
+            spoken_text="",
+            sources=[],
+            confidence=0.62,
+            used_llm=True,
+            llm_messages=[{"role": "user", "content": "open time?"}],
+            fallback_text="fallback answer from retrieval.",
+        )
+        stream_attempts: list[list[dict[str, str]]] = []
+
+        async def failing_stream_complete(messages: list[dict[str, str]]):
+            stream_attempts.append(messages)
+            raise RuntimeError("stream failed")
+            yield  # pragma: no cover
+
+        fake_rag_service = SimpleNamespace(
+            prepare_stream_answer=self._async_return(prepared),
+            llm=SimpleNamespace(stream_complete=failing_stream_complete),
+        )
+
+        with patch("app.services.chat.get_rag_service", return_value=fake_rag_service):
+            events = [event async for event in service.stream_reply("open time?", persona="guide")]
+
+        text_deltas = [event.content for event in events if event.kind == "text_delta"]
+        finals = [event for event in events if event.kind == "final"]
+
+        self.assertEqual(len(stream_attempts), 1)
+        self.assertTrue(text_deltas)
+        self.assertEqual("".join(text_deltas), "fallback answer from retrieval.")
+        self.assertEqual(len(finals), 1)
+        self.assertEqual(finals[0].text, "fallback answer from retrieval.")
+
+    async def test_stream_reply_keeps_partial_stream_when_failure_happens_after_visible_output(self) -> None:
+        service = RAGGuideChatService(Settings(chat_mode="rag"))
+        streamed_prefix = "streamed answer already visible."
+        prepared = PreparedRAGAnswer(
+            answer_text="",
+            spoken_text="",
+            sources=[],
+            confidence=0.65,
+            used_llm=True,
+            llm_messages=[{"role": "user", "content": "open time?"}],
+            fallback_text="fallback answer from retrieval.",
+        )
+
+        async def partially_failing_stream(messages: list[dict[str, str]]):
+            del messages
+            yield streamed_prefix
+            raise RuntimeError("stream failed after visible output")
+            yield  # pragma: no cover
+
+        fake_rag_service = SimpleNamespace(
+            prepare_stream_answer=self._async_return(prepared),
+            llm=SimpleNamespace(stream_complete=partially_failing_stream),
+        )
+
+        with patch("app.services.chat.get_rag_service", return_value=fake_rag_service):
+            events = [event async for event in service.stream_reply("open time?", persona="guide")]
+
+        event_kinds = [event.kind for event in events]
+        text_deltas = [event.content for event in events if event.kind == "text_delta"]
+        finals = [event for event in events if event.kind == "final"]
+
+        self.assertIn("text_delta", event_kinds)
+        self.assertEqual(event_kinds[-1], "final")
+        self.assertTrue(text_deltas)
+        self.assertNotIn("fallback answer", "".join(text_deltas))
+        self.assertEqual(len(finals), 1)
+        self.assertEqual(finals[0].text, streamed_prefix)
+        self.assertNotIn("fallback answer", finals[0].text)
+
     async def test_stream_reply_uses_fallback_text_when_llm_stream_fails(self) -> None:
         service = RAGGuideChatService(Settings(chat_mode="rag"))
         prepared = PreparedRAGAnswer(

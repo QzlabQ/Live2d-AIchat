@@ -12,10 +12,10 @@ export interface BufferedPlaybackState {
 }
 
 export const DEFAULT_STREAM_AUDIO_POLICY: StreamAudioPolicy = {
-  initialBufferMs: 900,
-  initialChunkCount: 2,
-  minScheduledLeadMs: 450,
-  scheduleLookaheadMs: 50,
+  initialBufferMs: 450,
+  initialChunkCount: 1,
+  minScheduledLeadMs: 220,
+  scheduleLookaheadMs: 30,
 }
 
 export function shouldStartBufferedPlayback(

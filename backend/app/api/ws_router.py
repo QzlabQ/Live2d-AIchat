@@ -36,6 +36,12 @@ class ClientCapabilities:
 
 
 @dataclass(slots=True)
+class QueuedTTSSegment:
+    seq: int
+    text: str
+
+
+@dataclass(slots=True)
 class ReplyExecutionResult:
     text: str
     sources: list[object] = field(default_factory=list)
@@ -154,7 +160,7 @@ async def stream_assistant_reply(
     initial_metrics: dict[str, int] | None = None,
 ) -> ReplyExecutionResult:
     send_lock = asyncio.Lock()
-    segment_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    segment_queue: asyncio.Queue[QueuedTTSSegment | None] = asyncio.Queue()
     result = ReplyExecutionResult(text="")
     use_streaming_audio = (
         capabilities.tts_streaming
@@ -202,6 +208,8 @@ async def stream_assistant_reply(
         )
 
     async def produce_text() -> None:
+        next_segment_seq = 0
+        mark_metric("llm_stream_start_ms")
         async for event in chat_service.stream_reply(
             content,
             persona=avatar.persona,
@@ -216,7 +224,8 @@ async def stream_assistant_reply(
             if event.kind == "tts_segment":
                 mark_metric("tts_first_segment_ms")
                 trace.segment_count += 1
-                await segment_queue.put(event.content)
+                await segment_queue.put(QueuedTTSSegment(seq=next_segment_seq, text=event.content))
+                next_segment_seq += 1
                 continue
 
             if event.kind == "final":
@@ -269,91 +278,111 @@ async def stream_assistant_reply(
         if use_streaming_audio:
             await send_json({"type": "text_done", "reply_id": reply_id})
 
-    async def consume_tts() -> None:
-        seq = 0
+    async def emit_streaming_tts_chunk(tts_chunk) -> None:
+        if tts_chunk.audio_bytes:
+            mark_metric("tts_first_audio_chunk_ms")
+            chunk_sent_at_ms = elapsed_ms()
+            if trace.audio_chunk_count == 0:
+                await send_avatar_phase("speaking", "first_audio_chunk")
+            trace.observe_audio_chunk(chunk_sent_at_ms)
+            send_started_at = perf_counter()
+            await send_json(
+                {
+                    "type": "tts_audio_chunk",
+                    "reply_id": reply_id,
+                    "segment_id": tts_chunk.seq,
+                    "chunk_index": tts_chunk.chunk_index,
+                    "sample_rate": tts_chunk.sample_rate,
+                    "channels": tts_chunk.channels,
+                    "encoding": tts_chunk.encoding,
+                    "data": base64.b64encode(tts_chunk.audio_bytes).decode("utf-8"),
+                    "is_final": tts_chunk.is_final,
+                }
+            )
+            logger.info(
+                "tts_ws_chunk seq=%s idx=%s model_chunk_ready_ms=%s ws_chunk_sent_ms=%s chunk_send_lag_ms=%s",
+                tts_chunk.seq,
+                tts_chunk.chunk_index,
+                tts_chunk.model_chunk_ready_ms,
+                int((perf_counter() - started_at) * 1000),
+                int((perf_counter() - send_started_at) * 1000),
+            )
+        if tts_chunk.phonemes:
+            await send_json(
+                {
+                    "type": "tts_viseme_chunk",
+                    "reply_id": reply_id,
+                    "segment_id": tts_chunk.seq,
+                    "chunk_index": tts_chunk.chunk_index,
+                    "offset_ms": tts_chunk.offset_ms,
+                    "frames": tts_chunk.phonemes,
+                }
+            )
+
+    async def iter_segment_inputs():
         while True:
             segment = await segment_queue.get()
             if segment is None:
                 break
+            yield segment.seq, segment.text
 
-            if use_streaming_audio:
-                async for tts_chunk in tts_service.stream_synthesize_segment(
-                    segment,
-                    seq=seq,
-                    voice_id=avatar.voice_id,
-                    emotion=locked_emotion,
-                    reference_audio_path=avatar.tts_reference_audio_path,
-                    reference_text=avatar.tts_reference_text,
-                    speed=avatar.tts_speed,
-                    tts_emotion_enabled=avatar.tts_emotion_enabled,
-                ):
+    async def consume_tts() -> None:
+        if use_streaming_audio and getattr(tts_service, "supports_reply_streaming", False):
+            async for tts_chunk in tts_service.stream_synthesize_reply(
+                iter_segment_inputs(),
+                voice_id=avatar.voice_id,
+                emotion=locked_emotion,
+                reference_audio_path=avatar.tts_reference_audio_path,
+                reference_text=avatar.tts_reference_text,
+                speed=avatar.tts_speed,
+                tts_emotion_enabled=avatar.tts_emotion_enabled,
+            ):
+                await emit_streaming_tts_chunk(tts_chunk)
+        else:
+            while True:
+                segment = await segment_queue.get()
+                if segment is None:
+                    break
+
+                if use_streaming_audio:
+                    async for tts_chunk in tts_service.stream_synthesize_segment(
+                        segment.text,
+                        seq=segment.seq,
+                        voice_id=avatar.voice_id,
+                        emotion=locked_emotion,
+                        reference_audio_path=avatar.tts_reference_audio_path,
+                        reference_text=avatar.tts_reference_text,
+                        speed=avatar.tts_speed,
+                        tts_emotion_enabled=avatar.tts_emotion_enabled,
+                    ):
+                        await emit_streaming_tts_chunk(tts_chunk)
+                else:
+                    tts_chunk = await tts_service.synthesize_chunk(
+                        segment.text,
+                        seq=segment.seq,
+                        voice_id=avatar.voice_id,
+                        emotion=locked_emotion,
+                        reference_audio_path=avatar.tts_reference_audio_path,
+                        reference_text=avatar.tts_reference_text,
+                        speed=avatar.tts_speed,
+                        tts_emotion_enabled=avatar.tts_emotion_enabled,
+                    )
                     if tts_chunk.audio_bytes:
                         mark_metric("tts_first_audio_chunk_ms")
                         chunk_sent_at_ms = elapsed_ms()
                         if trace.audio_chunk_count == 0:
                             await send_avatar_phase("speaking", "first_audio_chunk")
                         trace.observe_audio_chunk(chunk_sent_at_ms)
-                        send_started_at = perf_counter()
                         await send_json(
                             {
-                                "type": "tts_audio_chunk",
-                                "reply_id": reply_id,
-                                "segment_id": seq,
-                                "chunk_index": tts_chunk.chunk_index,
-                                "sample_rate": tts_chunk.sample_rate,
-                                "channels": tts_chunk.channels,
-                                "encoding": tts_chunk.encoding,
+                                "type": "audio",
                                 "data": base64.b64encode(tts_chunk.audio_bytes).decode("utf-8"),
-                                "is_final": tts_chunk.is_final,
+                                "mime_type": tts_chunk.mime_type,
+                                "seq": segment.seq,
                             }
-                        )
-                        logger.info(
-                            "tts_ws_chunk seq=%s idx=%s model_chunk_ready_ms=%s ws_chunk_sent_ms=%s chunk_send_lag_ms=%s",
-                            seq,
-                            tts_chunk.chunk_index,
-                            tts_chunk.model_chunk_ready_ms,
-                            int((perf_counter() - started_at) * 1000),
-                            int((perf_counter() - send_started_at) * 1000),
                         )
                     if tts_chunk.phonemes:
-                        await send_json(
-                            {
-                                "type": "tts_viseme_chunk",
-                                "reply_id": reply_id,
-                                "segment_id": seq,
-                                "chunk_index": tts_chunk.chunk_index,
-                                "offset_ms": tts_chunk.offset_ms,
-                                "frames": tts_chunk.phonemes,
-                            }
-                        )
-            else:
-                tts_chunk = await tts_service.synthesize_chunk(
-                    segment,
-                    seq=seq,
-                    voice_id=avatar.voice_id,
-                    emotion=locked_emotion,
-                    reference_audio_path=avatar.tts_reference_audio_path,
-                    reference_text=avatar.tts_reference_text,
-                    speed=avatar.tts_speed,
-                    tts_emotion_enabled=avatar.tts_emotion_enabled,
-                )
-                if tts_chunk.audio_bytes:
-                    mark_metric("tts_first_audio_chunk_ms")
-                    chunk_sent_at_ms = elapsed_ms()
-                    if trace.audio_chunk_count == 0:
-                        await send_avatar_phase("speaking", "first_audio_chunk")
-                    trace.observe_audio_chunk(chunk_sent_at_ms)
-                    await send_json(
-                        {
-                            "type": "audio",
-                            "data": base64.b64encode(tts_chunk.audio_bytes).decode("utf-8"),
-                            "mime_type": tts_chunk.mime_type,
-                            "seq": seq,
-                        }
-                    )
-                if tts_chunk.phonemes:
-                    await send_json({"type": "phonemes", "seq": seq, "data": tts_chunk.phonemes})
-            seq += 1
+                        await send_json({"type": "phonemes", "seq": segment.seq, "data": tts_chunk.phonemes})
 
         mark_metric("audio_done_ms")
         await send_avatar_phase("cooldown", "audio_done")
