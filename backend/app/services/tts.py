@@ -242,6 +242,112 @@ class TTSService:
             if cosyvoice_class is not None and not hasattr(cosyvoice_class, "inference_instruct2_reply"):
                 setattr(cosyvoice_class, "inference_instruct2_reply", inference_instruct2_reply)
 
+        model_module = importlib.import_module("cosyvoice.cli.model")
+
+        def patch_reply_stream_tts(model_class_name: str) -> None:
+            model_class = getattr(model_module, model_class_name, None)
+            if model_class is None or getattr(model_class, "_ai_chat_reply_stream_patch", False):
+                return
+
+            original_tts = model_class.tts
+
+            def patched_tts(self, *args, **kwargs):
+                stream = kwargs.get("stream", False)
+                if stream is not True:
+                    yield from original_tts(self, *args, **kwargs)
+                    return
+
+                import uuid
+                import numpy as np
+                import time
+                import torch
+
+                text = kwargs.get("text", torch.zeros(1, 0, dtype=torch.int32))
+                flow_embedding = kwargs.get("flow_embedding", torch.zeros(0, 192))
+                llm_embedding = kwargs.get("llm_embedding", torch.zeros(0, 192))
+                prompt_text = kwargs.get("prompt_text", torch.zeros(1, 0, dtype=torch.int32))
+                llm_prompt_speech_token = kwargs.get("llm_prompt_speech_token", torch.zeros(1, 0, dtype=torch.int32))
+                flow_prompt_speech_token = kwargs.get("flow_prompt_speech_token", torch.zeros(1, 0, dtype=torch.int32))
+                prompt_speech_feat = kwargs.get("prompt_speech_feat", torch.zeros(1, 0, 80))
+                source_speech_token = kwargs.get("source_speech_token", torch.zeros(1, 0, dtype=torch.int32))
+                this_uuid = str(uuid.uuid1())
+                with self.lock:
+                    self.tts_speech_token_dict[this_uuid], self.llm_end_dict[this_uuid] = [], False
+                    self.hift_cache_dict[this_uuid] = None
+
+                if source_speech_token.shape[1] == 0:
+                    producer = threading.Thread(
+                        target=self.llm_job,
+                        args=(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid),
+                    )
+                else:
+                    producer = threading.Thread(target=self.vc_job, args=(source_speech_token, this_uuid))
+                producer.start()
+
+                try:
+                    token_offset = 0
+                    base_token_hop_len = int(getattr(self, "token_hop_len", 25))
+                    token_hop_len = base_token_hop_len
+                    token_max_hop_len = int(getattr(self, "token_max_hop_len", base_token_hop_len))
+                    conservative_scale_factor = 1.0
+                    prompt_token_pad = int(
+                        np.ceil(flow_prompt_speech_token.shape[1] / max(base_token_hop_len, 1)) * base_token_hop_len
+                        - flow_prompt_speech_token.shape[1]
+                    )
+                    while True:
+                        time.sleep(0.05)
+                        this_token_hop_len = token_hop_len + prompt_token_pad if token_offset == 0 else token_hop_len
+                        if len(self.tts_speech_token_dict[this_uuid]) - token_offset >= this_token_hop_len + self.flow.pre_lookahead_len:
+                            this_tts_speech_token = torch.tensor(
+                                self.tts_speech_token_dict[this_uuid][: token_offset + this_token_hop_len + self.flow.pre_lookahead_len]
+                            ).unsqueeze(dim=0)
+                            this_tts_speech = self.token2wav(
+                                token=this_tts_speech_token,
+                                prompt_token=flow_prompt_speech_token,
+                                prompt_feat=prompt_speech_feat,
+                                embedding=flow_embedding,
+                                token_offset=token_offset,
+                                uuid=this_uuid,
+                                stream=stream,
+                                finalize=False,
+                            )
+                            token_offset += this_token_hop_len
+                            next_hop = int(round(token_hop_len * conservative_scale_factor))
+                            token_hop_len = min(token_max_hop_len, max(base_token_hop_len, next_hop))
+                            yield {"tts_speech": this_tts_speech.cpu()}
+                        if (
+                            self.llm_end_dict[this_uuid] is True
+                            and len(self.tts_speech_token_dict[this_uuid]) - token_offset
+                            < this_token_hop_len + self.flow.pre_lookahead_len
+                        ):
+                            break
+                    producer.join()
+                    this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
+                    this_tts_speech = self.token2wav(
+                        token=this_tts_speech_token,
+                        prompt_token=flow_prompt_speech_token,
+                        prompt_feat=prompt_speech_feat,
+                        embedding=flow_embedding,
+                        token_offset=token_offset,
+                        uuid=this_uuid,
+                        finalize=True,
+                    )
+                    yield {"tts_speech": this_tts_speech.cpu()}
+                finally:
+                    with self.lock:
+                        self.tts_speech_token_dict.pop(this_uuid, None)
+                        self.llm_end_dict.pop(this_uuid, None)
+                        self.hift_cache_dict.pop(this_uuid, None)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.current_stream().synchronize()
+
+            setattr(model_class, "tts", patched_tts)
+            setattr(model_class, "_ai_chat_reply_stream_patch", True)
+
+        patch_reply_stream_tts("CosyVoice2Model")
+        patch_reply_stream_tts("CosyVoice3Model")
+
     def _resolve_cosyvoice_device(self) -> str:
         requested = self.settings.tts_cosyvoice_device.strip().lower()
 
@@ -604,13 +710,20 @@ class TTSService:
 
         audio_payload, sample_rate = extracted
         pcm, _, _ = self._coerce_cosyvoice_pcm_payload(audio_payload, sample_rate)
-        leading_ms = 60 if chunk_index == 0 else 20
-        trimmed_pcm, trim_info = self._trim_pcm_silence(
-            pcm,
-            sample_rate=sample_rate,
-            leading_ms=leading_ms,
-            trailing_ms=20,
-        )
+        # Only the first chunk carries model warm-up padding worth trimming.
+        # Interior chunks are sample-contiguous continuous audio: trimming their
+        # leading/trailing silence would delete the model's own prosodic pauses
+        # and shrink each chunk below real-time, starving the frontend buffer.
+        if chunk_index == 0:
+            trimmed_pcm, trim_info = self._trim_pcm_silence(
+                pcm,
+                sample_rate=sample_rate,
+                leading_ms=60,
+                trailing_ms=0,
+            )
+        else:
+            trimmed_pcm = pcm
+            trim_info = {"trimmed_leading_ms": 0.0, "trimmed_trailing_ms": 0.0}
         audio_bytes = self._pcm16_to_bytes(trimmed_pcm)
         phonemes = self._phonemes_from_waveform(trimmed_pcm, sample_rate) if len(trimmed_pcm) else []
         current_chunk = StreamingTTSChunk(

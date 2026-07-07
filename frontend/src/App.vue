@@ -520,10 +520,12 @@ function flushBufferedStreamAudio(context: AudioContext) {
 
     const { payload, samples } = nextChunk
     const key = streamChunkKey(payload)
+    const previousNextStartTime = streamNextStartTime
+    const hadScheduledAudio = previousNextStartTime > 0
     const scheduledAt = Math.max(
       context.currentTime + 0.03,
-      streamNextStartTime > 0
-        ? streamNextStartTime
+      hadScheduledAudio
+        ? previousNextStartTime
         : context.currentTime + DEFAULT_STREAM_AUDIO_POLICY.scheduleLookaheadMs / 1000,
     )
     const buffer = context.createBuffer(1, samples.length, payload.sample_rate)
@@ -534,10 +536,23 @@ function flushBufferedStreamAudio(context: AudioContext) {
     const ramp = 0.01
     source.buffer = buffer
     source.connect(gain).connect(context.destination)
-    gain.gain.setValueAtTime(0.0001, scheduledAt)
-    gain.gain.linearRampToValueAtTime(1, scheduledAt + ramp)
-    gain.gain.setValueAtTime(1, Math.max(scheduledAt + ramp, scheduledAt + buffer.duration - ramp))
-    gain.gain.linearRampToValueAtTime(0.0001, scheduledAt + buffer.duration)
+
+    // CosyVoice2 stream chunks are sample-contiguous (continuous decoder state),
+    // so fading every chunk to silence would notch each join and sound like a
+    // programmatic pause at fixed positions. Only fade in at the reply start or
+    // after an underrun gap, and only fade out on the final chunk.
+    const isReplyStart = !hadScheduledAudio
+    const hadUnderrun = hadScheduledAudio && scheduledAt > previousNextStartTime + 0.001
+    if (isReplyStart || hadUnderrun) {
+      gain.gain.setValueAtTime(0.0001, scheduledAt)
+      gain.gain.linearRampToValueAtTime(1, scheduledAt + ramp)
+    } else {
+      gain.gain.setValueAtTime(1, scheduledAt)
+    }
+    if (payload.is_final) {
+      gain.gain.setValueAtTime(1, Math.max(scheduledAt + ramp, scheduledAt + buffer.duration - ramp))
+      gain.gain.linearRampToValueAtTime(0.0001, scheduledAt + buffer.duration)
+    }
     source.start(scheduledAt)
 
     streamChunkSchedule.set(key, scheduledAt)
