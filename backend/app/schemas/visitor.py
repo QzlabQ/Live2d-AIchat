@@ -25,3 +25,10 @@ class VisitorRecommendationResponse(BaseModel):
     highlights: list[str]
     suggested_questions: list[str]
     applied_interest_tags: list[str]
+
+
+class VisionRecognitionResponse(BaseModel):
+    recognized_spot: str
+    recognition_summary: str
+    resolved_question: str
+    stored_image_path: str

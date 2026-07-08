@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     dashscope_api_key: str | None = None
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_model: str = "qwen3.7-plus"
+    dashscope_vl_model: str = "qwen-vl-max"
+    visitor_upload_dir: str = "./storage/uploads/visitor"
+    visitor_image_max_bytes: int = 6 * 1024 * 1024
 
     asr_engine: str = "mock"
     asr_model_name: str = "small"
@@ -117,12 +120,13 @@ class Settings(BaseSettings):
         "tts_segment_soft_min_chars",
         "tts_segment_soft_max_chars",
         "tts_segment_hard_max_chars",
+        "visitor_image_max_bytes",
         mode="after",
     )
     @classmethod
     def ensure_positive_knowledge_numbers(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("Knowledge configuration values must be positive integers.")
+            raise ValueError("Configuration values must be positive integers.")
         return value
 
     @field_validator("rag_generation_temperature", "rag_min_retrieval_score", mode="after")
