@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import get_settings
 from app.db.base import Base
-from app.db.migrations import ensure_avatar_config_tts_columns
+from app.db.migrations import ensure_avatar_config_tts_columns, ensure_session_updated_at_column
 
 settings = get_settings()
 
@@ -30,6 +30,7 @@ async def init_db() -> None:
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+    await ensure_session_updated_at_column(engine)
     await ensure_avatar_config_tts_columns(engine, settings)
 
 

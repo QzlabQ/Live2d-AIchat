@@ -1,9 +1,34 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import Settings
+
+
+async def ensure_session_updated_at_column(engine: AsyncEngine) -> None:
+    if not engine.url.get_backend_name().startswith('sqlite'):
+        return
+
+    async with engine.begin() as connection:
+        result = await connection.execute(text('PRAGMA table_info(sessions)'))
+        existing = {row._mapping['name'] for row in result}
+        if not existing or 'updated_at' in existing:
+            return
+
+        await connection.execute(
+            text('ALTER TABLE sessions ADD COLUMN updated_at DATETIME')
+        )
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=' ')
+        await connection.execute(
+            text(
+                'UPDATE sessions '
+                'SET updated_at = COALESCE(updated_at, created_at, :now)'
+            ),
+            {'now': now},
+        )
 
 
 async def ensure_avatar_config_tts_columns(engine: AsyncEngine, settings: Settings) -> None:

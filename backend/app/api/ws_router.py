@@ -24,6 +24,7 @@ from app.services.emotion import EmotionAnalysis, get_emotion_analyzer
 from app.services.avatar_trace import ReplyTrace, get_avatar_trace_service
 from app.services.rag import get_rag_service
 from app.services.tts import TTSService, get_tts_service
+from app.services.visitor_sessions import save_session_message
 
 logger = logging.getLogger(__name__)
 websocket_router = APIRouter()
@@ -76,16 +77,14 @@ async def save_message(
     emotion: str | None = None,
     latency_ms: int | None = None,
 ) -> None:
-    db_session.add(
-        Message(
-            session_id=session_id,
-            role=role,
-            content=content,
-            emotion=emotion,
-            latency_ms=latency_ms,
-        )
+    await save_session_message(
+        db_session,
+        session_id=session_id,
+        role=role,
+        content=content,
+        emotion=emotion,
+        latency_ms=latency_ms,
     )
-    await db_session.commit()
 
 
 def resolve_client_capabilities(payload: dict[str, object]) -> ClientCapabilities:
