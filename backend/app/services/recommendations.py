@@ -11,6 +11,15 @@ from app.core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
+CANONICAL_TAG_ALIASES: dict[str, tuple[str, ...]] = {
+    "历史文化": ("历史文化", "history", "culture", "history-culture"),
+    "亲子": ("亲子", "family", "family-friendly", "kids", "children"),
+    "夜游": ("夜游", "night-tour", "night tour", "night"),
+    "轻松": ("轻松", "relaxed", "relax", "easygoing"),
+    "拍照打卡": ("拍照打卡", "拍照", "打卡", "photo", "photo-stop"),
+    "省力": ("省力", "easy", "effort-saving", "low-energy", "accessible"),
+}
+
 
 class ChatCompletionsClient(Protocol):
     async def complete(self, messages: list[dict[str, str]]) -> str:
@@ -51,7 +60,11 @@ class VisitorRecommendationService:
         try:
             result = await self._complete_structured(request)
         except RecommendationGenerationError as exc:
-            logger.warning("Structured recommendation fallback for session %s: %s", request.session_id, exc)
+            logger.warning(
+                "Structured recommendation fallback for session %s: %s",
+                request.session_id,
+                exc,
+            )
             return self._fallback_payload(request)
 
         if not self._is_complete(result):
@@ -81,9 +94,9 @@ class VisitorRecommendationService:
                 "role": "system",
                 "content": (
                     "你是景区导览助手。"
-                    "请只输出 JSON，对游客给出结构化路线推荐。"
+                    "请只输出 JSON，并返回结构化路线推荐。"
                     "字段固定为 route_title, intro, highlights, suggested_questions, applied_interest_tags。"
-                    "highlights 和 suggested_questions 必须是非空数组。"
+                    "highlights 和 suggested_questions 必须为非空数组。"
                 ),
             },
             {
@@ -113,7 +126,7 @@ class VisitorRecommendationService:
             normalized_request_tags,
         )
         if not applied_interest_tags:
-            applied_interest_tags = normalized_request_tags
+            applied_interest_tags = list(normalized_request_tags)
 
         return RecommendationResult(
             route_title=route_title,
@@ -127,16 +140,31 @@ class VisitorRecommendationService:
         tags = self._normalize_interest_tags(request.interest_tags)
         profile = (request.visitor_profile or "").strip()
 
-        if "family" in tags:
+        if self._has_canonical_tag(tags, "亲子"):
             route_title = "亲子轻松体验路线"
-            intro = "先从好进入、停留弹性大的景点开始，再安排适合边走边聊的体验点。"
+            intro = "先走更容易进入状态的核心点位，再安排适合边走边聊和短暂停留的体验段。"
             highlights = ["从核心地标起步", "优先平缓路线", "预留拍照和休息时间"]
             suggested_questions = ["哪一段最适合带孩子慢慢逛？", "如果只玩半天应该删掉哪一站？"]
-        elif "history" in tags:
+        elif self._has_canonical_tag(tags, "历史文化"):
             route_title = "历史文化漫游路线"
-            intro = "先看代表性地标，再串联背后的历史故事，适合第一次了解景区。"
+            intro = "先看代表性地标，再顺着故事线理解景区背景，适合第一次系统了解景区。"
             highlights = ["优先核心地标", "按故事线安排顺序", "适合边走边听讲解"]
             suggested_questions = ["这条路线里哪一站最值得先听讲解？", "如果更想看历史细节，可以加哪一站？"]
+        elif self._has_canonical_tag(tags, "夜游"):
+            route_title = "夜游氛围体验路线"
+            intro = "优先安排夜景效果更好的区域，把傍晚到入夜的节奏利用起来。"
+            highlights = ["优先夜景点位", "兼顾灯光变化", "适合边走边拍"]
+            suggested_questions = ["哪一段最适合等亮灯？", "如果只看夜景核心点，建议保留哪几站？"]
+        elif self._has_canonical_tag(tags, "拍照打卡"):
+            route_title = "拍照打卡优先路线"
+            intro = "先串联标志性场景和更容易出片的点位，方便集中完成拍照打卡。"
+            highlights = ["优先视觉标志点", "减少来回折返", "适合集中拍摄"]
+            suggested_questions = ["哪一站最适合先拍标志性照片？", "如果想避开人流，建议先去哪一段？"]
+        elif self._has_canonical_tag(tags, "轻松") or self._has_canonical_tag(tags, "省力"):
+            route_title = "轻松省力游览路线"
+            intro = "尽量先走更省体力、停留更舒适的路线，适合放慢节奏游览。"
+            highlights = ["减少高强度往返", "优先舒适停留点", "便于按体力灵活收尾"]
+            suggested_questions = ["如果想更省力，哪一站可以直接跳过？", "这条路线哪里最适合中途休息？"]
         else:
             route_title = "经典游览推荐路线"
             intro = "先覆盖游客最常关心的核心区域，再根据现场体力和时间灵活调整。"
@@ -151,7 +179,7 @@ class VisitorRecommendationService:
             intro=intro,
             highlights=highlights,
             suggested_questions=suggested_questions,
-            applied_interest_tags=tags,
+            applied_interest_tags=list(tags),
         )
 
     def _get_llm(self) -> ChatCompletionsClient:
@@ -181,7 +209,14 @@ class VisitorRecommendationService:
                 continue
             seen.add(value)
             cleaned.append(value)
-        return cleaned or ["general"]
+        return cleaned
+
+    def _has_canonical_tag(self, tags: list[str], canonical_tag: str) -> bool:
+        aliases = {alias.lower() for alias in CANONICAL_TAG_ALIASES.get(canonical_tag, ())}
+        for tag in tags:
+            if tag.lower() in aliases:
+                return True
+        return False
 
     def _clean_text(self, value: object) -> str:
         return " ".join(str(value or "").strip().split())

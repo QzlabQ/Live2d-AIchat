@@ -34,6 +34,14 @@ class VisitorRecommendationServiceTestCase(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             VisitorRecommendationRequest.model_validate({})
 
+    async def test_recommendation_request_rejects_empty_interest_tags_list(self) -> None:
+        with self.assertRaises(ValidationError):
+            VisitorRecommendationRequest.model_validate({"interest_tags": []})
+
+    async def test_recommendation_request_rejects_blank_interest_tag_item(self) -> None:
+        with self.assertRaises(ValidationError):
+            VisitorRecommendationRequest.model_validate({"interest_tags": ["   "]})
+
     async def test_recommend_returns_structured_result_when_llm_succeeds(self) -> None:
         service = VisitorRecommendationService(Settings())
         expected = RecommendationResult(
@@ -78,6 +86,42 @@ class VisitorRecommendationServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(result.suggested_questions), 0)
         self.assertEqual(result.applied_interest_tags, ["family"])
         self.assertIn("Structured recommendation fallback", captured.output[0])
+
+    async def test_recommend_returns_specialized_fallback_for_chinese_family_tag(self) -> None:
+        class InvalidJsonLLM:
+            async def complete(self, messages: list[dict[str, str]]) -> str:
+                return "not-json"
+
+        service = VisitorRecommendationService(Settings(), llm=InvalidJsonLLM())
+
+        result = await service.recommend(
+            RecommendationRequest(
+                session_id="session-2a",
+                interest_tags=["亲子"],
+                device_type="mobile",
+            )
+        )
+
+        self.assertNotEqual(result.route_title, "经典游览推荐路线")
+        self.assertEqual(result.applied_interest_tags, ["亲子"])
+
+    async def test_recommend_returns_specialized_fallback_for_chinese_history_tag(self) -> None:
+        class InvalidJsonLLM:
+            async def complete(self, messages: list[dict[str, str]]) -> str:
+                return "not-json"
+
+        service = VisitorRecommendationService(Settings(), llm=InvalidJsonLLM())
+
+        result = await service.recommend(
+            RecommendationRequest(
+                session_id="session-2b",
+                interest_tags=["历史文化"],
+                device_type="mobile",
+            )
+        )
+
+        self.assertNotEqual(result.route_title, "经典游览推荐路线")
+        self.assertEqual(result.applied_interest_tags, ["历史文化"])
 
     async def test_recommend_propagates_unexpected_exceptions(self) -> None:
         service = VisitorRecommendationService(Settings())
@@ -387,7 +431,7 @@ class AggregatedApiRouterSmokeTestCase(unittest.IsolatedAsyncioTestCase):
 
             session_obj = await self._insert_session()
             async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=self.app if False else app),
+                transport=httpx.ASGITransport(app=app),
                 base_url="http://testserver",
             ) as client:
                 response = await client.post(
