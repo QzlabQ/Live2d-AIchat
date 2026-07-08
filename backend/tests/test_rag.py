@@ -159,30 +159,17 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
                 )
             ]
         )
-        service.llm = SimpleNamespace(
-            complete=self._async_return(
-                json.dumps(
-                    {
-                        "reply_kind": "answer",
-                        "needs_followup": True,
-                        "spoken_answer": "景区整体开放一般是 9:00 到 21:30，冬季闭园会稍早一些。",
-                        "followup_question": "如果你问的是商铺或夜游时间，我也可以继续帮你细看。",
-                        "missing_slots": ["target_scope"],
-                        "used_source_indexes": [1],
-                        "confidence_note": "partial",
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        )
-
         answer = await service.answer("开放时间是什么时候？", persona="guide", history=[])
 
         self.assertIn("9:00", answer.answer_text)
-        self.assertIn("如果你问的是商铺或夜游时间", answer.answer_text)
+        self.assertIn("商铺", answer.answer_text)
+        self.assertIn("夜游", answer.answer_text)
         self.assertNotIn("参考资料", answer.answer_text)
         self.assertTrue(answer.needs_followup)
         self.assertEqual(answer.reply_kind, "answer")
+        self.assertTrue(answer.followup_question)
+        self.assertIn("商铺", answer.followup_question)
+        self.assertIn("夜游", answer.followup_question)
         self.assertEqual(answer.missing_slots, ["target_scope"])
         self.assertEqual(len(answer.sources), 1)
 
