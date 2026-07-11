@@ -1,8 +1,7 @@
-import assert from 'node:assert/strict'
-import test from 'node:test'
+import { describe, expect, it } from 'vitest'
 
-import { attachAssistantMessageMeta } from '../src/lib/chatMessageMeta.ts'
-import type { ChatMessage, SourceItem } from '../src/types/chat.ts'
+import { attachAssistantMessageMeta } from '../src/lib/chatMessageMeta'
+import type { ChatMessage, SourceItem } from '../src/types/chat'
 
 function createAssistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
   return {
@@ -21,47 +20,49 @@ const sampleSources: SourceItem[] = [
   },
 ]
 
-test('prefers the active assistant draft when attaching reply metadata', () => {
-  const messages: ChatMessage[] = [
-    createAssistantMessage({ id: 'assistant-old', content: 'previous answer' }),
-    createAssistantMessage({ id: 'assistant-draft', content: 'draft answer', streaming: true }),
-  ]
+describe('attachAssistantMessageMeta', () => {
+  it('prefers the active assistant draft when attaching reply metadata', () => {
+    const messages: ChatMessage[] = [
+      createAssistantMessage({ id: 'assistant-old', content: 'previous answer' }),
+      createAssistantMessage({ id: 'assistant-draft', content: 'draft answer', streaming: true }),
+    ]
 
-  const attached = attachAssistantMessageMeta(messages, 'assistant-draft', {
-    replyKind: 'rag',
-    needsFollowup: true,
-    sources: sampleSources,
+    const attached = attachAssistantMessageMeta(messages, 'assistant-draft', {
+      replyKind: 'rag',
+      needsFollowup: true,
+      sources: sampleSources,
+    })
+
+    expect(attached).toBe(true)
+    expect(messages[1].sources).toEqual(sampleSources)
+    expect(messages[1].replyKind).toBe('rag')
+    expect(messages[1].needsFollowup).toBe(true)
+    expect(messages[0].sources).toBeUndefined()
   })
 
-  assert.equal(attached, true)
-  assert.deepEqual(messages[1].sources, sampleSources)
-  assert.equal(messages[1].replyKind, 'rag')
-  assert.equal(messages[1].needsFollowup, true)
-  assert.equal(messages[0].sources, undefined)
-})
+  it('falls back to the most recent assistant message after draft finalize', () => {
+    const messages: ChatMessage[] = [
+      { id: 'user-1', role: 'user', content: 'question' },
+      createAssistantMessage({ id: 'assistant-final', content: 'final answer', streaming: false }),
+    ]
 
-test('falls back to the most recent assistant message after draft finalize', () => {
-  const messages: ChatMessage[] = [
-    { id: 'user-1', role: 'user', content: 'question' },
-    createAssistantMessage({ id: 'assistant-final', content: 'final answer', streaming: false }),
-  ]
+    const attached = attachAssistantMessageMeta(messages, null, {
+      sources: sampleSources,
+      needsFollowup: false,
+    })
 
-  const attached = attachAssistantMessageMeta(messages, null, {
-    sources: sampleSources,
-    needsFollowup: false,
+    expect(attached).toBe(true)
+    expect(messages[1].sources).toEqual(sampleSources)
+    expect(messages[1].needsFollowup).toBe(false)
   })
 
-  assert.equal(attached, true)
-  assert.deepEqual(messages[1].sources, sampleSources)
-  assert.equal(messages[1].needsFollowup, false)
-})
+  it('returns false when there is no assistant message to update', () => {
+    const messages: ChatMessage[] = [{ id: 'user-1', role: 'user', content: 'question' }]
 
-test('returns false when there is no assistant message to update', () => {
-  const messages: ChatMessage[] = [{ id: 'user-1', role: 'user', content: 'question' }]
+    const attached = attachAssistantMessageMeta(messages, null, {
+      replyKind: 'rag',
+    })
 
-  const attached = attachAssistantMessageMeta(messages, null, {
-    replyKind: 'rag',
+    expect(attached).toBe(false)
   })
-
-  assert.equal(attached, false)
 })

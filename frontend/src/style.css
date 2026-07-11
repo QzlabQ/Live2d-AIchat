@@ -179,7 +179,10 @@ button {
   max-width: 1400px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: minmax(320px, 0.95fr) minmax(380px, 1.05fr);
+  grid-template-columns:
+    minmax(240px, 0.72fr)
+    minmax(320px, 0.95fr)
+    minmax(400px, 1.18fr);
   gap: 1.25rem;
   flex: 1;
   min-height: 0;
@@ -195,6 +198,7 @@ button {
   box-shadow: var(--shadow);
 }
 
+.history-panel,
 .stage-panel,
 .chat-panel {
   display: flex;
@@ -202,6 +206,10 @@ button {
   min-height: 0;
   height: 100%;
   overflow: auto;
+}
+
+.history-panel {
+  padding-bottom: 1rem;
 }
 
 .panel-header {
@@ -264,6 +272,107 @@ button {
 .status-pill[data-tone="disconnected"] {
   background: rgba(181, 85, 67, 0.12);
   color: var(--danger);
+}
+
+.history-header {
+  align-items: center;
+}
+
+.history-hint,
+.history-empty span,
+.photo-note,
+.tool-error {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.history-hint {
+  margin: 0.9rem 1.35rem 0;
+}
+
+.history-empty {
+  margin: 1rem 1.35rem 0;
+  padding: 1rem;
+  border-radius: 1.2rem;
+  border: 1px dashed rgba(25, 74, 103, 0.18);
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.history-empty strong {
+  display: block;
+  color: var(--ink-strong);
+}
+
+.history-empty span {
+  display: block;
+  margin-top: 0.3rem;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1rem 1.35rem 0;
+}
+
+.history-card {
+  width: 100%;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(22, 48, 70, 0.08);
+  border-radius: 1.2rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(250, 245, 236, 0.92));
+  text-align: left;
+  color: var(--ink-strong);
+  box-shadow: var(--shadow-soft);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.history-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 28px rgba(25, 74, 103, 0.12);
+}
+
+.history-card.active {
+  border-color: rgba(35, 104, 74, 0.28);
+  background:
+    linear-gradient(180deg, rgba(240, 250, 244, 0.9), rgba(248, 252, 245, 0.96));
+}
+
+.history-card:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: var(--shadow-soft);
+}
+
+.history-card-meta,
+.history-card-tags,
+.photo-result span,
+.recommendation-head span {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.history-card-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.history-card strong {
+  display: block;
+  margin-top: 0.45rem;
+  line-height: 1.45;
+}
+
+.history-card-tags {
+  display: block;
+  margin-top: 0.45rem;
 }
 
 .stage-card {
@@ -332,6 +441,136 @@ button {
 .telemetry-card p {
   margin: 0.5rem 0 0;
   color: var(--ink-soft);
+}
+
+.visitor-tools {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  padding: 1rem 1.35rem 0;
+}
+
+.visitor-tool-card {
+  padding: 1rem;
+  border-radius: 1.3rem;
+  border: 1px solid rgba(22, 48, 70, 0.08);
+  background:
+    radial-gradient(circle at top right, rgba(255, 244, 218, 0.52), transparent 30%),
+    rgba(255, 255, 255, 0.56);
+}
+
+.tool-card-head,
+.recommendation-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  align-items: flex-start;
+}
+
+.tool-card-head h3 {
+  margin: 0.3rem 0 0;
+  color: var(--ink-strong);
+  font-size: 1.1rem;
+}
+
+.tag-grid,
+.highlight-list,
+.suggestion-list {
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.tag-grid {
+  margin-top: 0.9rem;
+}
+
+.tag-chip,
+.highlight-pill,
+.suggestion-chip {
+  border-radius: 999px;
+  border: 0;
+}
+
+.tag-chip,
+.suggestion-chip {
+  padding: 0.56rem 0.9rem;
+  background: rgba(25, 74, 103, 0.08);
+  color: var(--ink-strong);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.tag-chip.active {
+  background: linear-gradient(135deg, #194a67 0%, #2d769f 100%);
+  color: #f7fbff;
+  box-shadow: 0 12px 24px rgba(25, 74, 103, 0.2);
+}
+
+.tag-chip:hover,
+.suggestion-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 18px rgba(25, 74, 103, 0.12);
+}
+
+.tag-chip:disabled,
+.suggestion-chip:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.recommendation-card,
+.photo-result {
+  margin-top: 0.95rem;
+  padding: 0.95rem;
+  border-radius: 1.05rem;
+  background: rgba(255, 251, 244, 0.8);
+  border: 1px solid rgba(25, 74, 103, 0.08);
+}
+
+.recommendation-head strong,
+.photo-result strong {
+  color: var(--ink-strong);
+  font-size: 1rem;
+}
+
+.recommendation-intro,
+.photo-result p {
+  margin: 0.65rem 0 0;
+  color: var(--ink-soft);
+}
+
+.highlight-list {
+  margin-top: 0.8rem;
+}
+
+.highlight-pill {
+  padding: 0.45rem 0.78rem;
+  background: rgba(35, 104, 74, 0.1);
+  color: var(--success);
+  font-size: 0.82rem;
+}
+
+.suggestion-list {
+  margin-top: 0.9rem;
+}
+
+.photo-input {
+  display: none;
+}
+
+.photo-note {
+  margin: 0.75rem 0 0;
+}
+
+.tool-error {
+  margin: 0.75rem 0 0;
+  color: var(--danger);
 }
 
 .telemetry-card-lamp {
@@ -572,7 +811,7 @@ button {
 }
 
 .quick-hints {
-  padding: 1rem 1.35rem 0;
+  padding: 0;
 }
 
 .hint-chip,
@@ -591,11 +830,15 @@ button {
 }
 
 .composer-panel {
-  margin: 1rem 1.35rem 1.35rem;
+  margin: 1rem 0 0;
   padding: 1rem;
   border-radius: 1.45rem;
   background: rgba(255, 255, 255, 0.58);
   border: 1px solid rgba(22, 48, 70, 0.08);
+}
+
+.composer-shell {
+  padding: 1rem 1.35rem 1.35rem;
 }
 
 .composer-input {
@@ -759,8 +1002,20 @@ button {
   }
 
   .workspace {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(260px, 0.85fr) minmax(360px, 1.15fr);
     overflow: visible;
+  }
+
+  .history-panel {
+    grid-column: 1;
+  }
+
+  .stage-panel {
+    grid-column: 2;
+  }
+
+  .chat-panel {
+    grid-column: 1 / -1;
   }
 
   .topbar {
@@ -781,6 +1036,10 @@ button {
   .telemetry-grid {
     grid-template-columns: 1fr;
   }
+
+  .visitor-tools {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -790,15 +1049,18 @@ button {
 
   .panel-header,
   .telemetry-grid,
-  .quick-hints,
-  .composer-panel {
+  .visitor-tools,
+  .composer-shell {
     padding-left: 1rem;
     padding-right: 1rem;
   }
 
   .stage-card,
   .chat-body,
-  .banner {
+  .banner,
+  .history-list,
+  .history-empty,
+  .history-hint {
     margin-left: 1rem;
     margin-right: 1rem;
   }
@@ -821,5 +1083,21 @@ button {
 
   .emotion-lamp-shell {
     align-items: flex-start;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .history-panel,
+  .stage-panel,
+  .chat-panel {
+    grid-column: auto;
+  }
+
+  .history-card-meta,
+  .tool-card-head,
+  .recommendation-head {
+    flex-direction: column;
   }
 }

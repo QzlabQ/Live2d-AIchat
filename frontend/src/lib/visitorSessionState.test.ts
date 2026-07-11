@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeVisitorMessageRole, sortSessionSummaries } from './visitorSessionState'
+import {
+  canSwitchSessionWhileIdle,
+  isReplyFlowActiveForSessionSwitch,
+  mapHistoryMessagesToChatMessages,
+  normalizeVisitorMessageRole,
+  sortSessionSummaries,
+} from './visitorSessionState'
 
 describe('sortSessionSummaries', () => {
   it('sorts sessions by updatedAt descending', () => {
@@ -24,5 +30,58 @@ describe('normalizeVisitorMessageRole', () => {
     expect(() => normalizeVisitorMessageRole('moderator')).toThrow(
       'Unsupported visitor session message role: moderator',
     )
+  })
+})
+
+describe('mapHistoryMessagesToChatMessages', () => {
+  it('maps backend session messages into chat bubbles', () => {
+    const messages = mapHistoryMessagesToChatMessages([
+      { id: 1, role: 'user', content: '开放时间是什么时候？', createdAt: '2026-07-07T10:00:00Z' },
+      { id: 2, role: 'assistant', content: '景区整体一般是 9:00-21:30。', createdAt: '2026-07-07T10:00:01Z' },
+    ])
+
+    expect(messages[0].role).toBe('user')
+    expect(messages[1].role).toBe('assistant')
+    expect(messages[1].content).toContain('9:00-21:30')
+  })
+})
+
+describe('canSwitchSessionWhileIdle', () => {
+  it('blocks switching when a reply is still streaming', () => {
+    expect(canSwitchSessionWhileIdle({ isStreaming: true, isRecording: false })).toBe(false)
+  })
+
+  it('allows switching when streaming and recording are both idle', () => {
+    expect(canSwitchSessionWhileIdle({ isStreaming: false, isRecording: false })).toBe(true)
+  })
+})
+
+describe('isReplyFlowActiveForSessionSwitch', () => {
+  it('blocks switching while a reply is pending even before audio or text arrives', () => {
+    expect(
+      isReplyFlowActiveForSessionSwitch({
+        replyPending: true,
+        isPhotoPending: false,
+        assistantDraftActive: false,
+        avatarSpeechActive: false,
+        queuedAudioCount: 0,
+        bufferedAudioMs: 0,
+        scheduledLeadMs: 0,
+      }),
+    ).toBe(true)
+  })
+
+  it('allows switching again once no reply or photo work remains', () => {
+    expect(
+      isReplyFlowActiveForSessionSwitch({
+        replyPending: false,
+        isPhotoPending: false,
+        assistantDraftActive: false,
+        avatarSpeechActive: false,
+        queuedAudioCount: 0,
+        bufferedAudioMs: 0,
+        scheduledLeadMs: 0,
+      }),
+    ).toBe(false)
   })
 })

@@ -10,16 +10,23 @@ export interface RecommendationCard {
 
 const FALLBACK_QUESTION = '这条路线更适合什么时间段？'
 
+function normalizeInterestTags(interestTags: string[]) {
+  return interestTags.map((item) => item.trim()).filter((item) => item.length > 0)
+}
+
 export function assertRecommendationInterestTags(interestTags: string[]) {
-  const normalized = interestTags
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0)
+  const normalized = normalizeInterestTags(interestTags)
 
   if (normalized.length === 0) {
     throw new Error('At least one non-empty interest tag is required.')
   }
 
   return normalized
+}
+
+export function mergeInterestTags(current: string[], incoming: string[]) {
+  const merged = [...normalizeInterestTags(current), ...normalizeInterestTags(incoming)]
+  return merged.filter((item, index) => merged.indexOf(item) === index)
 }
 
 export function normalizeRecommendationCard(payload: {

@@ -1,13 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import ChatComposer from './components/ChatComposer.vue'
+import ChatTranscript from './components/ChatTranscript.vue'
+import InterestTagPanel from './components/InterestTagPanel.vue'
 import Live2DStage from './components/Live2DStage.vue'
+import PhotoAskPanel from './components/PhotoAskPanel.vue'
+import SessionHistoryRail from './components/SessionHistoryRail.vue'
 import { useAudioRecorder } from './composables/useAudioRecorder'
 import { useChatSocket } from './composables/useChatSocket'
+import { usePhotoRecognition } from './composables/usePhotoRecognition'
+import { useVisitorRecommendations } from './composables/useVisitorRecommendations'
+import { useVisitorSessions } from './composables/useVisitorSessions'
 import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
 import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageMeta'
 import { buildEmotionLampStyle } from './lib/emotionLamp'
 import { EMOTION_VISUALS } from './lib/lipsync'
+import { buildPhotoQuestion, shouldEnterThinkingForPhoto } from './lib/photoQuestion'
 import {
   computeAvatarPresentation,
   createDefaultConversationPhaseState,
@@ -19,6 +28,11 @@ import {
   shouldResetBufferedPlayback,
   shouldStartBufferedPlayback,
 } from './lib/streamAudioBuffer'
+import {
+  canSwitchSessionWhileIdle,
+  isReplyFlowActiveForSessionSwitch,
+} from './lib/visitorSessionState'
+import { createVisitorSession } from './services/visitorApi'
 import type {
   AudioEvent,
   AvatarPhaseEvent,
@@ -43,7 +57,7 @@ const RECONNECT_BASE_MS = Number(import.meta.env.VITE_RECONNECT_BASE_MS || 1200)
 
 const QUICK_HINTS = [
   '这里有什么历史故事？',
-  '第一次来应该怎么游览？',
+  '第一次来应该怎么逛？',
   '开放时间是什么时候？',
 ]
 
@@ -51,7 +65,8 @@ function createWelcomeMessage(): ChatMessage {
   return {
     id: 'welcome',
     role: 'assistant',
-    content: '欢迎来到景区 AI 数字人演示。你可以直接输入问题，或点击麦克风开始语音对话。当前页面已经接入表情映射与调试面板。',
+    content:
+      '欢迎来到景区 AI 数字人导览台。你可以直接提问，也可以选择兴趣标签、上传照片或点击推荐问题继续对话。',
   }
 }
 
@@ -61,7 +76,7 @@ function createDefaultEmotionTelemetry(): EmotionTelemetry {
     stage: 'final',
     confidence: 0.45,
     keywords: [],
-    reason: '等待新一轮回答时，保持中性待机状态。',
+    reason: '等待新一轮问题时，保持中性待机状态。',
     source: 'heuristic',
   }
 }
@@ -88,14 +103,19 @@ type AudioContextWindow = Window &
   }
 
 const live2dRef = ref<InstanceType<typeof Live2DStage> | null>(null)
-const chatBodyRef = ref<HTMLDivElement | null>(null)
+const transcriptRef = ref<{ scrollToEnd: () => Promise<void> } | null>(null)
 
-const sessionId = ref<string | null>(null)
+const visitorSessions = useVisitorSessions(API_BASE_URL)
+const sessionId = visitorSessions.activeSessionId
+const recommendationState = useVisitorRecommendations(API_BASE_URL, sessionId)
+const photoRecognition = usePhotoRecognition(API_BASE_URL, sessionId)
+
 const sessionBooting = ref(false)
 const bootError = ref('')
 const composer = ref('')
-const messages = ref<ChatMessage[]>([createWelcomeMessage()])
+const messages = visitorSessions.activeMessages
 const assistantDraftId = ref<string | null>(null)
+const replyPending = ref(false)
 const lastAsrPreview = ref('')
 const latestEmotion = ref<EmotionValue>('neutral')
 const emotionTelemetry = ref<EmotionTelemetry>(createDefaultEmotionTelemetry())
@@ -137,6 +157,22 @@ function clearAvatarCooldownTimer() {
     window.clearTimeout(avatarCooldownTimer)
     avatarCooldownTimer = 0
   }
+}
+
+function syncSessionTools(interestTags: string[]) {
+  recommendationState.setSelectedTags(interestTags)
+  recommendationState.clearRecommendation()
+  photoRecognition.clearResult()
+}
+
+function getSessionTagsById(targetSessionId: string | null) {
+  if (!targetSessionId) {
+    return []
+  }
+
+  return (
+    visitorSessions.sessionList.value.find((item) => item.sessionId === targetSessionId)?.interestTags ?? []
+  )
 }
 
 function applyAvatarPhase(event: AvatarPhaseEvent) {
@@ -183,17 +219,18 @@ function resetAvatarPresentationState() {
   conversationPhaseState.value = createDefaultConversationPhaseState()
 }
 
-function beginLocalThinkingPhase() {
+function beginLocalThinkingPhase(reason = 'local_reply_started') {
   applyAvatarPhase({
     type: 'avatar_phase',
     phase: 'thinking',
     reply_id: createMessageId('local-reply'),
     at_ms: Date.now(),
-    reason: 'local_reply_started',
+    reason,
   })
 }
 
 function resetReplyMediaState() {
+  replyPending.value = false
   resetAvatarPresentationState()
   for (const timer of phonemeFallbackTimers.values()) {
     window.clearTimeout(timer)
@@ -232,7 +269,7 @@ function resetReplyMediaState() {
 }
 
 function resetConversation() {
-  messages.value = [createWelcomeMessage()]
+  visitorSessions.replaceActiveMessages([createWelcomeMessage()])
   assistantDraftId.value = null
   lastAsrPreview.value = ''
   latestEmotion.value = 'neutral'
@@ -250,13 +287,7 @@ function pushSystemMessage(content: string) {
 }
 
 async function scrollChatToEnd() {
-  await nextTick()
-  const chatBody = chatBodyRef.value
-  if (!chatBody) {
-    return
-  }
-
-  chatBody.scrollTop = chatBody.scrollHeight
+  await transcriptRef.value?.scrollToEnd()
 }
 
 function ensureAssistantDraft() {
@@ -292,8 +323,22 @@ function patchLatestAssistantMessage(patch: Parameters<typeof attachAssistantMes
   return attachAssistantMessageMeta(messages.value, assistantDraftId.value, patch)
 }
 
+async function refreshSessionsQuietly() {
+  try {
+    await visitorSessions.refreshSessions()
+  } catch {
+    return
+  }
+}
+
 async function createSession() {
   if (sessionBooting.value) {
+    return
+  }
+
+  if (isSessionSwitchBlocked.value) {
+    pushSystemMessage(sessionSwitchBlockedReason.value)
+    await scrollChatToEnd()
     return
   }
 
@@ -301,29 +346,18 @@ async function createSession() {
   bootError.value = ''
 
   try {
-    const response = await fetch(`${API_BASE_URL}/sessions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        interest_tags: ['history', 'nature'],
-        device_type: 'mobile',
-      }),
+    const payload = await createVisitorSession(API_BASE_URL, {
+      deviceType: 'mobile',
     })
-
-    if (!response.ok) {
-      throw new Error(`Session create failed: ${response.status}`)
-    }
-
-    const payload = (await response.json()) as { session_id: string }
     resetConversation()
-    sessionId.value = payload.session_id
-    pushSystemMessage(`已创建新会话：${payload.session_id}`)
+    visitorSessions.setActiveSession(payload.sessionId, [createWelcomeMessage()])
+    syncSessionTools([])
+    await visitorSessions.refreshSessions()
   } catch (error) {
     bootError.value = error instanceof Error ? error.message : '创建会话失败。'
   } finally {
     sessionBooting.value = false
+    await scrollChatToEnd()
   }
 }
 
@@ -448,7 +482,7 @@ async function playNextAudio() {
     }
   } catch (error) {
     playbackError.value =
-      error instanceof Error ? error.message : '浏览器阻止了自动播放，请先进行一次页面交互。'
+      error instanceof Error ? error.message : '浏览器阻止了自动播放，请先与页面进行一次交互。'
     playPhonemeFallbackNow(nextAudio.seq)
     release()
   }
@@ -537,10 +571,6 @@ function flushBufferedStreamAudio(context: AudioContext) {
     source.buffer = buffer
     source.connect(gain).connect(context.destination)
 
-    // CosyVoice2 stream chunks are sample-contiguous (continuous decoder state),
-    // so fading every chunk to silence would notch each join and sound like a
-    // programmatic pause at fixed positions. Only fade in at the reply start or
-    // after an underrun gap, and only fade out on the final chunk.
     const isReplyStart = !hadScheduledAudio
     const hadUnderrun = hadScheduledAudio && scheduledAt > previousNextStartTime + 0.001
     if (isReplyStart || hadUnderrun) {
@@ -758,6 +788,7 @@ function handleSocketMessage(payload: ServerSocketMessage) {
   }
 
   if (payload.type === 'done') {
+    replyPending.value = false
     finalizeAssistantDraft()
     applyAvatarPhase({
       type: 'avatar_phase',
@@ -765,13 +796,21 @@ function handleSocketMessage(payload: ServerSocketMessage) {
       at_ms: Date.now(),
       reason: 'reply_done_fallback',
     })
+    void refreshSessionsQuietly()
     void scrollChatToEnd()
   }
 }
 
 function handleSocketError(message: string) {
+  replyPending.value = false
   pushSystemMessage(message)
   finalizeAssistantDraft()
+  applyAvatarPhase({
+    type: 'avatar_phase',
+    phase: 'idle',
+    at_ms: Date.now(),
+    reason: 'socket_error',
+  })
   void scrollChatToEnd()
 }
 
@@ -812,6 +851,46 @@ const recorder = useAudioRecorder({
   onError: handleSocketError,
 })
 
+const isPhotoThinking = computed(() =>
+  shouldEnterThinkingForPhoto({
+    uploading: photoRecognition.uploading.value,
+    recognizing: photoRecognition.recognizing.value,
+  }),
+)
+const isReplyStreaming = computed(
+  () =>
+    isReplyFlowActiveForSessionSwitch({
+      replyPending: replyPending.value,
+      isPhotoPending: isPhotoThinking.value,
+      assistantDraftActive: assistantDraftId.value !== null,
+      avatarSpeechActive: avatarSpeechActive.value,
+      queuedAudioCount: queuedAudio.value.length,
+      bufferedAudioMs: playbackTelemetry.value.bufferedAudioMs,
+      scheduledLeadMs: playbackTelemetry.value.scheduledLeadMs,
+    }),
+)
+const isSessionSwitchBlocked = computed(
+  () =>
+    !canSwitchSessionWhileIdle({
+      isStreaming: isReplyStreaming.value,
+      isRecording: recorder.isRecording.value,
+    }),
+)
+const sessionSwitchBlockedReason = computed(() => {
+  if (recorder.isRecording.value) {
+    return '录音进行中，暂时不能切换会话。'
+  }
+
+  if (isPhotoThinking.value) {
+    return '图片识别进行中，等识别完成后再切换会话。'
+  }
+
+  if (isReplyStreaming.value) {
+    return '导览助手还在回复，等这一轮结束后再切换。'
+  }
+
+  return ''
+})
 const canSend = computed(
   () => socket.state.value === 'connected' && composer.value.trim().length > 0 && !sessionBooting.value,
 )
@@ -841,6 +920,16 @@ const emotionStageLabel = computed(() => {
   }
   return labels[emotionTelemetry.value.stage]
 })
+const activeInterestSummary = computed(() => {
+  const tags = recommendationState.selectedInterestTags.value
+  return tags.length > 0 ? tags.join(' / ') : '未设置偏好'
+})
+const visitorToolsDisabled = computed(
+  () => !sessionId.value || sessionBooting.value || visitorSessions.loading.value,
+)
+const historyRailDisabled = computed(
+  () => sessionBooting.value || visitorSessions.loading.value || isSessionSwitchBlocked.value,
+)
 
 const connectionLabel = computed(() => {
   switch (socket.state.value) {
@@ -859,36 +948,59 @@ const connectionLabel = computed(() => {
   }
 })
 
-async function sendText() {
-  const content = composer.value.trim()
-  if (!content) {
-    return
+async function sendOutgoingText(
+  content: string,
+  options: {
+    meta?: string
+    resetTurn?: boolean
+    clearComposer?: boolean
+  } = {},
+) {
+  const normalized = content.trim()
+  if (!normalized) {
+    return false
   }
 
   if (socket.state.value !== 'connected') {
     handleSocketError('当前 WebSocket 尚未连接，暂时无法发送消息。')
-    return
+    return false
   }
 
   void unlockAudioPlayback()
 
   messages.value.push({
-    id: createMessageId('user'),
+    id: createMessageId(options.meta ? 'user-meta' : 'user'),
     role: 'user',
-    content,
+    content: normalized,
+    meta: options.meta,
   })
 
-  resetReplyMediaState()
-  beginLocalThinkingPhase()
-  composer.value = ''
-  finalizeAssistantDraft()
-
-  const sent = socket.send({ type: 'text', content })
-  if (!sent) {
-    handleSocketError('文本消息发送失败，请稍后重试。')
+  if (options.resetTurn ?? true) {
+    resetReplyMediaState()
+    beginLocalThinkingPhase()
+    finalizeAssistantDraft()
   }
 
+  if (options.clearComposer) {
+    composer.value = ''
+  }
+
+  const sent = socket.send({ type: 'text', content: normalized })
+  if (!sent) {
+    handleSocketError('文本消息发送失败，请稍后重试。')
+    return false
+  }
+
+  replyPending.value = true
   await scrollChatToEnd()
+  return sent
+}
+
+async function sendText() {
+  await sendOutgoingText(composer.value, {
+    clearComposer: true,
+    resetTurn: true,
+  })
 }
 
 async function toggleRecording() {
@@ -904,8 +1016,9 @@ async function toggleRecording() {
 
   void unlockAudioPlayback()
   resetReplyMediaState()
-  beginLocalThinkingPhase()
+  beginLocalThinkingPhase('voice_recording_started')
   finalizeAssistantDraft()
+  replyPending.value = true
   await recorder.start()
 }
 
@@ -920,12 +1033,137 @@ async function reconnectNow() {
   await socket.connect()
 }
 
+async function openSession(targetSessionId: string) {
+  if (sessionId.value === targetSessionId) {
+    return
+  }
+
+  if (isSessionSwitchBlocked.value) {
+    pushSystemMessage(sessionSwitchBlockedReason.value)
+    await scrollChatToEnd()
+    return
+  }
+
+  bootError.value = ''
+  composer.value = ''
+  finalizeAssistantDraft()
+  resetReplyMediaState()
+  latestEmotion.value = 'neutral'
+  emotionTelemetry.value = createDefaultEmotionTelemetry()
+  lastAsrPreview.value = ''
+  syncSessionTools(getSessionTagsById(targetSessionId))
+
+  try {
+    await visitorSessions.openSession(targetSessionId)
+    if (messages.value.length === 0) {
+      visitorSessions.replaceActiveMessages([createWelcomeMessage()])
+    }
+    await visitorSessions.refreshSessions()
+  } catch (error) {
+    bootError.value = error instanceof Error ? error.message : '加载会话失败。'
+  } finally {
+    await scrollChatToEnd()
+  }
+}
+
+async function bootstrapSessions() {
+  bootError.value = ''
+
+  try {
+    await visitorSessions.refreshSessions()
+    const latest = visitorSessions.sessionList.value[0]
+    if (latest) {
+      syncSessionTools(latest.interestTags)
+      await visitorSessions.openSession(latest.sessionId)
+      if (messages.value.length === 0) {
+        visitorSessions.replaceActiveMessages([createWelcomeMessage()])
+      }
+      return
+    }
+  } catch (error) {
+    bootError.value = error instanceof Error ? error.message : '加载历史会话失败。'
+  }
+
+  await createSession()
+}
+
+async function handleToggleInterestTag(tag: string) {
+  try {
+    await recommendationState.toggleTag(tag)
+    await refreshSessionsQuietly()
+  } catch {
+    return
+  }
+}
+
+async function handleGenerateRecommendation() {
+  if (!sessionId.value) {
+    return
+  }
+
+  if (recommendationState.selectedInterestTags.value.length === 0) {
+    pushSystemMessage('先选择至少一个兴趣标签，我再帮你规划路线。')
+    await scrollChatToEnd()
+    return
+  }
+
+  try {
+    await recommendationState.refreshRecommendations()
+  } catch {
+    return
+  }
+}
+
+async function handleRecommendationQuestion(question: string) {
+  await sendOutgoingText(question, {
+    meta: '路线推荐',
+    resetTurn: true,
+  })
+}
+
+async function handlePhotoPicked(file: File) {
+  if (!sessionId.value) {
+    await createSession()
+    if (!sessionId.value) {
+      return
+    }
+  }
+
+  try {
+    photoRecognition.clearResult()
+    resetReplyMediaState()
+    beginLocalThinkingPhase('photo_recognition_started')
+
+    const result = await photoRecognition.recognize(
+      file,
+      recommendationState.selectedInterestTags.value,
+    )
+    const autoQuestion = buildPhotoQuestion({
+      recognizedSpot: result.recognizedSpot,
+      recognitionSummary: result.recognitionSummary,
+      resolvedQuestion: result.resolvedQuestion,
+    })
+    await sendOutgoingText(autoQuestion, {
+      meta: '图片识别',
+      resetTurn: false,
+    })
+  } catch {
+    applyAvatarPhase({
+      type: 'avatar_phase',
+      phase: 'idle',
+      at_ms: Date.now(),
+      reason: 'photo_recognition_error',
+    })
+    await scrollChatToEnd()
+  }
+}
+
 watch([avatarPresentation, live2dRef], ([presentation, live2d]) => {
   live2d?.setAvatarPresentation(presentation)
 }, { immediate: true })
 
 onMounted(async () => {
-  await createSession()
+  await bootstrapSessions()
   await scrollChatToEnd()
 })
 
@@ -943,10 +1181,11 @@ onBeforeUnmount(() => {
 
     <header class="topbar">
       <div>
-        <p class="eyebrow">Phase 2 Visitor Demo</p>
+        <p class="eyebrow">Phase 3 Visitor Experience</p>
         <h1>景区 AI 数字人导览台</h1>
         <p class="subtitle">
-          已接入示例 Live2D 模型、文本与语音输入、WebSocket 流式对话、口型同步，以及表情识别与调试链路。
+          当前页面整合了历史会话、个性化路线推荐、拍照问景点、流式语音回复和 Live2D 口型同步，
+          方便在同一个游客端完成完整体验。
         </p>
       </div>
       <div class="topbar-meta">
@@ -958,10 +1197,24 @@ onBeforeUnmount(() => {
           <span class="meta-label">连接</span>
           <strong>{{ connectionLabel }}</strong>
         </div>
+        <div class="meta-chip">
+          <span class="meta-label">偏好</span>
+          <strong>{{ activeInterestSummary }}</strong>
+        </div>
       </div>
     </header>
 
     <main class="workspace">
+      <SessionHistoryRail
+        :sessions="visitorSessions.sessionList.value"
+        :active-session-id="sessionId"
+        :loading="sessionBooting || visitorSessions.loading.value || visitorSessions.refreshing.value"
+        :disabled="historyRailDisabled"
+        :disabled-reason="visitorSessions.error.value || sessionSwitchBlockedReason"
+        @create="createSession"
+        @open="openSession"
+      />
+
       <section class="stage-panel panel">
         <div class="panel-header">
           <div>
@@ -1022,7 +1275,7 @@ onBeforeUnmount(() => {
           </article>
           <article class="telemetry-card">
             <span class="telemetry-label">识别回显</span>
-            <p>{{ lastAsrPreview || '开始录音后会在这里显示 ASR 文本。' }}</p>
+            <p>{{ lastAsrPreview || '开始录音后，会在这里显示语音识别文本。' }}</p>
           </article>
           <article class="telemetry-card">
             <span class="telemetry-label">流式缓冲</span>
@@ -1036,98 +1289,50 @@ onBeforeUnmount(() => {
       <section class="chat-panel panel">
         <div class="panel-header">
           <div>
-            <p class="panel-kicker">Realtime Channel</p>
+            <p class="panel-kicker">Visitor Channel</p>
             <h2>游客对话台</h2>
           </div>
           <div class="header-actions">
             <button class="ghost-button" type="button" @click="reconnectNow">手动重连</button>
-            <button class="ghost-button" type="button" @click="createSession">新建会话</button>
           </div>
         </div>
 
         <p v-if="bootError" class="banner banner-error">{{ bootError }}</p>
         <p v-else-if="playbackError" class="banner banner-warn">{{ playbackError }}</p>
 
-        <div ref="chatBodyRef" class="chat-body">
-          <article
-            v-for="message in messages"
-            :key="message.id"
-            class="bubble"
-            :class="`bubble-${message.role}`"
-          >
-            <header class="bubble-head">
-              <span>{{
-                message.role === 'assistant' ? '导览助手' : message.role === 'user' ? '游客' : '系统'
-              }}</span>
-              <span v-if="message.meta">{{ message.meta }}</span>
-            </header>
-            <p class="bubble-content">
-              {{ message.content }}
-              <span v-if="message.streaming" class="cursor">|</span>
-            </p>
-            <section v-if="message.sources?.length" class="bubble-sources">
-              <p class="bubble-subsection-title">资料依据</p>
-              <article
-                v-for="(source, index) in message.sources"
-                :key="`${message.id}-source-${index}`"
-                class="source-card"
-              >
-                <div class="source-card-head">
-                  <strong>{{ source.title || '未命名资料' }}</strong>
-                  <span>{{ source.filename }}</span>
-                </div>
-                <p class="source-excerpt">{{ source.excerpt }}</p>
-              </article>
-            </section>
-            <p v-if="message.needsFollowup" class="followup-hint">
-              还可继续补充范围，我再帮你细看。
-            </p>
-          </article>
+        <div class="visitor-tools">
+          <InterestTagPanel
+            :selected-tags="recommendationState.selectedInterestTags.value"
+            :recommendation="recommendationState.recommendation.value"
+            :loading="recommendationState.loading.value"
+            :saving="recommendationState.saving.value"
+            :error="recommendationState.error.value"
+            :disabled="visitorToolsDisabled"
+            @toggle-tag="handleToggleInterestTag"
+            @refresh="handleGenerateRecommendation"
+            @ask-question="handleRecommendationQuestion"
+          />
+
+          <PhotoAskPanel
+            :busy="photoRecognition.uploading.value || photoRecognition.recognizing.value"
+            :disabled="visitorToolsDisabled"
+            :error="photoRecognition.error.value"
+            :result="photoRecognition.lastResult.value"
+            @pick="handlePhotoPicked"
+          />
         </div>
 
-        <div class="quick-hints">
-          <button
-            v-for="hint in QUICK_HINTS"
-            :key="hint"
-            type="button"
-            class="hint-chip"
-            @click="composer = hint"
-          >
-            {{ hint }}
-          </button>
-        </div>
+        <ChatTranscript ref="transcriptRef" :messages="messages" />
 
-        <div class="composer-panel">
-          <textarea
-            v-model="composer"
-            class="composer-input"
-            placeholder="输入你想问的问题，按 Enter 发送，Shift + Enter 换行"
-            rows="4"
-            @keydown.enter.exact.prevent="sendText"
-          ></textarea>
-
-          <div class="composer-footer">
-            <div class="support-text">
-              <span>后端接口：{{ API_BASE_URL }}</span>
-              <span>WebSocket：{{ WS_BASE_URL }}</span>
-            </div>
-
-            <div class="composer-actions">
-              <button
-                type="button"
-                class="record-button"
-                :class="{ active: recorder.isRecording.value }"
-                :disabled="!canRecord"
-                @click="toggleRecording"
-              >
-                {{ recorder.isRecording.value ? '停止录音' : '开始录音' }}
-              </button>
-              <button type="button" class="send-button" :disabled="!canSend" @click="sendText">
-                发送文本
-              </button>
-            </div>
-          </div>
-        </div>
+        <ChatComposer
+          v-model="composer"
+          :quick-hints="QUICK_HINTS"
+          :can-send="canSend"
+          :can-record="canRecord"
+          :is-recording="recorder.isRecording.value"
+          @send="sendText"
+          @toggle-recording="toggleRecording"
+        />
       </section>
     </main>
   </div>

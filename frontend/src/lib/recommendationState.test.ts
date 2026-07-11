@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { assertRecommendationInterestTags, normalizeRecommendationCard } from './recommendationState'
+import {
+  assertRecommendationInterestTags,
+  mergeInterestTags,
+  normalizeRecommendationCard,
+} from './recommendationState'
 
 describe('normalizeRecommendationCard', () => {
   it('creates a stable fallback question list when the API returns none', () => {
@@ -28,5 +32,15 @@ describe('assertRecommendationInterestTags', () => {
     expect(() => assertRecommendationInterestTags(['   '])).toThrow(
       'At least one non-empty interest tag is required.',
     )
+  })
+})
+
+describe('mergeInterestTags', () => {
+  it('keeps stable unique interest tag ordering', () => {
+    expect(mergeInterestTags(['亲子', '轻松'], ['轻松', '夜游'])).toEqual([
+      '亲子',
+      '轻松',
+      '夜游',
+    ])
   })
 })
