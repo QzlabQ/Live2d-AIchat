@@ -4,12 +4,15 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi import File, Form, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.db.models import Session
+from app.db.models import AvatarConfig, Session
 from app.db.session import get_db
 from app.schemas.visitor import (
+    VisitorAvatarProfileListResponse,
+    VisitorAvatarProfileSummary,
     VisionRecognitionResponse,
     VisitorRecommendationRequest,
     VisitorRecommendationResponse,
@@ -27,6 +30,61 @@ from app.services.vision import (
 )
 
 router = APIRouter(prefix="/sessions")
+
+
+def serialize_avatar_profile(profile: AvatarConfig) -> VisitorAvatarProfileSummary:
+    return VisitorAvatarProfileSummary(
+        id=profile.id,
+        name=profile.name,
+        slug=profile.slug,
+        is_active=profile.is_active,
+        model_path=profile.model_path,
+        updated_at=profile.updated_at,
+    )
+
+
+async def fetch_avatar_profile(db: AsyncSession, profile_id: int) -> AvatarConfig:
+    profile = await db.get(AvatarConfig, profile_id)
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar profile not found.")
+    return profile
+
+
+async def set_active_avatar_profile(db: AsyncSession, profile_id: int) -> AvatarConfig:
+    profile = await fetch_avatar_profile(db, profile_id)
+    profiles = list((await db.execute(select(AvatarConfig))).scalars())
+    for item in profiles:
+        item.is_active = item.id == profile.id
+    await db.commit()
+    await db.refresh(profile)
+    return profile
+
+
+@router.get("/avatar/profiles", response_model=VisitorAvatarProfileListResponse)
+async def list_public_avatar_profiles(
+    db: AsyncSession = Depends(get_db),
+) -> VisitorAvatarProfileListResponse:
+    items = list(
+        (
+            await db.execute(
+                select(AvatarConfig).order_by(
+                    AvatarConfig.is_active.desc(),
+                    AvatarConfig.updated_at.desc(),
+                    AvatarConfig.id.desc(),
+                )
+            )
+        ).scalars()
+    )
+    return VisitorAvatarProfileListResponse(items=[serialize_avatar_profile(item) for item in items])
+
+
+@router.post("/avatar/profiles/{profile_id}/activate", response_model=VisitorAvatarProfileSummary)
+async def activate_public_avatar_profile(
+    profile_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> VisitorAvatarProfileSummary:
+    profile = await set_active_avatar_profile(db, profile_id)
+    return serialize_avatar_profile(profile)
 
 
 @router.post("/{session_id}/recommendations", response_model=VisitorRecommendationResponse)

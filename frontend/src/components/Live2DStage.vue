@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import * as PIXI from 'pixi.js'
 import { Live2DModel } from 'pixi-live2d-display/cubism4'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
   buildEmotionTarget,
@@ -293,7 +293,11 @@ async function createModel() {
     resolution: window.devicePixelRatio || 1,
   })
 
-  stageHost.value.appendChild(pixiApp.view as HTMLCanvasElement)
+  const canvas = pixiApp.view as HTMLCanvasElement
+  canvas.style.display = 'block'
+  canvas.style.width = '100%'
+  canvas.style.height = '100%'
+  stageHost.value.appendChild(canvas)
   pixiApp.stage.addChild(model as unknown as PIXI.DisplayObject)
   resizeModel()
   playIdleMotion()
@@ -309,6 +313,35 @@ async function createModel() {
   })
 
   resizeObserver.observe(stageHost.value)
+}
+
+function destroyModelRuntime() {
+  window.clearInterval(idleTimer)
+  idleTimer = 0
+  lipSyncState = null
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  if (pixiApp) {
+    pixiApp.destroy(true, { children: true })
+  }
+  pixiApp = null
+  model = null
+  currentOpen = 0.06
+  currentForm = 0
+}
+
+async function loadModel() {
+  loading.value = true
+  loadError.value = ''
+  destroyModelRuntime()
+
+  try {
+    await createModel()
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : 'Live2D model loading failed.'
+  } finally {
+    loading.value = false
+  }
 }
 
 function setEmotion(emotion: EmotionValue, stage: EmotionStage = 'final') {
@@ -391,23 +424,22 @@ defineExpose({
 })
 
 onMounted(async () => {
-  try {
-    await createModel()
-  } catch (error) {
-    loadError.value = error instanceof Error ? error.message : 'Live2D model loading failed.'
-  } finally {
-    loading.value = false
-  }
+  await loadModel()
 })
 
 onBeforeUnmount(() => {
-  window.clearInterval(idleTimer)
-  lipSyncState = null
-  resizeObserver?.disconnect()
-  pixiApp?.destroy(true, { children: true })
-  pixiApp = null
-  model = null
+  destroyModelRuntime()
 })
+
+watch(
+  () => props.modelPath,
+  async (next, previous) => {
+    if (!next || next === previous) {
+      return
+    }
+    await loadModel()
+  },
+)
 </script>
 
 <template>

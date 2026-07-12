@@ -78,6 +78,33 @@ OUT_OF_DOMAIN_HINTS = (
 )
 
 
+def normalize_response_language(value: str | None) -> str:
+    normalized = str(value or "zh").strip().lower()
+    return "en" if normalized.startswith("en") else "zh"
+
+
+def localized_text(response_language: str | None, zh_text: str, en_text: str) -> str:
+    return en_text if normalize_response_language(response_language) == "en" else zh_text
+
+
+def build_answer_language_instruction(response_language: str | None) -> str:
+    if normalize_response_language(response_language) == "en":
+        return (
+            "Please answer in natural spoken English for visitors. "
+            "Do not switch to Chinese unless the user explicitly asks for Chinese."
+        )
+    return "请给出一段面向游客的中文回答。除非用户明确要求其他语言，否则不要切换成英文。"
+
+
+def build_humanized_language_instruction(response_language: str | None) -> str:
+    if normalize_response_language(response_language) == "en":
+        return (
+            "Your job is not to copy the source material. "
+            "Rewrite it into natural, concise spoken English that visitors can understand directly."
+        )
+    return "你的任务不是复述资料，而是把资料整理成游客能直接听懂的自然中文。"
+
+
 @dataclass(slots=True)
 class RetrievedChunk:
     chunk_id: str
@@ -332,7 +359,7 @@ class ScenicRAGService:
                         "导览员人设：{persona}\n\n"
                         "用户问题：{question}\n\n"
                         "参考资料：\n{context}\n\n"
-                        "请给出一段面向游客的中文回答。"
+                        "{language_instruction}"
                         "不要直接说“根据上下文”。"
                         "如果可以回答，优先先给结论，再补充细节。"
                     ),
@@ -340,8 +367,17 @@ class ScenicRAGService:
             ]
         )
 
-    async def answer(self, question: str, persona: str | None = None) -> RAGAnswer:
-        prepared = await self.prepare_stream_answer(question, persona=persona)
+    async def answer(
+        self,
+        question: str,
+        persona: str | None = None,
+        response_language: str | None = None,
+    ) -> RAGAnswer:
+        prepared = await self.prepare_stream_answer(
+            question,
+            persona=persona,
+            response_language=response_language,
+        )
         if prepared.llm_messages:
             try:
                 answer_body = await self.llm.complete(prepared.llm_messages)
@@ -388,6 +424,7 @@ class ScenicRAGService:
                 answer_body = await self._generate_with_llm(
                     question=query,
                     persona=persona or self.settings.default_avatar_persona,
+                    response_language=response_language,
                     context=context,
                 )
                 used_llm = True
@@ -412,7 +449,12 @@ class ScenicRAGService:
             used_llm=used_llm,
         )
 
-    async def prepare_stream_answer(self, question: str, persona: str | None = None) -> PreparedRAGAnswer:
+    async def prepare_stream_answer(
+        self,
+        question: str,
+        persona: str | None = None,
+        response_language: str | None = None,
+    ) -> PreparedRAGAnswer:
         query = normalize_question(question)
         if not query:
             return PreparedRAGAnswer(
@@ -458,6 +500,7 @@ class ScenicRAGService:
                 llm_messages=self._build_llm_messages(
                     question=query,
                     persona=persona or self.settings.default_avatar_persona,
+                    response_language=response_language,
                     context=context,
                 ),
                 fallback_text=fallback_text,
@@ -541,16 +584,34 @@ class ScenicRAGService:
             self._reranker = LexicalReranker()
         return self._reranker
 
-    async def _generate_with_llm(self, question: str, persona: str, context: str) -> str:
-        messages = self._build_llm_messages(question=question, persona=persona, context=context)
+    async def _generate_with_llm(
+        self,
+        question: str,
+        persona: str,
+        response_language: str | None,
+        context: str,
+    ) -> str:
+        messages = self._build_llm_messages(
+            question=question,
+            persona=persona,
+            response_language=response_language,
+            context=context,
+        )
         return await self.llm.complete(messages)
 
-    def _build_llm_messages(self, question: str, persona: str, context: str) -> list[dict[str, str]]:
+    def _build_llm_messages(
+        self,
+        question: str,
+        persona: str,
+        response_language: str | None,
+        context: str,
+    ) -> list[dict[str, str]]:
         return [
             {"role": message.type, "content": message.content}
             for message in self.prompt.format_messages(
                 persona=persona,
                 question=question,
+                language_instruction=build_answer_language_instruction(response_language),
                 context=context,
             )
         ]

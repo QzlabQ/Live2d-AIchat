@@ -115,7 +115,7 @@ class BuildStructuredAnswerTests(unittest.TestCase):
 
 class ClarificationResolverTests(unittest.IsolatedAsyncioTestCase):
     async def test_marks_user_reply_as_followup_when_it_answers_previous_clarification(self) -> None:
-        resolver = ClarificationResolver(Settings(chat_mode="rag"))
+        resolver = ClarificationResolver(Settings(chat_mode="rag", dashscope_api_key=None))
 
         result = await resolver.resolve(
             original_question="开放时间是什么时候？",
@@ -127,7 +127,7 @@ class ClarificationResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("景区整体", result.resolved_question)
 
     async def test_marks_unrelated_user_reply_as_new_question(self) -> None:
-        resolver = ClarificationResolver(Settings(chat_mode="rag"))
+        resolver = ClarificationResolver(Settings(chat_mode="rag", dashscope_api_key=None))
 
         result = await resolver.resolve(
             original_question="开放时间是什么时候？",
@@ -145,7 +145,7 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
             patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
         ):
-            service = ScenicRAGService(Settings(chat_mode="rag"))
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
         service.retrieve = self._async_return(
             [
                 make_chunk(
@@ -178,7 +178,7 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
             patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
         ):
-            service = ScenicRAGService(Settings(chat_mode="rag"))
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
         service.retrieve = self._async_return(
             [
                 make_chunk(
@@ -195,6 +195,24 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(answer.answer_text)
         self.assertNotIn("参考资料", answer.answer_text)
         self.assertIn("9:00", answer.answer_text)
+
+    async def test_builds_english_decision_prompt_when_avatar_language_is_en(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
+
+        messages = service._build_decision_messages(
+            question="开放时间是什么时候？",
+            persona="You are a witty guide.",
+            context="[1] 景区开放时间 9:00-21:30",
+            history=[],
+            response_language="en",
+        )
+
+        self.assertIn("natural, concise spoken English", messages[0]["content"])
+        self.assertIn('"spoken_answer":"natural spoken English for visitors', messages[1]["content"])
 
     @staticmethod
     def _async_return(value):

@@ -74,6 +74,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 self,
                 user_text: str,
                 persona: str | None = None,
+                response_language: str | None = None,
                 *,
                 query_text: str | None = None,
                 history: list[dict[str, str]] | None = None,
@@ -132,6 +133,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         websocket = FakeWebSocket()
         avatar = SimpleNamespace(
             persona="guide",
+            response_language="en",
             voice_id="voice",
             tts_reference_audio_path="prompt.wav",
             tts_reference_text="prompt text",
@@ -292,6 +294,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 session_id="session-reply",
                 avatar=SimpleNamespace(
                     persona="guide",
+                    response_language="en",
                     voice_id="voice",
                     tts_reference_audio_path="prompt.wav",
                     tts_reference_text="prompt text",
@@ -340,6 +343,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 self,
                 user_text: str,
                 persona: str | None = None,
+                response_language: str | None = None,
                 *,
                 query_text: str | None = None,
                 history: list[dict[str, str]] | None = None,
@@ -376,6 +380,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 session_id="session-2",
                 avatar=SimpleNamespace(
                     persona="guide",
+                    response_language="zh",
                     voice_id="voice",
                     tts_reference_audio_path="prompt.wav",
                     tts_reference_text="prompt text",
@@ -489,6 +494,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 session_id="session-3",
                 avatar=SimpleNamespace(
                     persona="guide",
+                    response_language="zh",
                     voice_id="voice",
                     tts_reference_audio_path="prompt.wav",
                     tts_reference_text="prompt text",
@@ -571,6 +577,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 session_id="session-4",
                 avatar=SimpleNamespace(
                     persona="guide",
+                    response_language="zh",
                     voice_id="voice",
                     tts_reference_audio_path="prompt.wav",
                     tts_reference_text="prompt text",

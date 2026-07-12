@@ -7,7 +7,19 @@ export interface ChatMessage {
   sources?: SourceItem[]
   replyKind?: string
   needsFollowup?: boolean
+  toolResult?: ChatToolResult
 }
+
+export interface RouteRecommendationToolResult {
+  kind: 'route_recommendation'
+  routeTitle: string
+  intro: string
+  highlights: string[]
+  suggestedQuestions: string[]
+  appliedInterestTags: string[]
+}
+
+export type ChatToolResult = RouteRecommendationToolResult
 
 export interface SourceItem {
   filename: string

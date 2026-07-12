@@ -1,6 +1,8 @@
 import { assertRecommendationInterestTags } from '../lib/recommendationState'
 import { normalizeVisitorMessageRole } from '../lib/visitorSessionState'
 import type {
+  VisitorAvatarProfileListResponse,
+  VisitorAvatarProfileSummary,
   VisionRecognitionResult,
   VisitorRecommendation,
   VisitorSessionListResponse,
@@ -51,6 +53,19 @@ interface VisionRecognitionResultApi {
   stored_image_path: string
 }
 
+interface VisitorAvatarProfileSummaryApi {
+  id: number
+  name: string
+  slug: string
+  is_active: boolean
+  model_path: string
+  updated_at: string
+}
+
+interface VisitorAvatarProfileListResponseApi {
+  items: VisitorAvatarProfileSummaryApi[]
+}
+
 function trimApiBaseUrl(apiBaseUrl: string) {
   return apiBaseUrl.replace(/\/+$/, '')
 }
@@ -90,6 +105,19 @@ function mapVisionRecognition(payload: VisionRecognitionResultApi): VisionRecogn
     recognitionSummary: payload.recognition_summary,
     resolvedQuestion: payload.resolved_question,
     storedImagePath: payload.stored_image_path,
+  }
+}
+
+function mapVisitorAvatarProfile(
+  payload: VisitorAvatarProfileSummaryApi,
+): VisitorAvatarProfileSummary {
+  return {
+    id: payload.id,
+    name: payload.name,
+    slug: payload.slug,
+    isActive: payload.is_active,
+    modelPath: payload.model_path,
+    updatedAt: payload.updated_at,
   }
 }
 
@@ -205,4 +233,35 @@ export async function recognizeVisitorPhoto(
 
   const data = await readJson<VisionRecognitionResultApi>(response, 'recognize photo')
   return mapVisionRecognition(data)
+}
+
+export async function listVisitorAvatarProfiles(
+  apiBaseUrl: string,
+): Promise<VisitorAvatarProfileListResponse> {
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/sessions/avatar/profiles`)
+  const data = await readJson<VisitorAvatarProfileListResponseApi>(
+    response,
+    'load visitor avatar profiles',
+  )
+
+  return {
+    items: data.items.map(mapVisitorAvatarProfile),
+  }
+}
+
+export async function activateVisitorAvatarProfile(
+  apiBaseUrl: string,
+  profileId: number,
+): Promise<VisitorAvatarProfileSummary> {
+  const response = await fetch(
+    `${trimApiBaseUrl(apiBaseUrl)}/sessions/avatar/profiles/${profileId}/activate`,
+    {
+      method: 'POST',
+    },
+  )
+  const data = await readJson<VisitorAvatarProfileSummaryApi>(
+    response,
+    'activate visitor avatar profile',
+  )
+  return mapVisitorAvatarProfile(data)
 }

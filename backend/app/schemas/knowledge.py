@@ -11,9 +11,11 @@ class KnowledgeDocItem(BaseModel):
     id: str
     filename: str
     category: str
+    stored_path: str
     chunk_count: int
     uploaded_at: datetime
     status: str
+    error_message: str
 
 
 class KnowledgeDocListResponse(BaseModel):

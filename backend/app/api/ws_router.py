@@ -62,8 +62,17 @@ async def send_error(websocket: WebSocket, code: str, message: str) -> None:
 
 
 async def get_avatar_config(session) -> AvatarConfig:
-    result = await session.execute(select(AvatarConfig).limit(1))
+    result = await session.execute(
+        select(AvatarConfig)
+        .where(AvatarConfig.is_active.is_(True))
+        .order_by(AvatarConfig.updated_at.desc(), AvatarConfig.id.desc())
+        .limit(1)
+    )
     avatar = result.scalar_one_or_none()
+    if avatar is None:
+        avatar = (
+            await session.execute(select(AvatarConfig).order_by(AvatarConfig.id.asc()).limit(1))
+        ).scalar_one_or_none()
     if avatar is None:
         raise RuntimeError("Avatar configuration has not been initialized.")
     return avatar
@@ -212,6 +221,7 @@ async def stream_assistant_reply(
         async for event in chat_service.stream_reply(
             content,
             persona=avatar.persona,
+            response_language=avatar.response_language,
             query_text=query_text,
             history=history,
         ):

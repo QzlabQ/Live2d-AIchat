@@ -23,9 +23,22 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
+    admin_username: str = "admin"
+    admin_password: str = "admin123"
+    admin_jwt_secret: str = "change-me-admin-secret"
+    admin_token_ttl_seconds: int = 86_400
+    admin_knowledge_upload_dir: str = "./storage/uploads/admin/knowledge"
+    admin_knowledge_max_bytes: int = 50 * 1024 * 1024
+    admin_voice_upload_dir: str = "./storage/uploads/admin/voice_profiles"
+    admin_voice_max_bytes: int = 32 * 1024 * 1024
+    analytics_scheduler_enabled: bool = True
+    analytics_scheduler_interval_seconds: int = 3600
+    analytics_scheduler_catchup_days: int = 2
+    analytics_report_sample_sessions: int = 8
 
     default_avatar_model_path: str = "/live2d/models/guide/guide.model3.json"
     default_avatar_voice_id: str = "zh-CN-XiaoxiaoNeural"
+    default_avatar_response_language: str = "zh"
     default_avatar_persona: str = (
         "你是一名景区 AI 数字导览员，回答要友好、简洁，优先帮助游客完成参观与问路。"
     )
@@ -106,6 +119,14 @@ class Settings(BaseSettings):
                 return False
         return value
 
+    @field_validator("default_avatar_response_language", mode="before")
+    @classmethod
+    def normalize_default_avatar_response_language(cls, value: object) -> str:
+        normalized = str(value or "zh").strip().lower()
+        if normalized not in {"zh", "en"}:
+            raise ValueError("DEFAULT_AVATAR_RESPONSE_LANGUAGE must be either 'zh' or 'en'.")
+        return normalized
+
     @field_validator(
         "knowledge_embedding_batch_size",
         "knowledge_chunk_size",
@@ -121,6 +142,12 @@ class Settings(BaseSettings):
         "tts_segment_soft_max_chars",
         "tts_segment_hard_max_chars",
         "visitor_image_max_bytes",
+        "admin_token_ttl_seconds",
+        "admin_knowledge_max_bytes",
+        "admin_voice_max_bytes",
+        "analytics_scheduler_interval_seconds",
+        "analytics_scheduler_catchup_days",
+        "analytics_report_sample_sessions",
         mode="after",
     )
     @classmethod

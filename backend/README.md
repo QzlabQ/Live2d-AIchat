@@ -100,6 +100,19 @@ python -m uvicorn main:app --reload
 - API 文档：`http://127.0.0.1:8000/docs`
 - 健康检查：`http://127.0.0.1:8000/api/v1/health`
 
+如果同时联调前端游客端和管理后台：
+
+```powershell
+cd ..\frontend
+npm install
+npm run dev
+```
+
+默认访问地址：
+
+- 游客端：`http://127.0.0.1:5173/`
+- 管理后台：`http://127.0.0.1:5173/admin.html`
+
 ## 可选依赖
 
 如果你要切到 PostgreSQL：
@@ -393,11 +406,72 @@ python -m scripts.evaluate_rag --dataset .\evals\phase2_rag_eval.50.jsonl --targ
 
 - `GET /api/v1/health`
 - `POST /api/v1/sessions`
+- `POST /api/v1/admin/auth/login`
+- `GET /api/v1/admin/auth/me`
+- `GET /api/v1/admin/avatar/models`
 - `GET /api/v1/admin/avatar/config`
 - `PUT /api/v1/admin/avatar/config`
+- `POST /api/v1/admin/knowledge/upload`
 - `GET /api/v1/admin/knowledge`
 - `DELETE /api/v1/admin/knowledge/{doc_id}`
+- `GET /api/v1/admin/voice-profiles`
+- `POST /api/v1/admin/voice-profiles`
+- `GET /api/v1/admin/voice-profiles/{profile_id}/audio`
+- `DELETE /api/v1/admin/voice-profiles/{profile_id}`
+- `POST /api/v1/admin/reports/daily/generate`
+- `GET /api/v1/admin/reports/daily`
+- `GET /api/v1/admin/reports/summary`
 - `WS /ws/chat/{session_id}`
+
+## Phase 3 管理后台
+
+当前已经补齐一套独立的前端管理入口 `frontend/admin.html`，对应能力如下：
+
+- 管理员登录：使用简单 JWT，默认账号密码来自 `.env` 中的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`
+- 知识库管理：上传、列表、处理状态、删除
+- 数字人配置：切换 Live2D 模型、编辑系统 Prompt、调整参考音频/参考文本/语速/情感开关
+- 音色资源库：上传参考音频、试听、删除，并将音色绑定到当前数字人配置
+
+推荐最小配置：
+
+```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123
+ADMIN_JWT_SECRET=change-me-admin-secret
+ADMIN_KNOWLEDGE_UPLOAD_DIR=./storage/uploads/admin/knowledge
+ADMIN_VOICE_UPLOAD_DIR=./storage/uploads/admin/voice_profiles
+ADMIN_VOICE_MAX_BYTES=33554432
+```
+
+说明：
+
+- 管理后台音色试听走受保护接口，因此前端会先带 Bearer Token 拉取音频，再用浏览器本地 `Blob URL` 播放
+- 当你在管理后台选择某个 `voice_profile` 并保存后，后端会自动同步 `voice_id`、`tts_reference_audio_path`、`tts_reference_text`
+- `frontend/vite.config.ts` 已改为多页面构建，`npm run build` 会同时生成游客端与管理后台
+
+## Phase 3 后端分析链路
+
+当前已经补齐：
+
+- 对话记录持久化：游客文本、ASR 转写、助手回复都会写入 `messages`
+- 每日情感分析批处理：服务启动后会按 `ANALYTICS_SCHEDULER_*` 自动补跑最近日报
+- 感受度报告 API：管理员可手动生成某日分析，并按日期范围读取汇总摘要
+
+推荐配置：
+
+```env
+ANALYTICS_SCHEDULER_ENABLED=true
+ANALYTICS_SCHEDULER_INTERVAL_SECONDS=3600
+ANALYTICS_SCHEDULER_CATCHUP_DAYS=2
+ANALYTICS_REPORT_SAMPLE_SESSIONS=8
+```
+
+说明：
+
+- 日报优先复用 `messages.emotion` 和 `messages.latency_ms` 聚合
+- 如果已经配置 `DASHSCOPE_API_KEY`，日报摘要会尝试调用 LLM 生成更自然的运营总结
+- 如果 LLM 不可用，会自动降级为本地启发式摘要，不会阻塞实时对话
+- 这条链路只服务后台分析，不会拖慢前端聊天响应
 
 ## Trace 与日志
 

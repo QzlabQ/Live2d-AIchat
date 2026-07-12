@@ -8,7 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import get_settings
 from app.db.base import Base
-from app.db.migrations import ensure_avatar_config_tts_columns, ensure_session_updated_at_column
+from app.db.migrations import (
+    ensure_avatar_config_admin_columns,
+    ensure_avatar_config_profile_columns,
+    ensure_avatar_config_response_language_column,
+    ensure_avatar_config_tts_columns,
+    ensure_knowledge_doc_admin_columns,
+    ensure_message_analysis_columns,
+    ensure_session_updated_at_column,
+)
 
 settings = get_settings()
 
@@ -31,7 +39,12 @@ async def init_db() -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     await ensure_session_updated_at_column(engine)
+    await ensure_message_analysis_columns(engine)
     await ensure_avatar_config_tts_columns(engine, settings)
+    await ensure_avatar_config_admin_columns(engine)
+    await ensure_avatar_config_profile_columns(engine)
+    await ensure_avatar_config_response_language_column(engine, settings)
+    await ensure_knowledge_doc_admin_columns(engine)
 
 
 async def shutdown_db() -> None:

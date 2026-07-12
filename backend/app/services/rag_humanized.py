@@ -180,8 +180,14 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         question: str,
         persona: str | None = None,
         history: list[dict[str, str]] | None = None,
+        response_language: str | None = None,
     ) -> legacy_rag.RAGAnswer:
-        prepared = await self.prepare_stream_answer(question, persona=persona, history=history)
+        prepared = await self.prepare_stream_answer(
+            question,
+            persona=persona,
+            history=history,
+            response_language=response_language,
+        )
         return legacy_rag.RAGAnswer(
             answer_text=prepared.answer_text,
             spoken_text=prepared.spoken_text,
@@ -200,29 +206,52 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         question: str,
         persona: str | None = None,
         history: list[dict[str, str]] | None = None,
+        response_language: str | None = None,
     ) -> legacy_rag.PreparedRAGAnswer:
         query = legacy_rag.normalize_question(question)
         if not query:
-            return self._prepare_refusal("我刚才没有听清，你可以再说一遍吗？")
+            return self._prepare_refusal(
+                legacy_rag.localized_text(
+                    response_language,
+                    "我刚才没有听清，你可以再说一遍吗？",
+                    "I didn't catch that clearly. Could you say it again?",
+                )
+            )
         if legacy_rag.is_out_of_domain_question(query):
             return self._prepare_refusal(
-                "这个问题超出了我当前的景区知识范围。你可以继续问我景点、历史、路线或参观建议。"
+                legacy_rag.localized_text(
+                    response_language,
+                    "这个问题超出了我当前的景区知识范围。你可以继续问我景点、历史、路线或参观建议。",
+                    "That question is outside my current scenic-area knowledge. You can still ask me about spots, history, routes, or visit suggestions.",
+                )
             )
 
         candidates = await self.retrieve(query)
         if not self._has_grounded_context(query, candidates):
             return self._prepare_refusal(
-                "我现在还没法根据现有知识库确认这个问题。你可以换个更具体的问法，我再帮你细看。"
+                legacy_rag.localized_text(
+                    response_language,
+                    "我现在还没法根据现有知识库确认这个问题。你可以换个更具体的问法，我再帮你细看。",
+                    "I can't confirm that from the current knowledge base yet. If you make the question a bit more specific, I can check again.",
+                )
             )
 
         selected = candidates[: self.settings.rag_context_docs]
         confidence = round(selected[0].rerank_score, 4) if selected else 0.0
         context = self._format_context(selected)
 
-        fallback_decision = self._build_fallback_decision(query, selected)
+        fallback_decision = self._build_fallback_decision(
+            query,
+            selected,
+            response_language=response_language,
+        )
         fallback_text = self._compose_answer_text(fallback_decision)
         if not fallback_text:
-            fallback_text = "我现在能确认的信息还不够充分，你可以换个更具体的问法，我再帮你细看。"
+            fallback_text = legacy_rag.localized_text(
+                response_language,
+                "我现在能确认的信息还不够充分，你可以换个更具体的问法，我再帮你细看。",
+                "What I can confirm right now is still limited. If you ask in a more specific way, I can narrow it down for you.",
+            )
             fallback_decision = legacy_rag.RAGReplyDecision(
                 reply_kind="refuse",
                 spoken_answer=fallback_text,
@@ -240,6 +269,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                         persona=persona or self.settings.default_avatar_persona,
                         context=context,
                         history=history or [],
+                        response_language=response_language,
                     )
                 )
                 decision = self._parse_reply_decision(raw, fallback_decision=fallback_decision)
@@ -274,33 +304,47 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         persona: str,
         context: str,
         history: list[dict[str, str]],
+        response_language: str | None,
     ) -> list[dict[str, str]]:
         return [
             {
                 "role": "system",
-                "content": (
-                    "你是景区 AI 数字导览员。"
-                    "你必须只依据提供的参考资料作答，不能编造资料中没有的信息。"
-                    "你的任务不是复述资料，而是把资料整理成游客能直接听懂的自然中文。"
-                    "如果信息只够回答一部分，可以先给结论，再补一句简短追问确认范围。"
-                    "只输出 JSON。"
+                "content": legacy_rag.localized_text(
+                    response_language,
+                    (
+                        "你是景区 AI 数字导览员。"
+                        "你必须只依据提供的参考资料作答，不能编造资料中没有的信息。"
+                        f"{legacy_rag.build_humanized_language_instruction(response_language)}"
+                        "如果信息只够回答一部分，可以先给结论，再补一句简短追问确认范围。"
+                        "只输出 JSON。"
+                    ),
+                    (
+                        "You are an AI guide for a scenic area. "
+                        "You must answer only from the provided source material and must not invent facts that are not supported by it. "
+                        f"{legacy_rag.build_humanized_language_instruction(response_language)} "
+                        "If the evidence only supports a partial answer, give the most useful conclusion first, then add one short follow-up question to clarify scope. "
+                        "Output JSON only."
+                    ),
                 ),
             },
             {
                 "role": "user",
-                "content": (
-                    f"导览员人设：{persona}\n\n"
-                    f"最近对话：\n{self._format_history(history)}\n\n"
-                    f"用户问题：{question}\n\n"
-                    f"参考资料：\n{context}\n\n"
-                    "请输出 JSON，字段固定为："
-                    '{"reply_kind":"answer|clarify|refuse",'
-                    '"needs_followup":true,'
-                    '"spoken_answer":"面向游客的自然口语回答，1到3句，不要出现参考资料字样",'
-                    '"followup_question":"需要时的一句短追问，否则为空字符串",'
-                    '"missing_slots":["target_scope"],'
-                    '"used_source_indexes":[1],'
-                    '"confidence_note":"confirmed|partial|uncertain"}'
+                "content": legacy_rag.localized_text(
+                    response_language,
+                    (
+                        f"导览员人设：{persona}\n\n"
+                        f"最近对话：\n{self._format_history(history, response_language=response_language)}\n\n"
+                        f"用户问题：{question}\n\n"
+                        f"参考资料：\n{context}\n\n"
+                        f"{self._decision_output_instruction(response_language)}"
+                    ),
+                    (
+                        f"Guide persona: {persona}\n\n"
+                        f"Recent conversation:\n{self._format_history(history, response_language=response_language)}\n\n"
+                        f"User question: {question}\n\n"
+                        f"Source material:\n{context}\n\n"
+                        f"{self._decision_output_instruction(response_language)}"
+                    ),
                 ),
             },
         ]
@@ -368,15 +412,20 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         self,
         question: str,
         sources: list[legacy_rag.RetrievedChunk],
+        response_language: str | None = None,
     ) -> legacy_rag.RAGReplyDecision:
-        answer = self._humanize_fallback_answer(question, sources)
+        answer = self._humanize_fallback_answer(question, sources, response_language=response_language)
         intent = legacy_rag.detect_query_intent(question)
         if intent == "schedule" and self._needs_schedule_followup(question, sources):
             return legacy_rag.RAGReplyDecision(
                 reply_kind="answer",
                 needs_followup=True,
                 spoken_answer=answer,
-                followup_question="如果你问的是商铺、夜游或演出时间，我也可以继续帮你细看。",
+                followup_question=legacy_rag.localized_text(
+                    response_language,
+                    "如果你问的是商铺、夜游或演出时间，我也可以继续帮你细看。",
+                    "If you mean shop hours, night events, or show times, I can narrow that down too.",
+                ),
                 missing_slots=["target_scope"],
                 used_source_indexes=[1] if sources else [],
                 confidence_note="partial",
@@ -386,7 +435,11 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                 reply_kind="answer",
                 needs_followup=True,
                 spoken_answer=answer,
-                followup_question="如果你偏亲子、夜游或半日游，我可以再帮你细化路线。",
+                followup_question=legacy_rag.localized_text(
+                    response_language,
+                    "如果你偏亲子、夜游或半日游，我可以再帮你细化路线。",
+                    "If you want a family-friendly, night-view, or half-day route, I can tailor it further.",
+                ),
                 missing_slots=["visitor_profile"],
                 used_source_indexes=[1] if sources else [],
                 confidence_note="partial",
@@ -402,6 +455,8 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         self,
         question: str,
         sources: list[legacy_rag.RetrievedChunk],
+        *,
+        response_language: str | None = None,
     ) -> str:
         answer = legacy_rag.sanitize_answer(self._build_extractive_answer(question, sources))
         if not answer and sources:
@@ -412,7 +467,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             return ""
 
         if legacy_rag.detect_query_intent(question) == "schedule":
-            schedule_summary = self._summarize_schedule_sources(sources)
+            schedule_summary = self._summarize_schedule_sources(sources, response_language=response_language)
             if schedule_summary:
                 return schedule_summary
 
@@ -422,14 +477,46 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             humanized += "。"
         return humanized
 
-    def _summarize_schedule_sources(self, sources: list[legacy_rag.RetrievedChunk]) -> str:
+    def _summarize_schedule_sources(
+        self,
+        sources: list[legacy_rag.RetrievedChunk],
+        *,
+        response_language: str | None = None,
+    ) -> str:
         for source in sources:
             text = " ".join(legacy_rag.split_lines(source.text))
             if "开放时间" in text:
                 match = legacy_rag.TIME_RANGE_RE.search(text)
                 if match:
-                    return f"景区整体开放一般是 {match.group('time')}。"
+                    return legacy_rag.localized_text(
+                        response_language,
+                        f"景区整体开放一般是 {match.group('time')}。",
+                        f"The overall scenic area is generally open from {match.group('time')}.",
+                    )
         return ""
+
+    def _decision_output_instruction(self, response_language: str | None) -> str:
+        if legacy_rag.normalize_response_language(response_language) == "en":
+            return (
+                "Output JSON only, with these exact fields: "
+                '{"reply_kind":"answer|clarify|refuse",'
+                '"needs_followup":true,'
+                '"spoken_answer":"natural spoken English for visitors, 1 to 3 sentences, no citation wording",'
+                '"followup_question":"one short follow-up question when needed, otherwise an empty string",'
+                '"missing_slots":["target_scope"],'
+                '"used_source_indexes":[1],'
+                '"confidence_note":"confirmed|partial|uncertain"}'
+            )
+        return (
+            "请输出 JSON，字段固定为："
+            '{"reply_kind":"answer|clarify|refuse",'
+            '"needs_followup":true,'
+            '"spoken_answer":"面向游客的自然口语回答，1到3句，不要出现参考资料字样",'
+            '"followup_question":"需要时的一句短追问，否则为空字符串",'
+            '"missing_slots":["target_scope"],'
+            '"used_source_indexes":[1],'
+            '"confidence_note":"confirmed|partial|uncertain"}'
+        )
 
     def _needs_schedule_followup(
         self,
@@ -478,9 +565,14 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                 seen.add(zero_index)
         return selected or sources[:1]
 
-    def _format_history(self, history: list[dict[str, str]]) -> str:
+    def _format_history(
+        self,
+        history: list[dict[str, str]],
+        *,
+        response_language: str | None = None,
+    ) -> str:
         if not history:
-            return "无"
+            return legacy_rag.localized_text(response_language, "无", "None")
 
         lines: list[str] = []
         for item in history[-6:]:
@@ -488,6 +580,10 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             content = legacy_rag.sanitize_answer(str(item.get("content", "")))
             if not content:
                 continue
-            speaker = "游客" if role == "user" else "导览助手"
+            speaker = legacy_rag.localized_text(
+                response_language,
+                "游客" if role == "user" else "导览助手",
+                "Visitor" if role == "user" else "Guide",
+            )
             lines.append(f"{speaker}：{content}")
-        return "\n".join(lines) if lines else "无"
+        return "\n".join(lines) if lines else legacy_rag.localized_text(response_language, "无", "None")

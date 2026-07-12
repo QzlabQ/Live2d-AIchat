@@ -14,9 +14,10 @@ from app.api.routes.sessions import (
     list_sessions,
     update_session_interest_tags,
 )
+from app.api.routes.visitor import activate_public_avatar_profile, list_public_avatar_profiles
 from app.db.base import Base
-from app.db.migrations import ensure_session_updated_at_column
-from app.db.models import Message, Session
+from app.db.migrations import ensure_message_analysis_columns, ensure_session_updated_at_column
+from app.db.models import AvatarConfig, Message, Session
 from app.schemas.session import SessionCreateRequest, SessionInterestTagsUpdate
 from app.services import visitor_sessions
 from app.services.visitor_sessions import (
@@ -79,10 +80,43 @@ class SessionMigrationTestCase(unittest.IsolatedAsyncioTestCase):
             finally:
                 await engine.dispose()
 
+    async def test_sqlite_migration_adds_message_analysis_columns(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "old-messages.db"
+            engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+            try:
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            """
+                            CREATE TABLE messages (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                session_id VARCHAR(36) NOT NULL,
+                                role VARCHAR(10) NOT NULL,
+                                content TEXT NOT NULL,
+                                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+                            )
+                            """
+                        )
+                    )
+
+                await ensure_message_analysis_columns(engine)
+
+                async with engine.connect() as connection:
+                    columns = (await connection.execute(text("PRAGMA table_info(messages)"))).mappings().all()
+
+                names = {column["name"] for column in columns}
+                self.assertIn("emotion", names)
+                self.assertIn("latency_ms", names)
+            finally:
+                await engine.dispose()
+
     async def test_init_db_triggers_session_updated_at_migration(self) -> None:
         with (
             patch("app.db.session.ensure_session_updated_at_column", new=AsyncMock()) as ensure_session_mock,
             patch("app.db.session.ensure_avatar_config_tts_columns", new=AsyncMock()) as ensure_avatar_mock,
+            patch("app.db.session.ensure_avatar_config_response_language_column", new=AsyncMock()) as ensure_avatar_language_mock,
             patch("app.db.session.engine") as engine_mock,
         ):
             connection = AsyncMock()
@@ -97,6 +131,7 @@ class SessionMigrationTestCase(unittest.IsolatedAsyncioTestCase):
             connection.run_sync.assert_awaited_once()
             ensure_session_mock.assert_awaited_once_with(engine_mock)
             ensure_avatar_mock.assert_awaited_once()
+            ensure_avatar_language_mock.assert_awaited_once()
 
 
 class VisitorSessionsApiTestCase(unittest.IsolatedAsyncioTestCase):
@@ -367,6 +402,96 @@ class VisitorSessionsApiTestCase(unittest.IsolatedAsyncioTestCase):
                     )
 
             self.assertEqual(raised.exception.status_code, 404)
+            await engine.dispose()
+
+
+class VisitorAvatarProfilesApiTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_list_public_avatar_profiles_returns_active_first(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            engine = create_async_engine(f"sqlite+aiosqlite:///{Path(temp_dir) / 'visitor-avatar-list.db'}")
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+            async with session_factory() as db:
+                db.add_all(
+                    [
+                        AvatarConfig(
+                            name="Haru",
+                            slug="haru",
+                            is_active=False,
+                            model_path="/live2d/haru/haru.model3.json",
+                            voice_id="haru",
+                            persona="haru persona",
+                            tts_reference_audio_path="prompt.wav",
+                            tts_reference_text="prompt",
+                            tts_speed=1.0,
+                            tts_emotion_enabled=True,
+                        ),
+                        AvatarConfig(
+                            name="Neuro",
+                            slug="neuro",
+                            is_active=True,
+                            model_path="/live2d/neuro/neuro.model3.json",
+                            voice_id="neuro",
+                            persona="neuro persona",
+                            tts_reference_audio_path="prompt.wav",
+                            tts_reference_text="prompt",
+                            tts_speed=1.0,
+                            tts_emotion_enabled=True,
+                        ),
+                    ]
+                )
+                await db.commit()
+
+                response = await list_public_avatar_profiles(db=db)
+
+            self.assertEqual([item.name for item in response.items], ["Neuro", "Haru"])
+            self.assertTrue(response.items[0].is_active)
+            await engine.dispose()
+
+    async def test_activate_public_avatar_profile_switches_active_profile(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            engine = create_async_engine(f"sqlite+aiosqlite:///{Path(temp_dir) / 'visitor-avatar-activate.db'}")
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+            async with session_factory() as db:
+                haru = AvatarConfig(
+                    name="Haru",
+                    slug="haru",
+                    is_active=True,
+                    model_path="/live2d/haru/haru.model3.json",
+                    voice_id="haru",
+                    persona="haru persona",
+                    tts_reference_audio_path="prompt.wav",
+                    tts_reference_text="prompt",
+                    tts_speed=1.0,
+                    tts_emotion_enabled=True,
+                )
+                neuro = AvatarConfig(
+                    name="Neuro",
+                    slug="neuro",
+                    is_active=False,
+                    model_path="/live2d/neuro/neuro.model3.json",
+                    voice_id="neuro",
+                    persona="neuro persona",
+                    tts_reference_audio_path="prompt.wav",
+                    tts_reference_text="prompt",
+                    tts_speed=1.0,
+                    tts_emotion_enabled=True,
+                )
+                db.add_all([haru, neuro])
+                await db.commit()
+                await db.refresh(neuro)
+
+                activated = await activate_public_avatar_profile(profile_id=neuro.id, db=db)
+                profiles = await list_public_avatar_profiles(db=db)
+
+            self.assertEqual(activated.name, "Neuro")
+            self.assertTrue(activated.is_active)
+            self.assertEqual([item.name for item in profiles.items if item.is_active], ["Neuro"])
             await engine.dispose()
 
 

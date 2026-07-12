@@ -3,9 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTranscript from './components/ChatTranscript.vue'
-import InterestTagPanel from './components/InterestTagPanel.vue'
 import Live2DStage from './components/Live2DStage.vue'
-import PhotoAskPanel from './components/PhotoAskPanel.vue'
 import SessionHistoryRail from './components/SessionHistoryRail.vue'
 import { useAudioRecorder } from './composables/useAudioRecorder'
 import { useChatSocket } from './composables/useChatSocket'
@@ -14,9 +12,11 @@ import { useVisitorRecommendations } from './composables/useVisitorRecommendatio
 import { useVisitorSessions } from './composables/useVisitorSessions'
 import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
 import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageMeta'
+import { buildComposerQuickHints, type ComposerMode } from './lib/chatComposerMode'
 import { buildEmotionLampStyle } from './lib/emotionLamp'
 import { EMOTION_VISUALS } from './lib/lipsync'
 import { buildPhotoQuestion, shouldEnterThinkingForPhoto } from './lib/photoQuestion'
+import { buildRouteRecommendationMessage } from './lib/toolResultMessage'
 import {
   computeAvatarPresentation,
   createDefaultConversationPhaseState,
@@ -32,7 +32,11 @@ import {
   canSwitchSessionWhileIdle,
   isReplyFlowActiveForSessionSwitch,
 } from './lib/visitorSessionState'
-import { createVisitorSession } from './services/visitorApi'
+import {
+  activateVisitorAvatarProfile,
+  createVisitorSession,
+  listVisitorAvatarProfiles,
+} from './services/visitorApi'
 import type {
   AudioEvent,
   AvatarPhaseEvent,
@@ -47,19 +51,14 @@ import type {
   TtsAudioChunkEvent,
   TtsVisemeChunkEvent,
 } from './types/chat'
+import type { VisitorAvatarProfileSummary } from './types/visitor'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1'
 const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://127.0.0.1:8000'
-const MODEL_PATH =
+const DEFAULT_MODEL_PATH =
   import.meta.env.VITE_LIVE2D_MODEL_PATH || '/live2d/haru/haru_greeter_t03.model3.json'
 const HEARTBEAT_MS = Number(import.meta.env.VITE_HEARTBEAT_MS || 15000)
 const RECONNECT_BASE_MS = Number(import.meta.env.VITE_RECONNECT_BASE_MS || 1200)
-
-const QUICK_HINTS = [
-  '这里有什么历史故事？',
-  '第一次来应该怎么逛？',
-  '开放时间是什么时候？',
-]
 
 function createWelcomeMessage(): ChatMessage {
   return {
@@ -109,8 +108,14 @@ const visitorSessions = useVisitorSessions(API_BASE_URL)
 const sessionId = visitorSessions.activeSessionId
 const recommendationState = useVisitorRecommendations(API_BASE_URL, sessionId)
 const photoRecognition = usePhotoRecognition(API_BASE_URL, sessionId)
+const avatarProfiles = ref<VisitorAvatarProfileSummary[]>([])
+const avatarProfilesLoading = ref(false)
+const avatarProfilesError = ref('')
+const selectedAvatarProfileId = ref('')
 
 const sessionBooting = ref(false)
+const historyRailOpen = ref(false)
+const composerMode = ref<ComposerMode>('chat')
 const bootError = ref('')
 const composer = ref('')
 const messages = visitorSessions.activeMessages
@@ -150,6 +155,31 @@ let avatarCooldownTimer = 0
 
 function createMessageId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+}
+
+function syncAvatarProfileSelection(items: VisitorAvatarProfileSummary[]) {
+  avatarProfiles.value = items
+  const active = items.find((item) => item.isActive) ?? items[0] ?? null
+  selectedAvatarProfileId.value = active ? String(active.id) : ''
+}
+
+async function refreshAvatarProfiles(options: { showLoading?: boolean } = {}) {
+  const showLoading = options.showLoading ?? true
+  if (showLoading) {
+    avatarProfilesLoading.value = true
+  }
+
+  avatarProfilesError.value = ''
+  try {
+    const response = await listVisitorAvatarProfiles(API_BASE_URL)
+    syncAvatarProfileSelection(response.items)
+  } catch (error) {
+    avatarProfilesError.value = error instanceof Error ? error.message : '数字人列表加载失败。'
+  } finally {
+    if (showLoading) {
+      avatarProfilesLoading.value = false
+    }
+  }
 }
 
 function clearAvatarCooldownTimer() {
@@ -352,6 +382,8 @@ async function createSession() {
     resetConversation()
     visitorSessions.setActiveSession(payload.sessionId, [createWelcomeMessage()])
     syncSessionTools([])
+    composerMode.value = 'chat'
+    historyRailOpen.value = false
     await visitorSessions.refreshSessions()
   } catch (error) {
     bootError.value = error instanceof Error ? error.message : '创建会话失败。'
@@ -920,16 +952,35 @@ const emotionStageLabel = computed(() => {
   }
   return labels[emotionTelemetry.value.stage]
 })
-const activeInterestSummary = computed(() => {
-  const tags = recommendationState.selectedInterestTags.value
-  return tags.length > 0 ? tags.join(' / ') : '未设置偏好'
-})
 const visitorToolsDisabled = computed(
   () => !sessionId.value || sessionBooting.value || visitorSessions.loading.value,
 )
 const historyRailDisabled = computed(
   () => sessionBooting.value || visitorSessions.loading.value || isSessionSwitchBlocked.value,
 )
+const photoAttachmentDisabled = computed(
+  () => visitorToolsDisabled.value || historyRailDisabled.value,
+)
+const quickHints = computed(() =>
+  buildComposerQuickHints(composerMode.value, {
+    selectedTags: recommendationState.selectedInterestTags.value,
+    recommendation: recommendationState.recommendation.value,
+  }),
+)
+const photoStatusTitle = computed(() => {
+  if (photoRecognition.uploading.value || photoRecognition.recognizing.value) {
+    return '景点识别进行中'
+  }
+
+  return photoRecognition.lastResult.value?.recognizedSpot ?? ''
+})
+const photoStatusDetail = computed(() => {
+  if (photoRecognition.lastResult.value) {
+    return photoRecognition.lastResult.value.resolvedQuestion
+  }
+
+  return ''
+})
 
 const connectionLabel = computed(() => {
   switch (socket.state.value) {
@@ -946,6 +997,41 @@ const connectionLabel = computed(() => {
     default:
       return '待连接'
   }
+})
+
+const activeAvatarProfile = computed(
+  () =>
+    avatarProfiles.value.find((item) => item.isActive) ??
+    avatarProfiles.value.find((item) => String(item.id) === selectedAvatarProfileId.value) ??
+    null,
+)
+const currentAvatarName = computed(() => activeAvatarProfile.value?.name || '默认数字人')
+const currentModelPath = computed(() => activeAvatarProfile.value?.modelPath || DEFAULT_MODEL_PATH)
+const avatarSwitchDisabled = computed(
+  () => avatarProfilesLoading.value || sessionBooting.value || isSessionSwitchBlocked.value,
+)
+const avatarSwitchTitle = computed(() => {
+  if (avatarProfilesLoading.value) {
+    return '数字人切换中'
+  }
+
+  if (sessionBooting.value) {
+    return '会话初始化中，稍后再切换数字人'
+  }
+
+  if (recorder.isRecording.value) {
+    return '录音过程中暂不支持切换数字人'
+  }
+
+  if (isPhotoThinking.value) {
+    return '图片识别过程中暂不支持切换数字人'
+  }
+
+  if (isReplyStreaming.value) {
+    return '当前回复尚未结束，稍后再切换数字人'
+  }
+
+  return ''
 })
 
 async function sendOutgoingText(
@@ -1048,6 +1134,7 @@ async function openSession(targetSessionId: string) {
   composer.value = ''
   finalizeAssistantDraft()
   resetReplyMediaState()
+  composerMode.value = 'chat'
   latestEmotion.value = 'neutral'
   emotionTelemetry.value = createDefaultEmotionTelemetry()
   lastAsrPreview.value = ''
@@ -1058,6 +1145,7 @@ async function openSession(targetSessionId: string) {
     if (messages.value.length === 0) {
       visitorSessions.replaceActiveMessages([createWelcomeMessage()])
     }
+    historyRailOpen.value = false
     await visitorSessions.refreshSessions()
   } catch (error) {
     bootError.value = error instanceof Error ? error.message : '加载会话失败。'
@@ -1102,13 +1190,18 @@ async function handleGenerateRecommendation() {
   }
 
   if (recommendationState.selectedInterestTags.value.length === 0) {
-    pushSystemMessage('先选择至少一个兴趣标签，我再帮你规划路线。')
-    await scrollChatToEnd()
+    recommendationState.error.value = '先选择至少一个兴趣标签，我再帮你规划路线。'
     return
   }
 
   try {
-    await recommendationState.refreshRecommendations()
+    const recommendation = await recommendationState.refreshRecommendations()
+    if (!recommendation) {
+      return
+    }
+
+    messages.value.push(buildRouteRecommendationMessage(recommendation))
+    await scrollChatToEnd()
   } catch {
     return
   }
@@ -1158,12 +1251,60 @@ async function handlePhotoPicked(file: File) {
   }
 }
 
+async function activateSelectedAvatarProfile() {
+  const profileId = Number(selectedAvatarProfileId.value)
+  const currentActive = avatarProfiles.value.find((item) => item.isActive) ?? null
+
+  if (!Number.isFinite(profileId) || currentActive?.id === profileId) {
+    return
+  }
+
+  if (avatarSwitchDisabled.value) {
+    selectedAvatarProfileId.value = currentActive ? String(currentActive.id) : ''
+    return
+  }
+
+  avatarProfilesLoading.value = true
+  avatarProfilesError.value = ''
+  try {
+    await activateVisitorAvatarProfile(API_BASE_URL, profileId)
+    await refreshAvatarProfiles({ showLoading: false })
+  } catch (error) {
+    avatarProfilesError.value = error instanceof Error ? error.message : '数字人切换失败。'
+    selectedAvatarProfileId.value = currentActive ? String(currentActive.id) : ''
+  } finally {
+    avatarProfilesLoading.value = false
+  }
+}
+
+function handleAvatarProfileSelect(event: Event) {
+  const value = (event.target as HTMLSelectElement | null)?.value ?? ''
+  selectedAvatarProfileId.value = value
+  void activateSelectedAvatarProfile()
+}
+
+function toggleHistoryRail() {
+  if (historyRailDisabled.value) {
+    return
+  }
+
+  historyRailOpen.value = !historyRailOpen.value
+}
+
+function closeHistoryRail() {
+  historyRailOpen.value = false
+}
+
+async function switchComposerMode(mode: ComposerMode) {
+  composerMode.value = mode
+}
+
 watch([avatarPresentation, live2dRef], ([presentation, live2d]) => {
   live2d?.setAvatarPresentation(presentation)
 }, { immediate: true })
 
 onMounted(async () => {
-  await bootstrapSessions()
+  await Promise.all([bootstrapSessions(), refreshAvatarProfiles()])
   await scrollChatToEnd()
 })
 
@@ -1188,29 +1329,27 @@ onBeforeUnmount(() => {
           方便在同一个游客端完成完整体验。
         </p>
       </div>
-      <div class="topbar-meta">
-        <div class="meta-chip">
-          <span class="meta-label">会话</span>
-          <strong>{{ sessionId ?? '准备中...' }}</strong>
-        </div>
-        <div class="meta-chip">
-          <span class="meta-label">连接</span>
-          <strong>{{ connectionLabel }}</strong>
-        </div>
-        <div class="meta-chip">
-          <span class="meta-label">偏好</span>
-          <strong>{{ activeInterestSummary }}</strong>
-        </div>
-      </div>
     </header>
 
     <main class="workspace">
+      <button
+        class="history-rail-peek"
+        type="button"
+        :disabled="historyRailDisabled"
+        @click="toggleHistoryRail"
+      >
+        <span class="history-rail-peek-icon">≡</span>
+        <span class="history-rail-peek-text">历史会话</span>
+      </button>
+
       <SessionHistoryRail
         :sessions="visitorSessions.sessionList.value"
         :active-session-id="sessionId"
+        :open="historyRailOpen"
         :loading="sessionBooting || visitorSessions.loading.value || visitorSessions.refreshing.value"
         :disabled="historyRailDisabled"
         :disabled-reason="visitorSessions.error.value || sessionSwitchBlockedReason"
+        @close="closeHistoryRail"
         @create="createSession"
         @open="openSession"
       />
@@ -1221,24 +1360,52 @@ onBeforeUnmount(() => {
             <p class="panel-kicker">Live2D Avatar</p>
             <h2>数字人舞台</h2>
           </div>
-          <div class="panel-statuses">
-            <span class="status-pill" :data-tone="socket.state.value">{{ connectionLabel }}</span>
-            <span class="status-pill" :data-tone="recorder.isRecording.value ? 'recording' : 'idle'">
-              {{ recorder.isRecording.value ? '录音中' : '待命' }}
-            </span>
+          <div class="stage-header-side">
+            <label class="stage-profile-picker">
+              <span class="caption-label">数字人选择</span>
+              <select
+                class="stage-profile-select"
+                :value="selectedAvatarProfileId"
+                :disabled="avatarSwitchDisabled || avatarProfiles.length === 0"
+                :title="avatarSwitchTitle || undefined"
+                @change="handleAvatarProfileSelect"
+              >
+                <option value="" disabled>
+                  {{ avatarProfilesLoading ? '正在加载数字人...' : '请选择数字人' }}
+                </option>
+                <option
+                  v-for="profile in avatarProfiles"
+                  :key="profile.id"
+                  :value="String(profile.id)"
+                >
+                  {{ profile.name }}{{ profile.isActive ? ' · 当前' : '' }}
+                </option>
+              </select>
+            </label>
+            <div class="panel-statuses">
+              <span class="status-pill" :data-tone="socket.state.value">{{ connectionLabel }}</span>
+              <span class="status-pill" :data-tone="recorder.isRecording.value ? 'recording' : 'idle'">
+                {{ recorder.isRecording.value ? '录音中' : '待命' }}
+              </span>
+            </div>
+            <p v-if="avatarProfilesError" class="stage-inline-error">{{ avatarProfilesError }}</p>
           </div>
         </div>
 
         <div class="stage-card">
-          <Live2DStage ref="live2dRef" :model-path="MODEL_PATH" />
+          <Live2DStage ref="live2dRef" :model-path="currentModelPath" />
           <div class="stage-caption">
+            <div>
+              <span class="caption-label">当前数字人</span>
+              <strong>{{ currentAvatarName }}</strong>
+            </div>
             <div>
               <span class="caption-label">情绪映射</span>
               <strong>{{ emotionVisual.label }} / {{ latestEmotion }} / {{ emotionStageLabel }}</strong>
             </div>
             <div>
               <span class="caption-label">模型路径</span>
-              <strong class="mono">{{ MODEL_PATH }}</strong>
+              <strong class="mono">{{ currentModelPath }}</strong>
             </div>
           </div>
         </div>
@@ -1297,42 +1464,46 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <p v-if="bootError" class="banner banner-error">{{ bootError }}</p>
-        <p v-else-if="playbackError" class="banner banner-warn">{{ playbackError }}</p>
+        <div class="chat-panel-body">
+          <p v-if="bootError" class="banner banner-error">{{ bootError }}</p>
+          <p v-else-if="playbackError" class="banner banner-warn">{{ playbackError }}</p>
 
-        <div class="visitor-tools">
-          <InterestTagPanel
-            :selected-tags="recommendationState.selectedInterestTags.value"
-            :recommendation="recommendationState.recommendation.value"
-            :loading="recommendationState.loading.value"
-            :saving="recommendationState.saving.value"
-            :error="recommendationState.error.value"
-            :disabled="visitorToolsDisabled"
-            @toggle-tag="handleToggleInterestTag"
-            @refresh="handleGenerateRecommendation"
-            @ask-question="handleRecommendationQuestion"
-          />
+          <div class="chat-panel-scroll">
+            <ChatTranscript
+              ref="transcriptRef"
+              :messages="messages"
+              @ask-tool-action="handleRecommendationQuestion"
+            />
+          </div>
 
-          <PhotoAskPanel
-            :busy="photoRecognition.uploading.value || photoRecognition.recognizing.value"
-            :disabled="visitorToolsDisabled"
-            :error="photoRecognition.error.value"
-            :result="photoRecognition.lastResult.value"
-            @pick="handlePhotoPicked"
-          />
+          <div class="chat-panel-dock">
+            <ChatComposer
+              v-model="composer"
+              :quick-hints="quickHints"
+              :can-send="canSend"
+              :can-record="canRecord"
+              :composer-mode="composerMode"
+              :can-attach-photo="!photoAttachmentDisabled"
+              :can-toggle-route-mode="!!sessionId"
+              :is-recording="recorder.isRecording.value"
+              :photo-busy="photoRecognition.uploading.value || photoRecognition.recognizing.value"
+              :photo-status-title="photoStatusTitle"
+              :photo-status-detail="photoStatusDetail"
+              :photo-error="photoRecognition.error.value"
+              :route-selected-tags="recommendationState.selectedInterestTags.value"
+              :route-loading="recommendationState.loading.value"
+              :route-saving="recommendationState.saving.value"
+              :route-error="recommendationState.error.value"
+              :route-disabled="visitorToolsDisabled"
+              @switch-mode="switchComposerMode"
+              @toggle-route-tag="handleToggleInterestTag"
+              @generate-route="handleGenerateRecommendation"
+              @pick-photo="handlePhotoPicked"
+              @send="sendText"
+              @toggle-recording="toggleRecording"
+            />
+          </div>
         </div>
-
-        <ChatTranscript ref="transcriptRef" :messages="messages" />
-
-        <ChatComposer
-          v-model="composer"
-          :quick-hints="QUICK_HINTS"
-          :can-send="canSend"
-          :can-record="canRecord"
-          :is-recording="recorder.isRecording.value"
-          @send="sendText"
-          @toggle-recording="toggleRecording"
-        />
       </section>
     </main>
   </div>

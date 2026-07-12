@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -32,3 +34,16 @@ class VisionRecognitionResponse(BaseModel):
     recognition_summary: str
     resolved_question: str
     stored_image_path: str
+
+
+class VisitorAvatarProfileSummary(BaseModel):
+    id: int
+    name: str
+    slug: str
+    is_active: bool
+    model_path: str
+    updated_at: datetime
+
+
+class VisitorAvatarProfileListResponse(BaseModel):
+    items: list[VisitorAvatarProfileSummary]

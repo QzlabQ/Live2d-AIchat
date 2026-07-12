@@ -38,3 +38,16 @@ export interface VisionRecognitionResult {
   resolvedQuestion: string
   storedImagePath: string
 }
+
+export interface VisitorAvatarProfileSummary {
+  id: number
+  name: string
+  slug: string
+  isActive: boolean
+  modelPath: string
+  updatedAt: string
+}
+
+export interface VisitorAvatarProfileListResponse {
+  items: VisitorAvatarProfileSummary[]
+}

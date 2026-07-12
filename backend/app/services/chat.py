@@ -15,6 +15,15 @@ TTS_SOFT_BOUNDARY_RE = re.compile(r"[，、,]")
 TTS_FALLBACK_BOUNDARY_RE = re.compile(r"[\s、，,和及与并且然后再接着]")
 
 
+def normalize_response_language(value: str | None) -> str:
+    normalized = str(value or "zh").strip().lower()
+    return "en" if normalized.startswith("en") else "zh"
+
+
+def localized_text(response_language: str | None, zh_text: str, en_text: str) -> str:
+    return en_text if normalize_response_language(response_language) == "en" else zh_text
+
+
 @dataclass(slots=True)
 class GeneratedReply:
     text: str
@@ -195,6 +204,7 @@ class BaseGuideChatService:
         self,
         user_text: str,
         persona: str | None = None,
+        response_language: str | None = None,
         *,
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
@@ -202,6 +212,7 @@ class BaseGuideChatService:
         generated = await self.generate_reply(
             user_text,
             persona=persona,
+            response_language=response_language,
             query_text=query_text,
             history=history,
         )
@@ -305,42 +316,76 @@ class TemplateGuideChatService(BaseGuideChatService):
         self,
         user_text: str,
         persona: str | None = None,
+        response_language: str | None = None,
         *,
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> GeneratedReply:
         text = " ".join(user_text.strip().split())
         if not text:
-            reply = "我刚才没有听清，你可以再说一遍吗？"
+            reply = localized_text(
+                response_language,
+                "我刚才没有听清，你可以再说一遍吗？",
+                "I didn't catch that clearly. Could you say it again?",
+            )
             emotion = await self.analyze_emotion(user_text, reply)
             return GeneratedReply(reply, emotion.label, emotion)
 
         if any(token in text.lower() for token in ("hello", "hi")) or "你好" in text:
-            reply = "你好，我是景区数字导览助手。你可以问我景点介绍、游览路线，或者直接说出你想去的地方。"
+            reply = localized_text(
+                response_language,
+                "你好，我是景区数字导览助手。你可以问我景点介绍、游览路线，或者直接说出你想去的地方。",
+                "Hi, I'm your scenic-area virtual guide. You can ask about highlights, routes, or just tell me where you'd like to go.",
+            )
             emotion = await self.analyze_emotion(user_text, reply)
             return GeneratedReply(reply, emotion.label, emotion)
 
         if any(token in text for token in ("历史", "故事", "由来", "文化")):
-            reply = "这里的讲解通常会围绕景区历史、人文故事和代表性景点展开。如果你愿意，我可以先从最经典的一处景点开始介绍。"
+            reply = localized_text(
+                response_language,
+                "这里的讲解通常会围绕景区历史、人文故事和代表性景点展开。如果你愿意，我可以先从最经典的一处景点开始介绍。",
+                "I can walk you through the area's history, local stories, and signature spots. If you want, I can start with the most iconic one.",
+            )
             emotion = await self.analyze_emotion(user_text, reply)
             return GeneratedReply(reply, emotion.label, emotion)
 
         if any(token in text for token in ("路线", "怎么逛", "推荐", "先去")):
-            reply = "如果你是第一次来，建议先从核心景点主线开始，再根据体力和兴趣补充周边区域，这样体验会更完整也更轻松。"
+            reply = localized_text(
+                response_language,
+                "如果你是第一次来，建议先从核心景点主线开始，再根据体力和兴趣补充周边区域，这样体验会更完整也更轻松。",
+                "If it's your first visit, I'd start with the main highlight route, then add nearby stops based on your energy and interests.",
+            )
             emotion = await self.analyze_emotion(user_text, reply)
             return GeneratedReply(reply, emotion.label, emotion)
 
         if any(token in text for token in ("时间", "营业", "开放", "几点")):
-            reply = "开放时间这类信息接入知识库后会更准确。你也可以继续问我某个景点的介绍，或者我先给你推荐一条游览路线。"
+            reply = localized_text(
+                response_language,
+                "开放时间这类信息接入知识库后会更准确。你也可以继续问我某个景点的介绍，或者我先给你推荐一条游览路线。",
+                "Opening-hour questions become much more accurate with the knowledge base enabled. You can also ask about a specific spot, or I can suggest a route first.",
+            )
             emotion = await self.analyze_emotion(user_text, reply)
             return GeneratedReply(reply, emotion.label, emotion)
 
-        persona_hint = "我会按照导览员的口吻继续为你讲解。" if persona else ""
-        reply = (
-            "我已经收到你的问题。"
-            f"{persona_hint}"
-            "当前系统已经支持文本、语音识别、语音合成和流式 WebSocket 返回。"
-            "接入知识库后，回答会更贴合具体景区内容。"
+        persona_hint = localized_text(
+            response_language,
+            "我会按照导览员的口吻继续为你讲解。" if persona else "",
+            "I'll keep the guide persona in the reply." if persona else "",
+        )
+        reply = localized_text(
+            response_language,
+            (
+                "我已经收到你的问题。"
+                f"{persona_hint}"
+                "当前系统已经支持文本、语音识别、语音合成和流式 WebSocket 返回。"
+                "接入知识库后，回答会更贴合具体景区内容。"
+            ),
+            (
+                "I got your question. "
+                f"{persona_hint}"
+                "The system already supports text chat, speech recognition, speech synthesis, and streaming WebSocket replies. "
+                "Once the knowledge base is connected, the answers become much more specific to the scenic area."
+            ),
         )
         emotion = await self.analyze_emotion(user_text, reply)
         return GeneratedReply(reply, emotion.label, emotion)
@@ -351,11 +396,17 @@ class RAGGuideChatService(BaseGuideChatService):
         self,
         user_text: str,
         persona: str | None = None,
+        response_language: str | None = None,
         *,
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> GeneratedReply:
-        answer = await get_rag_service().answer(query_text or user_text, persona=persona, history=history or [])
+        answer = await get_rag_service().answer(
+            query_text or user_text,
+            persona=persona,
+            history=history or [],
+            response_language=response_language,
+        )
         emotion = await self.analyze_emotion(user_text, answer.spoken_text or answer.answer_text)
         return GeneratedReply(
             text=answer.answer_text,
@@ -376,6 +427,7 @@ class RAGGuideChatService(BaseGuideChatService):
         self,
         user_text: str,
         persona: str | None = None,
+        response_language: str | None = None,
         *,
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
@@ -385,6 +437,7 @@ class RAGGuideChatService(BaseGuideChatService):
             query_text or user_text,
             persona=persona,
             history=history or [],
+            response_language=response_language,
         )
         fallback_text = prepared.answer_text or prepared.fallback_text or prepared.spoken_text
 

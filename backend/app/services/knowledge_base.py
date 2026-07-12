@@ -578,7 +578,13 @@ class KnowledgeImporter:
             chunk_size=self.settings.knowledge_chunk_size,
             chunk_overlap=self.settings.knowledge_chunk_overlap,
         )
-        self.vector_store = KnowledgeVectorStore(self.settings)
+        self._vector_store: KnowledgeVectorStore | None = None
+
+    @property
+    def vector_store(self) -> KnowledgeVectorStore:
+        if self._vector_store is None:
+            self._vector_store = KnowledgeVectorStore(self.settings)
+        return self._vector_store
 
     async def import_source(self, source: Path, reset: bool = False) -> KnowledgeImportReport:
         paths = self.parser.discover_files(source)
@@ -606,40 +612,58 @@ class KnowledgeImporter:
                     knowledge_doc = KnowledgeDoc(
                         filename=parsed.filename,
                         category=parsed.category,
+                        stored_path=str(parsed.source_path),
                         status="processing",
                         chunk_count=0,
+                        error_message="",
                     )
                     db.add(knowledge_doc)
                     await db.commit()
                     await db.refresh(knowledge_doc)
 
-                    chunks = self.chunker.chunk_document(knowledge_doc.id, parsed)
-                    if not chunks:
-                        raise RuntimeError("No chunks were produced after splitting.")
-
-                    embeddings = embedder.embed_documents([chunk.text for chunk in chunks])
-                    self.vector_store.upsert_chunks(knowledge_doc.id, chunks, embeddings)
-
-                    knowledge_doc.chunk_count = len(chunks)
-                    knowledge_doc.status = "ready"
-                    await db.commit()
-
-                    report.imported.append(
-                        ImportedKnowledgeDoc(
-                            doc_id=knowledge_doc.id,
-                            filename=knowledge_doc.filename,
-                            category=knowledge_doc.category,
-                            chunk_count=knowledge_doc.chunk_count,
-                        )
-                    )
+                    imported = await self._process_document_row(db, knowledge_doc, parsed, embedder=embedder)
+                    report.imported.append(imported)
                 except Exception as exc:
                     await db.rollback()
                     if knowledge_doc is not None:
-                        await self._mark_doc_error(db, knowledge_doc.id)
+                        await self._mark_doc_error(db, knowledge_doc.id, str(exc))
                     report.errors.append((parsed.filename, str(exc)))
 
         report.collection_count = self.vector_store.count()
         return report
+
+    async def import_existing_document(
+        self,
+        doc_id: str,
+        source: Path,
+        *,
+        filename: str,
+        category: str,
+    ) -> ImportedKnowledgeDoc:
+        parsed = self.parser.parse(source)
+        parsed = ParsedKnowledgeDocument(
+            filename=filename,
+            source_path=parsed.source_path,
+            title=parsed.title,
+            category=category,
+            text=parsed.text,
+            source_kind=parsed.source_kind,
+            metadata=parsed.metadata,
+        )
+        embedder = build_embedding_service(self.settings)
+
+        async with self.session_factory() as db:
+            knowledge_doc = await db.get(KnowledgeDoc, doc_id)
+            if knowledge_doc is None:
+                raise RuntimeError(f"Knowledge document not found: {doc_id}")
+
+            try:
+                imported = await self._process_document_row(db, knowledge_doc, parsed, embedder=embedder)
+            except Exception as exc:
+                await db.rollback()
+                await self._mark_doc_error(db, doc_id, str(exc))
+                raise
+        return imported
 
     async def delete_document(self, doc_id: str, db: AsyncSession) -> KnowledgeDoc | None:
         document = await db.get(KnowledgeDoc, doc_id)
@@ -647,6 +671,7 @@ class KnowledgeImporter:
             return None
 
         self.vector_store.delete_document(doc_id)
+        self._remove_stored_file(document.stored_path)
         await db.delete(document)
         await db.commit()
         return document
@@ -665,12 +690,57 @@ class KnowledgeImporter:
 
         for document in existing_docs:
             self.vector_store.delete_document(document.id)
+            self._remove_stored_file(document.stored_path)
             await db.delete(document)
         await db.commit()
 
-    async def _mark_doc_error(self, db: AsyncSession, doc_id: str) -> None:
+    async def _process_document_row(
+        self,
+        db: AsyncSession,
+        knowledge_doc: KnowledgeDoc,
+        parsed: ParsedKnowledgeDocument,
+        *,
+        embedder,
+    ) -> ImportedKnowledgeDoc:
+        chunks = self.chunker.chunk_document(knowledge_doc.id, parsed)
+        if not chunks:
+            raise RuntimeError("No chunks were produced after splitting.")
+
+        embeddings = embedder.embed_documents([chunk.text for chunk in chunks])
+        self.vector_store.delete_document(knowledge_doc.id)
+        self.vector_store.upsert_chunks(knowledge_doc.id, chunks, embeddings)
+
+        knowledge_doc.filename = parsed.filename
+        knowledge_doc.category = parsed.category
+        knowledge_doc.stored_path = str(parsed.source_path)
+        knowledge_doc.chunk_count = len(chunks)
+        knowledge_doc.status = "ready"
+        knowledge_doc.error_message = ""
+        await db.commit()
+        await db.refresh(knowledge_doc)
+
+        return ImportedKnowledgeDoc(
+            doc_id=knowledge_doc.id,
+            filename=knowledge_doc.filename,
+            category=knowledge_doc.category,
+            chunk_count=knowledge_doc.chunk_count,
+        )
+
+    async def _mark_doc_error(self, db: AsyncSession, doc_id: str, error_message: str) -> None:
         document = await db.get(KnowledgeDoc, doc_id)
         if document is None:
             return
         document.status = "error"
+        document.error_message = error_message
         await db.commit()
+
+    @staticmethod
+    def _remove_stored_file(stored_path: str) -> None:
+        if not stored_path:
+            return
+        try:
+            candidate = Path(stored_path)
+            if candidate.exists() and candidate.is_file():
+                candidate.unlink()
+        except OSError:
+            return
