@@ -4,6 +4,7 @@ import {
   buildAvatarDisplayStorageKey,
   buildStageHeightStyle,
   clampAvatarDisplayConfig,
+  computeLive2DPlacement,
   loadAvatarDisplayOverride,
   mergeAvatarDisplayConfig,
   saveAvatarDisplayOverride,
@@ -148,5 +149,22 @@ describe('avatarDisplay', () => {
     expect(buildStageHeightStyle({ stageHeight: 512 })).toEqual({
       '--avatar-stage-height': '512px',
     })
+  })
+
+  it('computes Live2D placement from stage, model bounds, and display controls', () => {
+    const placement = computeLive2DPlacement(
+      { width: 800, height: 500 },
+      { width: 400, height: 1000 },
+      {
+        displayScale: 1.2,
+        displayOffsetX: 0.1,
+        displayOffsetY: -0.2,
+        stageHeight: 500,
+      },
+    )
+
+    expect(placement.scale).toBeCloseTo(0.51)
+    expect(placement.x).toBeCloseTo(480)
+    expect(placement.y).toBeCloseTo(340)
   })
 })

@@ -7,6 +7,22 @@ export interface AvatarDisplayConfig {
 
 export type AvatarDisplayConfigInput = Partial<AvatarDisplayConfig> | null | undefined
 
+export interface StageSize {
+  width: number
+  height: number
+}
+
+export interface ModelBounds {
+  width: number
+  height: number
+}
+
+export interface Live2DPlacement {
+  scale: number
+  x: number
+  y: number
+}
+
 export const AVATAR_DISPLAY_DEFAULTS: AvatarDisplayConfig = {
   displayScale: 1,
   displayOffsetX: 0,
@@ -141,6 +157,25 @@ export function mergeAvatarDisplayConfig(
     ...(backendConfig ?? {}),
     ...(localOverride ?? {}),
   })
+}
+
+export function computeLive2DPlacement(
+  stage: StageSize,
+  bounds: ModelBounds,
+  config: AvatarDisplayConfigInput,
+): Live2DPlacement {
+  const displayConfig = clampAvatarDisplayConfig(config)
+  const stageWidth = Math.max(stage.width || 1, 1)
+  const stageHeight = Math.max(stage.height || 1, 1)
+  const modelWidth = Math.max(bounds.width || 1, 1)
+  const modelHeight = Math.max(bounds.height || 1, 1)
+  const baseScale = Math.min(stageWidth / modelWidth, stageHeight / modelHeight) * 0.85
+
+  return {
+    scale: baseScale * displayConfig.displayScale,
+    x: stageWidth * (0.5 + displayConfig.displayOffsetX),
+    y: stageHeight * (0.88 + displayConfig.displayOffsetY),
+  }
 }
 
 export function buildAvatarDisplayStorageKey(avatarProfileId: number | string) {

@@ -4,6 +4,10 @@ import { Live2DModel } from 'pixi-live2d-display/cubism4'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
+  AVATAR_DISPLAY_DEFAULTS,
+  computeLive2DPlacement,
+} from '../lib/avatarDisplay'
+import {
   buildEmotionTarget,
   buildExpressionTarget,
   currentPhoneme,
@@ -65,9 +69,16 @@ interface LipSyncState {
   stopAt: number
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelPath: string
-}>()
+  modelScale?: number
+  modelOffsetX?: number
+  modelOffsetY?: number
+}>(), {
+  modelScale: AVATAR_DISPLAY_DEFAULTS.displayScale,
+  modelOffsetX: AVATAR_DISPLAY_DEFAULTS.displayOffsetX,
+  modelOffsetY: AVATAR_DISPLAY_DEFAULTS.displayOffsetY,
+})
 
 const stageHost = ref<HTMLDivElement | null>(null)
 const loadError = ref('')
@@ -139,16 +150,20 @@ function resizeModel() {
 
   const { clientWidth, clientHeight } = stageHost.value
   const bounds = model.getLocalBounds()
-  const modelWidth = Math.max(bounds.width || 1, 1)
-  const modelHeight = Math.max(bounds.height || 1, 1)
-  const isCompact = clientWidth < 720
-  const widthRatio = isCompact ? 0.82 : 0.74
-  const heightRatio = isCompact ? 0.84 : 0.78
-  const scale = Math.min((clientWidth * widthRatio) / modelWidth, (clientHeight * heightRatio) / modelHeight)
+  const placement = computeLive2DPlacement(
+    { width: clientWidth, height: clientHeight },
+    { width: bounds.width, height: bounds.height },
+    {
+      displayScale: props.modelScale,
+      displayOffsetX: props.modelOffsetX,
+      displayOffsetY: props.modelOffsetY,
+      stageHeight: clientHeight,
+    },
+  )
 
-  model.scale.set(scale)
-  model.pivot.set(bounds.x + modelWidth / 2, bounds.y + modelHeight * 0.82)
-  model.position.set(clientWidth / 2, clientHeight * (isCompact ? 0.94 : 0.92))
+  model.scale.set(placement.scale)
+  model.anchor.set(0.5, 0.88)
+  model.position.set(placement.x, placement.y)
 }
 
 function playIdleMotion() {
@@ -438,6 +453,13 @@ watch(
       return
     }
     await loadModel()
+  },
+)
+
+watch(
+  () => [props.modelScale, props.modelOffsetX, props.modelOffsetY],
+  () => {
+    resizeModel()
   },
 )
 </script>
