@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.migrations import (
     ensure_avatar_config_admin_columns,
+    ensure_avatar_config_display_columns,
     ensure_avatar_config_profile_columns,
     ensure_avatar_config_response_language_column,
     ensure_avatar_config_tts_columns,
@@ -44,6 +45,7 @@ async def init_db() -> None:
     await ensure_avatar_config_admin_columns(engine)
     await ensure_avatar_config_profile_columns(engine)
     await ensure_avatar_config_response_language_column(engine, settings)
+    await ensure_avatar_config_display_columns(engine)
     await ensure_knowledge_doc_admin_columns(engine)
 
 

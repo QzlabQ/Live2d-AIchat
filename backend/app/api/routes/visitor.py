@@ -39,6 +39,10 @@ def serialize_avatar_profile(profile: AvatarConfig) -> VisitorAvatarProfileSumma
         slug=profile.slug,
         is_active=profile.is_active,
         model_path=profile.model_path,
+        display_scale=profile.display_scale,
+        display_offset_x=profile.display_offset_x,
+        display_offset_y=profile.display_offset_y,
+        stage_height=profile.stage_height,
         updated_at=profile.updated_at,
     )
 

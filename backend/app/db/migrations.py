@@ -205,6 +205,39 @@ async def ensure_avatar_config_response_language_column(engine: AsyncEngine, set
         )
 
 
+async def ensure_avatar_config_display_columns(engine: AsyncEngine) -> None:
+    if not engine.url.get_backend_name().startswith('sqlite'):
+        return
+
+    async with engine.begin() as connection:
+        result = await connection.execute(text('PRAGMA table_info(avatar_config)'))
+        existing = {row._mapping['name'] for row in result}
+        if not existing:
+            return
+
+        column_sql = {
+            'display_scale': 'ALTER TABLE avatar_config ADD COLUMN display_scale FLOAT NOT NULL DEFAULT 1.0',
+            'display_offset_x': 'ALTER TABLE avatar_config ADD COLUMN display_offset_x FLOAT NOT NULL DEFAULT 0.0',
+            'display_offset_y': 'ALTER TABLE avatar_config ADD COLUMN display_offset_y FLOAT NOT NULL DEFAULT 0.0',
+            'stage_height': 'ALTER TABLE avatar_config ADD COLUMN stage_height INTEGER NOT NULL DEFAULT 420',
+        }
+        for column, statement in column_sql.items():
+            if column not in existing:
+                await connection.execute(text(statement))
+
+        defaults = {
+            'display_scale': 1.0,
+            'display_offset_x': 0.0,
+            'display_offset_y': 0.0,
+            'stage_height': 420,
+        }
+        for column, default in defaults.items():
+            await connection.execute(
+                text(f'UPDATE avatar_config SET {column} = :default WHERE {column} IS NULL'),
+                {'default': default},
+            )
+
+
 async def ensure_knowledge_doc_admin_columns(engine: AsyncEngine) -> None:
     if not engine.url.get_backend_name().startswith('sqlite'):
         return

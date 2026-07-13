@@ -42,6 +42,10 @@ class VisitorAvatarProfileSummary(BaseModel):
     slug: str
     is_active: bool
     model_path: str
+    display_scale: float
+    display_offset_x: float
+    display_offset_y: float
+    stage_height: int
     updated_at: datetime
 
 

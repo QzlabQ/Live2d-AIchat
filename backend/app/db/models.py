@@ -138,6 +138,10 @@ class AvatarConfig(Base):
     tts_reference_text: Mapped[str] = mapped_column(Text, nullable=False, default='')
     tts_speed: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     tts_emotion_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    display_scale: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    display_offset_x: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    display_offset_y: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    stage_height: Mapped[int] = mapped_column(Integer, nullable=False, default=420)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

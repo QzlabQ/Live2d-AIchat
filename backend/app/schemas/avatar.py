@@ -22,6 +22,10 @@ class AvatarConfigResponse(BaseModel):
     tts_reference_text: str
     tts_speed: float
     tts_emotion_enabled: bool
+    display_scale: float
+    display_offset_x: float
+    display_offset_y: float
+    stage_height: int
     created_at: datetime
     updated_at: datetime
 
@@ -37,6 +41,10 @@ class AvatarConfigUpdate(BaseModel):
     tts_reference_text: str | None = None
     tts_speed: float | None = Field(default=None, ge=0.5, le=1.5)
     tts_emotion_enabled: bool | None = None
+    display_scale: float | None = Field(default=None, ge=0.6, le=1.8)
+    display_offset_x: float | None = Field(default=None, ge=-0.5, le=0.5)
+    display_offset_y: float | None = Field(default=None, ge=-0.5, le=0.5)
+    stage_height: int | None = Field(default=None, ge=320, le=760)
 
 
 class MessageResponse(BaseModel):
@@ -51,6 +59,10 @@ class AvatarProfileSummary(BaseModel):
     model_path: str
     voice_id: str
     response_language: Literal["zh", "en"]
+    display_scale: float
+    display_offset_x: float
+    display_offset_y: float
+    stage_height: int
     updated_at: datetime
 
 
@@ -69,4 +81,8 @@ class AvatarProfileCreate(BaseModel):
     tts_reference_text: str
     tts_speed: float = Field(default=1.0, ge=0.5, le=1.5)
     tts_emotion_enabled: bool = True
+    display_scale: float = Field(default=1.0, ge=0.6, le=1.8)
+    display_offset_x: float = Field(default=0.0, ge=-0.5, le=0.5)
+    display_offset_y: float = Field(default=0.0, ge=-0.5, le=0.5)
+    stage_height: int = Field(default=420, ge=320, le=760)
     activate: bool = True
