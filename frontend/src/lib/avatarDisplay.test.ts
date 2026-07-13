@@ -116,6 +116,26 @@ describe('avatarDisplay', () => {
     })
   })
 
+  it('drops invalid parseable local override fields instead of defaulting them', () => {
+    const storage = createMemoryStorage({
+      [buildAvatarDisplayStorageKey(7)]: JSON.stringify({
+        displayScale: null,
+        displayOffsetX: 'bad',
+        stageHeight: '520',
+      }),
+    })
+    const backendConfig = {
+      displayScale: 1.1,
+      displayOffsetX: 0.1,
+      displayOffsetY: 0.2,
+      stageHeight: 560,
+    }
+    const loaded = loadAvatarDisplayOverride(storage, 7)
+
+    expect(loaded).toEqual({})
+    expect(mergeAvatarDisplayConfig(backendConfig, loaded)).toEqual(backendConfig)
+  })
+
   it('ignores corrupt JSON display overrides', () => {
     const storage = createMemoryStorage({
       [buildAvatarDisplayStorageKey(7)]: '{',

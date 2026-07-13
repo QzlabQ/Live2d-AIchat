@@ -33,6 +33,14 @@ function hasOwnValue(input: object, key: keyof AvatarDisplayConfig) {
   return Object.prototype.hasOwnProperty.call(input, key)
 }
 
+function getFiniteNumberValue(
+  input: Partial<Record<keyof AvatarDisplayConfig, unknown>>,
+  key: keyof AvatarDisplayConfig,
+) {
+  const value = input[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
 export function clampAvatarDisplayConfig(input: AvatarDisplayConfigInput): AvatarDisplayConfig {
   return {
     displayScale: clamp(
@@ -72,40 +80,53 @@ export function sanitizeAvatarDisplayOverride(
   }
 
   const sanitized: Partial<AvatarDisplayConfig> = {}
+  const overrideInput = input as Partial<Record<keyof AvatarDisplayConfig, unknown>>
 
   if (hasOwnValue(input, 'displayScale')) {
-    sanitized.displayScale = clamp(
-      input.displayScale,
-      AVATAR_DISPLAY_LIMITS.displayScale.min,
-      AVATAR_DISPLAY_LIMITS.displayScale.max,
-      AVATAR_DISPLAY_DEFAULTS.displayScale,
-    )
+    const value = getFiniteNumberValue(overrideInput, 'displayScale')
+    if (value !== null) {
+      sanitized.displayScale = clamp(
+        value,
+        AVATAR_DISPLAY_LIMITS.displayScale.min,
+        AVATAR_DISPLAY_LIMITS.displayScale.max,
+        AVATAR_DISPLAY_DEFAULTS.displayScale,
+      )
+    }
   }
   if (hasOwnValue(input, 'displayOffsetX')) {
-    sanitized.displayOffsetX = clamp(
-      input.displayOffsetX,
-      AVATAR_DISPLAY_LIMITS.displayOffsetX.min,
-      AVATAR_DISPLAY_LIMITS.displayOffsetX.max,
-      AVATAR_DISPLAY_DEFAULTS.displayOffsetX,
-    )
+    const value = getFiniteNumberValue(overrideInput, 'displayOffsetX')
+    if (value !== null) {
+      sanitized.displayOffsetX = clamp(
+        value,
+        AVATAR_DISPLAY_LIMITS.displayOffsetX.min,
+        AVATAR_DISPLAY_LIMITS.displayOffsetX.max,
+        AVATAR_DISPLAY_DEFAULTS.displayOffsetX,
+      )
+    }
   }
   if (hasOwnValue(input, 'displayOffsetY')) {
-    sanitized.displayOffsetY = clamp(
-      input.displayOffsetY,
-      AVATAR_DISPLAY_LIMITS.displayOffsetY.min,
-      AVATAR_DISPLAY_LIMITS.displayOffsetY.max,
-      AVATAR_DISPLAY_DEFAULTS.displayOffsetY,
-    )
+    const value = getFiniteNumberValue(overrideInput, 'displayOffsetY')
+    if (value !== null) {
+      sanitized.displayOffsetY = clamp(
+        value,
+        AVATAR_DISPLAY_LIMITS.displayOffsetY.min,
+        AVATAR_DISPLAY_LIMITS.displayOffsetY.max,
+        AVATAR_DISPLAY_DEFAULTS.displayOffsetY,
+      )
+    }
   }
   if (hasOwnValue(input, 'stageHeight')) {
-    sanitized.stageHeight = Math.round(
-      clamp(
-        input.stageHeight,
-        AVATAR_DISPLAY_LIMITS.stageHeight.min,
-        AVATAR_DISPLAY_LIMITS.stageHeight.max,
-        AVATAR_DISPLAY_DEFAULTS.stageHeight,
-      ),
-    )
+    const value = getFiniteNumberValue(overrideInput, 'stageHeight')
+    if (value !== null) {
+      sanitized.stageHeight = Math.round(
+        clamp(
+          value,
+          AVATAR_DISPLAY_LIMITS.stageHeight.min,
+          AVATAR_DISPLAY_LIMITS.stageHeight.max,
+          AVATAR_DISPLAY_DEFAULTS.stageHeight,
+        ),
+      )
+    }
   }
 
   return sanitized
