@@ -161,6 +161,49 @@ docker-compose up -d
 
 ---
 
+## CI / 开发校验
+
+项目已经补充首版 `GitHub Actions` 云端快检，默认在 `push -> main` 和 `pull_request -> main` 时执行两项检查：
+
+- `frontend-build-test`：安装前端依赖，执行 `npm run build` 和 `npm run test -- --run`
+- `backend-fast-tests`：安装后端轻量依赖，执行 `pytest tests -q`
+
+本地复现 CI 可直接执行：
+
+```powershell
+cd "E:\2026spring\software contest\AI-chat-live2d\frontend"
+npm ci
+npm run build
+npm run test -- --run
+```
+
+```powershell
+cd "E:\2026spring\software contest\AI-chat-live2d\backend"
+python -m pip install -r requirements.ci.txt
+pytest tests -q
+```
+
+如果你想从仓库根目录直接验证后端测试路径也没问题，可以执行：
+
+```powershell
+cd "E:\2026spring\software contest\AI-chat-live2d"
+python -m pytest backend\tests -q
+```
+
+说明：
+
+- 云端快检故意**不安装** `CosyVoice`、`faster-whisper`、知识库向量模型或其它本地大模型依赖
+- 首版 CI 只验证“前后端核心代码是否能构建、类型/单元测试是否通过”，不承担 GPU 推理验收
+- `conda + CUDA + 本地模型` 仍然是本项目的本地开发 / 演示环境
+- 后续如果要补 `self-hosted GPU smoke`、CD 部署、或更完整的集成测试，再作为下一阶段推进
+
+GitHub 仓库建议同时开启 branch protection / ruleset，并把下面两个检查设为 `main` 分支 required checks：
+
+- `frontend-build-test`
+- `backend-fast-tests`
+
+---
+
 ## 评分对照
 
 | 评分项           | 分值 | 对应模块                 |

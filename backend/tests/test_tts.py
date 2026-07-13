@@ -127,6 +127,7 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(calls, {'feat': 1, 'token': 1, 'embedding': 1})
+            service._resolve_cosyvoice_device = lambda: "cpu"
 
     def test_cosyvoice2_synthesis_uses_instruct2_signature(self) -> None:
         class FakeCosyVoiceModel:

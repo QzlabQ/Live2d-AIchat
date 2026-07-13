@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest
+numpy<2
+langchain-core==1.4.8
