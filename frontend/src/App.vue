@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import AvatarDisplayControls from './components/AvatarDisplayControls.vue'
 import ChatComposer from './components/ChatComposer.vue'
 import ChatTranscript from './components/ChatTranscript.vue'
+import EmotionLamp from './components/EmotionLamp.vue'
 import Live2DStage from './components/Live2DStage.vue'
 import SessionHistoryRail from './components/SessionHistoryRail.vue'
 import { useAudioRecorder } from './composables/useAudioRecorder'
@@ -13,10 +15,17 @@ import { useVisitorSessions } from './composables/useVisitorSessions'
 import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
 import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageMeta'
 import { buildComposerQuickHints, type ComposerMode } from './lib/chatComposerMode'
-import { buildEmotionLampStyle } from './lib/emotionLamp'
-import { EMOTION_VISUALS } from './lib/lipsync'
 import { buildPhotoQuestion, shouldEnterThinkingForPhoto } from './lib/photoQuestion'
 import { buildRouteRecommendationMessage } from './lib/toolResultMessage'
+import {
+  AVATAR_DISPLAY_DEFAULTS,
+  buildStageHeightStyle,
+  clearAvatarDisplayOverride,
+  loadAvatarDisplayOverride,
+  mergeAvatarDisplayConfig,
+  saveAvatarDisplayOverride,
+  type AvatarDisplayConfig,
+} from './lib/avatarDisplay'
 import {
   computeAvatarPresentation,
   createDefaultConversationPhaseState,
@@ -112,6 +121,8 @@ const avatarProfiles = ref<VisitorAvatarProfileSummary[]>([])
 const avatarProfilesLoading = ref(false)
 const avatarProfilesError = ref('')
 const selectedAvatarProfileId = ref('')
+const visitorDisplayControlsOpen = ref(false)
+const localAvatarDisplayOverride = ref<Partial<AvatarDisplayConfig> | null>(null)
 
 const sessionBooting = ref(false)
 const historyRailOpen = ref(false)
@@ -930,7 +941,6 @@ const canRecord = computed(
   () => recorder.isSupported.value && socket.state.value === 'connected' && !sessionBooting.value,
 )
 const meterScale = computed(() => Math.max(0.05, recorder.level.value))
-const emotionVisual = computed(() => EMOTION_VISUALS[emotionTelemetry.value.value] ?? EMOTION_VISUALS.neutral)
 const avatarPresentation = computed(() =>
   computeAvatarPresentation(conversationPhaseState.value, {
     emotion: latestEmotion.value,
@@ -938,9 +948,6 @@ const avatarPresentation = computed(() =>
     lipSyncActive: avatarSpeechActive.value,
     nowMs: avatarPresentationNowMs.value,
   }),
-)
-const emotionLampStyle = computed(() =>
-  buildEmotionLampStyle(emotionTelemetry.value, emotionVisual.value),
 )
 const emotionConfidenceLabel = computed(
   () => `${Math.round((emotionTelemetry.value.confidence || 0) * 100)}%`,
@@ -1006,6 +1013,13 @@ const activeAvatarProfile = computed(
     null,
 )
 const currentAvatarName = computed(() => activeAvatarProfile.value?.name || '默认数字人')
+const activeAvatarDisplayDefaults = computed(() =>
+  mergeAvatarDisplayConfig(activeAvatarProfile.value ?? AVATAR_DISPLAY_DEFAULTS, null),
+)
+const avatarDisplayConfig = computed(() =>
+  mergeAvatarDisplayConfig(activeAvatarDisplayDefaults.value, localAvatarDisplayOverride.value),
+)
+const stageCardStyle = computed(() => buildStageHeightStyle(avatarDisplayConfig.value))
 const currentModelPath = computed(() => activeAvatarProfile.value?.modelPath || DEFAULT_MODEL_PATH)
 const avatarSwitchDisabled = computed(
   () => avatarProfilesLoading.value || sessionBooting.value || isSessionSwitchBlocked.value,
@@ -1033,6 +1047,42 @@ const avatarSwitchTitle = computed(() => {
 
   return ''
 })
+
+function refreshAvatarDisplayOverride() {
+  if (typeof window === 'undefined') {
+    localAvatarDisplayOverride.value = null
+    return
+  }
+
+  const profileId = activeAvatarProfile.value?.id
+  localAvatarDisplayOverride.value = profileId
+    ? loadAvatarDisplayOverride(window.localStorage, profileId)
+    : null
+}
+
+function updateVisitorAvatarDisplay(value: AvatarDisplayConfig) {
+  localAvatarDisplayOverride.value = value
+
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const profileId = activeAvatarProfile.value?.id
+  if (profileId) {
+    saveAvatarDisplayOverride(window.localStorage, profileId, value)
+  }
+}
+
+function resetVisitorAvatarDisplay() {
+  if (typeof window !== 'undefined') {
+    const profileId = activeAvatarProfile.value?.id
+    if (profileId) {
+      clearAvatarDisplayOverride(window.localStorage, profileId)
+    }
+  }
+
+  localAvatarDisplayOverride.value = null
+}
 
 async function sendOutgoingText(
   content: string,
@@ -1303,6 +1353,12 @@ watch([avatarPresentation, live2dRef], ([presentation, live2d]) => {
   live2d?.setAvatarPresentation(presentation)
 }, { immediate: true })
 
+watch(
+  () => activeAvatarProfile.value?.id,
+  () => refreshAvatarDisplayOverride(),
+  { immediate: true },
+)
+
 onMounted(async () => {
   await Promise.all([bootstrapSessions(), refreshAvatarProfiles()])
   await scrollChatToEnd()
@@ -1392,8 +1448,35 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="stage-card">
-          <Live2DStage ref="live2dRef" :model-path="currentModelPath" />
+        <div class="stage-card" :style="stageCardStyle">
+          <Live2DStage
+            ref="live2dRef"
+            :model-path="currentModelPath"
+            :model-scale="avatarDisplayConfig.displayScale"
+            :model-offset-x="avatarDisplayConfig.displayOffsetX"
+            :model-offset-y="avatarDisplayConfig.displayOffsetY"
+          />
+          <button
+            class="stage-display-toggle"
+            type="button"
+            :aria-expanded="visitorDisplayControlsOpen"
+            aria-controls="visitor-stage-display-controls"
+            @click="visitorDisplayControlsOpen = !visitorDisplayControlsOpen"
+          >
+            显示调节
+          </button>
+          <div
+            v-if="visitorDisplayControlsOpen"
+            id="visitor-stage-display-controls"
+            class="stage-display-popover"
+          >
+            <AvatarDisplayControls
+              compact
+              :model-value="avatarDisplayConfig"
+              @update:model-value="updateVisitorAvatarDisplay"
+              @reset="resetVisitorAvatarDisplay"
+            />
+          </div>
           <div class="stage-caption">
             <div>
               <span class="caption-label">当前数字人</span>
@@ -1401,7 +1484,7 @@ onBeforeUnmount(() => {
             </div>
             <div>
               <span class="caption-label">情绪映射</span>
-              <strong>{{ emotionVisual.label }} / {{ latestEmotion }} / {{ emotionStageLabel }}</strong>
+              <strong>{{ latestEmotion }} / {{ emotionStageLabel }}</strong>
             </div>
             <div>
               <span class="caption-label">模型路径</span>
@@ -1419,26 +1502,11 @@ onBeforeUnmount(() => {
           </article>
           <article class="telemetry-card telemetry-card-lamp">
             <span class="telemetry-label">情绪熔岩灯</span>
-            <div class="emotion-lamp-shell">
-              <div
-                class="emotion-lamp"
-                :data-stage="emotionTelemetry.stage"
-                :data-emotion="emotionTelemetry.value"
-                :style="emotionLampStyle"
-              >
-                <span class="emotion-lamp-core"></span>
-              </div>
-              <div class="emotion-meta">
-                <strong>{{ emotionVisual.label }}</strong>
-                <span>阶段 {{ emotionStageLabel }}</span>
-                <span>置信度 {{ emotionConfidenceLabel }}</span>
-                <span>来源 {{ emotionTelemetry.source }}</span>
-              </div>
-            </div>
-            <p class="emotion-reason">{{ emotionTelemetry.reason }}</p>
-            <p class="emotion-keywords">
-              {{ emotionTelemetry.keywords.length ? emotionTelemetry.keywords.join(' / ') : '暂无显著情绪关键词' }}
-            </p>
+            <EmotionLamp
+              :emotion-telemetry="emotionTelemetry"
+              :stage-label="emotionStageLabel"
+              :confidence-label="emotionConfidenceLabel"
+            />
           </article>
           <article class="telemetry-card">
             <span class="telemetry-label">识别回显</span>
