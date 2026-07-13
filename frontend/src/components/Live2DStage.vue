@@ -152,7 +152,10 @@ function resizeModel() {
   const bounds = model.getLocalBounds()
   const placement = computeLive2DPlacement(
     { width: clientWidth, height: clientHeight },
-    { width: bounds.width, height: bounds.height },
+    {
+      width: bounds.width || model.width || 1,
+      height: bounds.height || model.height || 1,
+    },
     {
       displayScale: props.modelScale,
       displayOffsetX: props.modelOffsetX,

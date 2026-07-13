@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -166,5 +168,31 @@ describe('avatarDisplay', () => {
     expect(placement.scale).toBeCloseTo(0.51)
     expect(placement.x).toBeCloseTo(480)
     expect(placement.y).toBeCloseTo(340)
+  })
+
+  it('keeps placement sane when callers provide fallback-sized Live2D bounds', () => {
+    const placement = computeLive2DPlacement(
+      { width: 800, height: 500 },
+      { width: 400, height: 1000 },
+      {
+        displayScale: 1,
+        displayOffsetX: 0,
+        displayOffsetY: 0,
+        stageHeight: 500,
+      },
+    )
+
+    expect(placement.scale).toBeCloseTo(0.425)
+    expect(placement.scale).toBeLessThan(1)
+  })
+
+  it('uses rendered Live2D model dimensions when local bounds are unavailable', () => {
+    const stageSource = readFileSync(
+      new URL('../components/Live2DStage.vue', import.meta.url),
+      'utf8',
+    )
+
+    expect(stageSource).toContain('width: bounds.width || model.width || 1')
+    expect(stageSource).toContain('height: bounds.height || model.height || 1')
   })
 })
