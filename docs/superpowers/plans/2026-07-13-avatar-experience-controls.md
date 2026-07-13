@@ -400,7 +400,6 @@ Create `frontend/src/lib/avatarDisplay.test.ts`:
 import { describe, expect, it, vi } from 'vitest'
 
 import {
-  AVATAR_DISPLAY_DEFAULTS,
   buildAvatarDisplayStorageKey,
   buildStageHeightStyle,
   clampAvatarDisplayConfig,
@@ -466,10 +465,40 @@ describe('avatar display config', () => {
       buildAvatarDisplayStorageKey(7),
       JSON.stringify({ displayScale: 1.25, stageHeight: 520 }),
     )
-    expect(loadAvatarDisplayOverride(storage, 7)).toEqual({
-      ...AVATAR_DISPLAY_DEFAULTS,
+    const loaded = loadAvatarDisplayOverride(storage, 7)
+
+    expect(loaded).toEqual({
       displayScale: 1.25,
       stageHeight: 520,
+    })
+    expect(mergeAvatarDisplayConfig(null, loaded)).toEqual({
+      displayScale: 1.25,
+      displayOffsetX: 0,
+      displayOffsetY: 0,
+      stageHeight: 520,
+    })
+  })
+
+  it('preserves backend display fields when local storage only overrides scale', () => {
+    const storage = {
+      getItem: vi.fn(() => JSON.stringify({ displayScale: 1.25 })),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    } as unknown as Storage
+    const backendConfig = {
+      displayScale: 1.1,
+      displayOffsetX: 0.1,
+      displayOffsetY: 0.2,
+      stageHeight: 560,
+    }
+    const loaded = loadAvatarDisplayOverride(storage, 7)
+
+    expect(loaded).toEqual({ displayScale: 1.25 })
+    expect(mergeAvatarDisplayConfig(backendConfig, loaded)).toEqual({
+      displayScale: 1.25,
+      displayOffsetX: 0.1,
+      displayOffsetY: 0.2,
+      stageHeight: 560,
     })
   })
 
@@ -568,6 +597,54 @@ export function clampAvatarDisplayConfig(input: AvatarDisplayConfigInput): Avata
   }
 }
 
+function hasOwnValue(input: object, key: keyof AvatarDisplayConfig) {
+  return Object.prototype.hasOwnProperty.call(input, key)
+}
+
+export function sanitizeAvatarDisplayOverride(input: AvatarDisplayConfigInput): Partial<AvatarDisplayConfig> {
+  if (!input || typeof input !== 'object') {
+    return {}
+  }
+
+  const sanitized: Partial<AvatarDisplayConfig> = {}
+  if (hasOwnValue(input, 'displayScale')) {
+    sanitized.displayScale = clamp(
+      input.displayScale,
+      AVATAR_DISPLAY_LIMITS.displayScale.min,
+      AVATAR_DISPLAY_LIMITS.displayScale.max,
+      AVATAR_DISPLAY_DEFAULTS.displayScale,
+    )
+  }
+  if (hasOwnValue(input, 'displayOffsetX')) {
+    sanitized.displayOffsetX = clamp(
+      input.displayOffsetX,
+      AVATAR_DISPLAY_LIMITS.displayOffsetX.min,
+      AVATAR_DISPLAY_LIMITS.displayOffsetX.max,
+      AVATAR_DISPLAY_DEFAULTS.displayOffsetX,
+    )
+  }
+  if (hasOwnValue(input, 'displayOffsetY')) {
+    sanitized.displayOffsetY = clamp(
+      input.displayOffsetY,
+      AVATAR_DISPLAY_LIMITS.displayOffsetY.min,
+      AVATAR_DISPLAY_LIMITS.displayOffsetY.max,
+      AVATAR_DISPLAY_DEFAULTS.displayOffsetY,
+    )
+  }
+  if (hasOwnValue(input, 'stageHeight')) {
+    sanitized.stageHeight = Math.round(
+      clamp(
+        input.stageHeight,
+        AVATAR_DISPLAY_LIMITS.stageHeight.min,
+        AVATAR_DISPLAY_LIMITS.stageHeight.max,
+        AVATAR_DISPLAY_DEFAULTS.stageHeight,
+      ),
+    )
+  }
+
+  return sanitized
+}
+
 export function mergeAvatarDisplayConfig(
   backendConfig: AvatarDisplayConfigInput,
   localOverride: AvatarDisplayConfigInput,
@@ -586,7 +663,7 @@ export function buildAvatarDisplayStorageKey(avatarProfileId: number | string) {
 export function loadAvatarDisplayOverride(
   storage: Pick<Storage, 'getItem'>,
   avatarProfileId: number | string | null | undefined,
-): AvatarDisplayConfig | null {
+): Partial<AvatarDisplayConfig> | null {
   if (avatarProfileId === null || avatarProfileId === undefined || avatarProfileId === '') {
     return null
   }
@@ -597,7 +674,7 @@ export function loadAvatarDisplayOverride(
   }
 
   try {
-    return clampAvatarDisplayConfig(JSON.parse(raw) as AvatarDisplayConfigInput)
+    return sanitizeAvatarDisplayOverride(JSON.parse(raw) as AvatarDisplayConfigInput)
   } catch {
     return null
   }

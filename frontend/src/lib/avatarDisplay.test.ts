@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  AVATAR_DISPLAY_DEFAULTS,
   buildAvatarDisplayStorageKey,
   buildStageHeightStyle,
   clampAvatarDisplayConfig,
@@ -64,7 +63,7 @@ describe('avatarDisplay', () => {
     })
   })
 
-  it('saves and loads avatar-specific display overrides with defaults filled in', () => {
+  it('saves and loads avatar-specific display overrides as partial values', () => {
     const storageLike = createMemoryStorage()
 
     const key = buildAvatarDisplayStorageKey(7)
@@ -82,10 +81,38 @@ describe('avatarDisplay', () => {
         stageHeight: 520,
       }),
     )
-    expect(loadAvatarDisplayOverride(storageLike, 7)).toEqual({
-      ...AVATAR_DISPLAY_DEFAULTS,
+    const loaded = loadAvatarDisplayOverride(storageLike, 7)
+
+    expect(loaded).toEqual({
       displayScale: 1.25,
       stageHeight: 520,
+    })
+    expect(mergeAvatarDisplayConfig(null, loaded)).toEqual({
+      displayScale: 1.25,
+      displayOffsetX: 0,
+      displayOffsetY: 0,
+      stageHeight: 520,
+    })
+  })
+
+  it('preserves backend display fields when local storage only overrides scale', () => {
+    const storage = createMemoryStorage({
+      [buildAvatarDisplayStorageKey(7)]: JSON.stringify({ displayScale: 1.25 }),
+    })
+    const backendConfig = {
+      displayScale: 1.1,
+      displayOffsetX: 0.1,
+      displayOffsetY: 0.2,
+      stageHeight: 560,
+    }
+    const loaded = loadAvatarDisplayOverride(storage, 7)
+
+    expect(loaded).toEqual({ displayScale: 1.25 })
+    expect(mergeAvatarDisplayConfig(backendConfig, loaded)).toEqual({
+      displayScale: 1.25,
+      displayOffsetX: 0.1,
+      displayOffsetY: 0.2,
+      stageHeight: 560,
     })
   })
 

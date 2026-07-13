@@ -29,6 +29,10 @@ function clamp(value: number | undefined, min: number, max: number, fallback: nu
   return Math.min(Math.max(value, min), max)
 }
 
+function hasOwnValue(input: object, key: keyof AvatarDisplayConfig) {
+  return Object.prototype.hasOwnProperty.call(input, key)
+}
+
 export function clampAvatarDisplayConfig(input: AvatarDisplayConfigInput): AvatarDisplayConfig {
   return {
     displayScale: clamp(
@@ -60,6 +64,53 @@ export function clampAvatarDisplayConfig(input: AvatarDisplayConfigInput): Avata
   }
 }
 
+export function sanitizeAvatarDisplayOverride(
+  input: AvatarDisplayConfigInput,
+): Partial<AvatarDisplayConfig> {
+  if (!input || typeof input !== 'object') {
+    return {}
+  }
+
+  const sanitized: Partial<AvatarDisplayConfig> = {}
+
+  if (hasOwnValue(input, 'displayScale')) {
+    sanitized.displayScale = clamp(
+      input.displayScale,
+      AVATAR_DISPLAY_LIMITS.displayScale.min,
+      AVATAR_DISPLAY_LIMITS.displayScale.max,
+      AVATAR_DISPLAY_DEFAULTS.displayScale,
+    )
+  }
+  if (hasOwnValue(input, 'displayOffsetX')) {
+    sanitized.displayOffsetX = clamp(
+      input.displayOffsetX,
+      AVATAR_DISPLAY_LIMITS.displayOffsetX.min,
+      AVATAR_DISPLAY_LIMITS.displayOffsetX.max,
+      AVATAR_DISPLAY_DEFAULTS.displayOffsetX,
+    )
+  }
+  if (hasOwnValue(input, 'displayOffsetY')) {
+    sanitized.displayOffsetY = clamp(
+      input.displayOffsetY,
+      AVATAR_DISPLAY_LIMITS.displayOffsetY.min,
+      AVATAR_DISPLAY_LIMITS.displayOffsetY.max,
+      AVATAR_DISPLAY_DEFAULTS.displayOffsetY,
+    )
+  }
+  if (hasOwnValue(input, 'stageHeight')) {
+    sanitized.stageHeight = Math.round(
+      clamp(
+        input.stageHeight,
+        AVATAR_DISPLAY_LIMITS.stageHeight.min,
+        AVATAR_DISPLAY_LIMITS.stageHeight.max,
+        AVATAR_DISPLAY_DEFAULTS.stageHeight,
+      ),
+    )
+  }
+
+  return sanitized
+}
+
 export function mergeAvatarDisplayConfig(
   backendConfig: AvatarDisplayConfigInput,
   localOverride: AvatarDisplayConfigInput,
@@ -78,7 +129,7 @@ export function buildAvatarDisplayStorageKey(avatarProfileId: number | string) {
 export function loadAvatarDisplayOverride(
   storage: Storage,
   avatarProfileId: number | string | null | undefined,
-): AvatarDisplayConfig | null {
+): Partial<AvatarDisplayConfig> | null {
   if (avatarProfileId === null || avatarProfileId === undefined || avatarProfileId === '') {
     return null
   }
@@ -89,7 +140,7 @@ export function loadAvatarDisplayOverride(
   }
 
   try {
-    return clampAvatarDisplayConfig(JSON.parse(rawValue) as AvatarDisplayConfigInput)
+    return sanitizeAvatarDisplayOverride(JSON.parse(rawValue) as AvatarDisplayConfigInput)
   } catch {
     return null
   }
