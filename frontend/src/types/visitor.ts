@@ -45,6 +45,10 @@ export interface VisitorAvatarProfileSummary {
   slug: string
   isActive: boolean
   modelPath: string
+  displayScale: number
+  displayOffsetX: number
+  displayOffsetY: number
+  stageHeight: number
   updatedAt: string
 }
 
