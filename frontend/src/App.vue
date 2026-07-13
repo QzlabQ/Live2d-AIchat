@@ -20,6 +20,7 @@ import { buildRouteRecommendationMessage } from './lib/toolResultMessage'
 import {
   AVATAR_DISPLAY_DEFAULTS,
   buildStageHeightStyle,
+  buildAvatarDisplayOverridePatch,
   clearAvatarDisplayOverride,
   loadAvatarDisplayOverride,
   mergeAvatarDisplayConfig,
@@ -1061,16 +1062,24 @@ function refreshAvatarDisplayOverride() {
 }
 
 function updateVisitorAvatarDisplay(value: AvatarDisplayConfig) {
-  localAvatarDisplayOverride.value = value
+  const patch = buildAvatarDisplayOverridePatch(activeAvatarDisplayDefaults.value, value)
+  localAvatarDisplayOverride.value = Object.keys(patch).length > 0 ? patch : null
 
   if (typeof window === 'undefined') {
     return
   }
 
   const profileId = activeAvatarProfile.value?.id
-  if (profileId) {
-    saveAvatarDisplayOverride(window.localStorage, profileId, value)
+  if (!profileId) {
+    return
   }
+
+  if (Object.keys(patch).length > 0) {
+    saveAvatarDisplayOverride(window.localStorage, profileId, patch)
+    return
+  }
+
+  clearAvatarDisplayOverride(window.localStorage, profileId)
 }
 
 function resetVisitorAvatarDisplay() {

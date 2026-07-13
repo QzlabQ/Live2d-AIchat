@@ -135,6 +135,18 @@ function rebuildEmotionTarget() {
   ])
 }
 
+function resetExpressionState() {
+  for (const key of Object.keys(expressionTargets)) {
+    delete expressionTargets[key]
+  }
+
+  for (const key of Object.keys(currentEmotionValues)) {
+    delete currentEmotionValues[key]
+  }
+
+  rebuildEmotionTarget()
+}
+
 function setMouthPose(targetOpen: number, targetForm: number) {
   currentOpen += (targetOpen - currentOpen) * 0.35
   currentForm += (targetForm - currentForm) * 0.35
@@ -275,6 +287,7 @@ async function createModel() {
     }
   }
 
+  resetExpressionState()
   for (const expression of settings.FileReferences?.Expressions ?? []) {
     const url = resolveModelAssetUrl(props.modelPath, expression.File)
     const expressionResponse = await fetch(url)
@@ -344,6 +357,7 @@ function destroyModelRuntime() {
   }
   pixiApp = null
   model = null
+  resetExpressionState()
   currentOpen = 0.06
   currentForm = 0
 }

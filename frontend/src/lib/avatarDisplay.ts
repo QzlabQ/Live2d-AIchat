@@ -148,6 +148,30 @@ export function sanitizeAvatarDisplayOverride(
   return sanitized
 }
 
+export function buildAvatarDisplayOverridePatch(
+  defaults: AvatarDisplayConfigInput,
+  next: AvatarDisplayConfigInput,
+): Partial<AvatarDisplayConfig> {
+  const normalizedDefaults = clampAvatarDisplayConfig(defaults)
+  const normalizedNext = clampAvatarDisplayConfig(next)
+  const patch: Partial<AvatarDisplayConfig> = {}
+
+  if (normalizedNext.displayScale !== normalizedDefaults.displayScale) {
+    patch.displayScale = normalizedNext.displayScale
+  }
+  if (normalizedNext.displayOffsetX !== normalizedDefaults.displayOffsetX) {
+    patch.displayOffsetX = normalizedNext.displayOffsetX
+  }
+  if (normalizedNext.displayOffsetY !== normalizedDefaults.displayOffsetY) {
+    patch.displayOffsetY = normalizedNext.displayOffsetY
+  }
+  if (normalizedNext.stageHeight !== normalizedDefaults.stageHeight) {
+    patch.stageHeight = normalizedNext.stageHeight
+  }
+
+  return patch
+}
+
 export function mergeAvatarDisplayConfig(
   backendConfig: AvatarDisplayConfigInput,
   localOverride: AvatarDisplayConfigInput,

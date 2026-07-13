@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 import {
+  buildAvatarDisplayOverridePatch,
   buildAvatarDisplayStorageKey,
   buildStageHeightStyle,
   clampAvatarDisplayConfig,
@@ -116,6 +117,29 @@ describe('avatarDisplay', () => {
       displayOffsetX: 0.1,
       displayOffsetY: 0.2,
       stageHeight: 560,
+    })
+  })
+
+  it('builds local override patches from fields changed relative to backend defaults', () => {
+    const defaults = {
+      displayScale: 1.1,
+      displayOffsetX: 0.1,
+      displayOffsetY: 0.2,
+      stageHeight: 560,
+    }
+    const patch = buildAvatarDisplayOverridePatch(defaults, {
+      displayScale: 1.25,
+      displayOffsetX: 0.1,
+      displayOffsetY: 0.2,
+      stageHeight: 560,
+    })
+
+    expect(patch).toEqual({ displayScale: 1.25 })
+    expect(mergeAvatarDisplayConfig({ ...defaults, stageHeight: 620 }, patch)).toEqual({
+      displayScale: 1.25,
+      displayOffsetX: 0.1,
+      displayOffsetY: 0.2,
+      stageHeight: 620,
     })
   })
 
