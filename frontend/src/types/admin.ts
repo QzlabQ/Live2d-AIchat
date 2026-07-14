@@ -111,6 +111,92 @@ export interface KnowledgeUploadResult {
   message: string
 }
 
+export interface KnowledgeGapSourceSnapshotItem {
+  filename: string
+  title: string | null
+  category: string | null
+  chunkIndex: number | null
+  retrievalScore: number | null
+  rerankScore: number | null
+  excerpt: string
+}
+
+export interface KnowledgeGapItem {
+  id: string
+  normalizedQuestion: string
+  representativeQuestion: string
+  sampleQuestions: string[]
+  occurrenceCount: number
+  status: string
+  sourceCount: number
+  sourceSnapshot: KnowledgeGapSourceSnapshotItem[]
+  lastSessionId: string | null
+  lastUserQuestion: string | null
+  lastQueryText: string | null
+  lastAssistantReply: string | null
+  lastReplyKind: string | null
+  lastConfidenceNote: string | null
+  lastConfidence: number | null
+  adminTitle: string | null
+  adminCategory: string | null
+  adminAnswer: string | null
+  adminNotes: string | null
+  knowledgeDocId: string | null
+  knowledgeDocFilename: string | null
+  lastErrorMessage: string | null
+  firstSeenAt: string
+  lastSeenAt: string
+  importedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface KnowledgeGapListResponse {
+  total: number
+  items: KnowledgeGapItem[]
+}
+
+export interface KnowledgeGapSummaryStatusCount {
+  status: string
+  count: number
+}
+
+export interface KnowledgeGapHighlightItem {
+  id: string
+  representativeQuestion: string
+  occurrenceCount: number
+  status: string
+  lastSeenAt: string
+}
+
+export interface KnowledgeGapSummary {
+  totalQuestions: number
+  totalOccurrences: number
+  statusCounts: KnowledgeGapSummaryStatusCount[]
+  highlights: KnowledgeGapHighlightItem[]
+}
+
+export interface KnowledgeGapUpdatePayload {
+  status?: string
+  adminTitle?: string
+  adminCategory?: string
+  adminAnswer?: string
+  adminNotes?: string
+}
+
+export interface KnowledgeGapImportPayload {
+  adminTitle?: string
+  adminCategory?: string
+  adminAnswer?: string
+  adminNotes?: string
+  filenamePrefix?: string
+}
+
+export interface KnowledgeGapImportResult {
+  item: KnowledgeGapItem
+  message: string
+}
+
 export interface VoiceProfile {
   id: string
   name: string

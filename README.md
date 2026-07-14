@@ -1,114 +1,131 @@
-# 景区导览服务AI数字人
+# 景区导览服务 AI 数字人
 
-> 第十五届中国软件杯 A5 赛题 | 出题企业：锐捷网络（苏州）有限公司
+> 中国软件杯 A5 赛题项目  
+> 当前仓库状态更新于 `2026-07-14`
 
-一个具备多模态交互能力的景区AI数字人导览系统，支持语音/文本对话、口型同步、个性化路线推荐，并提供管理后台和数据大屏。
+一个面向景区导览场景的多模态 AI 数字人系统，支持文字/语音问答、Live2D 数字人驱动、RAG 知识库问答、游客端个性化推荐、管理后台配置与数据大屏。
 
----
+项目目标不是只做“会回答问题的聊天框”，而是做一个可演示、可配置、可部署的景区导览数字人产品原型。
 
-## 快速导航
+## 当前进度
 
-| 文档                                 | 说明                           |
-| ------------------------------------ | ------------------------------ |
-| [技术选型](docs/tech-stack.md)       | 各模块技术方案与选型理由       |
-| [系统架构](docs/architecture.md)     | 整体架构设计、模块划分、数据流 |
-| [项目Roadmap](docs/roadmap.md)       | 开发阶段计划与里程碑           |
-| [API设计](docs/api-design.md)        | 前后端接口规范                 |
-| [知识库建设](docs/knowledge-base.md) | RAG知识库构建与调优方案        |
-| [口型同步方案](docs/lipsync.md)      | Live2D口型驱动技术细节         |
+按照 [docs/roadmap.md](docs/roadmap.md) 统计，目前整体进度如下：
 
----
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| Phase 1 基础骨架 | 已完成 | 前后端骨架、WebSocket、ASR/TTS 基础链路、知识库导入已打通 |
+| Phase 2 核心 AI 能力 | 基本完成 | RAG、CosyVoice2 TTS、流式音频、口型同步、情绪与动作联动已落地 |
+| Phase 3 功能完整化 | 基本完成 | 游客端、管理后台、数字人配置、知识库管理、会话记录、语音与多模态体验已完成主链路 |
+| Phase 4 数据大屏与体验打磨 | 部分完成 | 数据大屏、感受度报告已完成；TTS 延迟、口型精度、体验收尾仍在优化 |
+| Phase 5 测试与交付 | 未开始/进行前准备 | 一键部署、完整验收、最终材料整理仍待收尾 |
 
-## 项目结构
+如果只看“是否已经可演示”，答案是：**可以**。  
+如果看“是否已经达到比赛最终交付质量”，答案是：**还在做性能与部署收尾**。
 
-```
-ai-tour-guide/
-├── frontend/                # Vue3 前端
-│   ├── src/
-│   │   ├── visitor/         # 游客交互端（数字人对话）
-│   │   └── admin/           # 管理后台
-│   └── package.json
-├── backend/                 # Python FastAPI 后端
-│   ├── api/                 # 路由层
-│   ├── services/
-│   │   ├── rag/             # RAG检索问答
-│   │   ├── llm/             # 大模型调用
-│   │   ├── asr/             # 语音识别
-│   │   ├── tts/             # 语音合成
-│   │   └── emotion/         # 情感分析
-│   ├── models/              # 数据库模型
-│   ├── knowledge/           # 知识库文档处理
-│   └── main.py
-├── live2d/                  # Live2D模型资源
-├── docker-compose.yml       # 一键启动
-└── docs/                    # 设计文档
-```
-
----
-
-## 核心功能
+## 已实现能力
 
 ### 游客端
 
-- **多模态交互**：语音输入（Whisper）+ 文本输入，数字人语音+口型+表情同步回答
-- **智能问答**：基于景区知识库RAG，事实性问答准确率≥90%
-- **个性化推荐**：根据兴趣标签（历史/自然/美食等）推荐游览路线
+- 文字对话与语音对话
+- `faster-whisper` 语音识别链路
+- Live2D 数字人展示、情绪切换、思考态/说话态动作协调
+- CosyVoice2 本地 TTS 发声
+- 流式音频播放与基础口型同步
+- 拍照上传后进行景点识别与问答
+- 个性化路线/偏好推荐入口
+- GPT 风格的历史会话侧边栏与多模态 `+` 入口
+- 多数字人切换
 
 ### 管理后台
 
-- **知识库管理**：上传PDF/Word/文本，自动切片入库
-- **数字人配置**：外观、声音、人设Prompt自定义
-- **游客感受度报告**：情感趋势、关注点分析
-- **数据大屏**：服务人次、热门问答、满意度实时看板
+- 数字人配置页
+- 知识库管理页
+- 会话记录页
+- 感受度报告页
+- 数据大屏页
+- 后台数字人实时预览与情绪预览
 
----
+### 后端与 AI
 
-## 环境要求
+- FastAPI + WebSocket 实时对话通道
+- PostgreSQL / SQLite 数据持久化
+- RAG 检索、重排、生成与口语化改写
+- 澄清追问状态管理
+- CosyVoice2-0.5B 本地 TTS
+- 本地/远程 TTS Provider 抽象
+- ASR / RAG / TTS / 前端缓冲 trace 记录
 
-| 组件                 | 最低要求                            |
-| -------------------- | ----------------------------------- |
-| Python               | 3.10+                               |
-| Node.js              | 18+                                 |
-| VRAM（可选本地模型） | 8GB（Whisper large-v3 + CosyVoice） |
-| 磁盘                 | 20GB+                               |
+## 核心亮点
 
----
+1. **不是纯聊天机器人**  
+   以景区导览为主场景，强调“可讲解、可推荐、可配置、可管理”。
 
-## 快速启动
+2. **RAG 回答做人性化改写**  
+   不直接把知识库原文拼接给游客，而是先重写成导览式口语回答，并在需要时主动澄清。
 
-### 1
+3. **数字人链路已完整打通**  
+   从游客输入，到 LLM/RAG 回答，到 TTS 发声，再到 Live2D 表情与口型联动，已经形成端到端演示链路。
 
-首次准备
-终端 1，启动后端：
+4. **已经考虑真实部署问题**  
+   仓库内已经补齐 Docker 部署资产、测试服务器部署文档、GPU 环境说明和后续 A100/V100 扩展路线。
 
-```powershell
-cd "E:\2026spring\software contest\AI-chat-live2d\backend"
-conda create -n ai-chat-gpu python=3.11 numpy=1.24.3 -c defaults -y
-conda activate ai-chat-gpu
-conda install pytorch::pytorch=2.3.1=py3.11_cuda12.1_cudnn8_0 pytorch::torchvision=0.18.1=py311_cu121 pytorch::torchaudio=2.3.1=py311_cu121 pytorch-cuda=12.1 -c pytorch -c nvidia -c defaults -y
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -r requirements.asr.txt
-python -m pip install -r requirements.knowledge.txt
-python -m pip install -r requirements.tts.txt --no-build-isolation
-Copy-Item .env.example .env
-python -m uvicorn main:app --reload
+## 仓库结构
+
+```text
+AI-chat-live2d/
+├─ frontend/                  # Vue 3 + Vite 游客端 / 管理后台
+│  ├─ src/
+│  ├─ public/live2d/          # Live2D 模型与静态资源
+│  └─ tests/
+├─ backend/                   # FastAPI 后端
+│  ├─ app/
+│  │  ├─ api/
+│  │  ├─ core/
+│  │  ├─ models/
+│  │  └─ services/
+│  ├─ storage/                # 模型、知识库、上传文件等运行时资源
+│  ├─ scripts/                # 评测与辅助脚本
+│  └─ tests/
+├─ docs/                      # 架构、路线图、部署、知识库、口型同步等文档
+├─ deploy/                    # Docker Compose 部署资产
+└─ .github/workflows/         # CI
 ```
 
-终端 2，启动前端：
+## 技术栈
 
-```powershell
-cd "E:\2026spring\software contest\AI-chat-live2d\frontend"
-npm install
-Copy-Item .env.example .env
-npm run dev
-```
+### 前端
 
-以后日常启动可以简化成
+- Vue 3
+- TypeScript
+- Vite
+- PixiJS
+- `pixi-live2d-display`
+
+### 后端
+
+- FastAPI
+- SQLAlchemy
+- WebSocket
+- PostgreSQL / SQLite
+
+### AI 能力
+
+- DashScope / Qwen
+- `faster-whisper`
+- CosyVoice2-0.5B
+- ChromaDB
+- BGE Embedding / Reranker
+
+## 快速开始
+
+### 1. 本地开发启动
+
+后端推荐直接参考 [backend/README.md](backend/README.md) 中的 conda 方案。当前项目主要在 `ai-chat-gpu` 这套环境中联调。
+
 后端：
 
 ```powershell
-cd "E:\2026spring\software contest\AI-chat-live2d\backend"
+cd backend
 conda activate ai-chat-gpu
 python -m uvicorn main:app --reload
 ```
@@ -116,114 +133,69 @@ python -m uvicorn main:app --reload
 前端：
 
 ```powershell
-cd "E:\2026spring\software contest\AI-chat-live2d\frontend"
-npm run dev
-```
-
-测试地址
-前端页面：http://127.0.0.1:5173
-后端健康检查：http://127.0.0.1:8000/api/v1/health
-后端 Swagger：http://127.0.0.1:8000/docs
-如果你想顺手验证前端构建也没问题，再执行：
-
-```powershell
-cd "E:\2026spring\software contest\AI-chat-live2d\frontend"
-npm run build
-```
-
-```bash
-# 1. 后端
-cd backend
-conda create -n ai-chat-gpu python=3.11 numpy=1.24.3 -c defaults -y
-conda activate ai-chat-gpu
-conda install pytorch::pytorch=2.3.1=py3.11_cuda12.1_cudnn8_0 pytorch::torchvision=0.18.1=py311_cu121 pytorch::torchaudio=2.3.1=py311_cu121 pytorch-cuda=12.1 -c pytorch -c nvidia -c defaults -y
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -r requirements.asr.txt
-python -m pip install -r requirements.knowledge.txt
-python -m pip install -r requirements.tts.txt --no-build-isolation
-cp .env.example .env   # 填入 DASHSCOPE_API_KEY 等
-python -m uvicorn main:app --reload
-
-# 2. 前端
 cd frontend
 npm install
 npm run dev
 ```
 
-完整的后端 conda / GPU / CosyVoice 环境说明请查看 `backend/README.md`。
+默认访问地址：
 
-或使用 Docker：
+- 游客端：`http://127.0.0.1:5173/`
+- 管理后台：`http://127.0.0.1:5173/admin.html`
+- 后端健康检查：`http://127.0.0.1:8000/api/v1/health`
+- Swagger：`http://127.0.0.1:8000/docs`
 
-```bash
-docker-compose up -d
-```
+### 2. Docker / 测试服务器部署
 
----
+仓库已提供测试服务器部署资产：
 
-## CI / 开发校验
+- [deploy/docker-compose.yml](deploy/docker-compose.yml)
+- [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)
 
-项目已经补充首版 `GitHub Actions` 云端快检，默认在 `push -> main` 和 `pull_request -> main` 时执行两项检查：
+适用场景：
 
-- `frontend-build-test`：安装前端依赖，执行 `npm run build` 和 `npm run test -- --run`
-- `backend-fast-tests`：安装后端轻量依赖，执行 `pytest tests -q`
+- `Ubuntu 22.04`
+- `Docker`
+- `PostgreSQL`
+- `V100 / A100` 测试服务器
 
-本地复现 CI 可直接执行：
+### 3. CI
 
-```powershell
-cd "E:\2026spring\software contest\AI-chat-live2d\frontend"
-npm ci
-npm run build
-npm run test -- --run
-```
+当前仓库已配置基础 CI：
 
-```powershell
-cd "E:\2026spring\software contest\AI-chat-live2d\backend"
-python -m pip install -r requirements.ci.txt
-pytest tests -q
-```
+- 前端构建测试
+- 后端轻量测试
 
-如果你想从仓库根目录直接验证后端测试路径也没问题，可以执行：
+工作流位置：
 
-```powershell
-cd "E:\2026spring\software contest\AI-chat-live2d"
-python -m pytest backend\tests -q
-```
+- [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
-说明：
+## 重要文档导航
 
-- 云端快检故意**不安装** `CosyVoice`、`faster-whisper`、知识库向量模型或其它本地大模型依赖
-- 首版 CI 只验证“前后端核心代码是否能构建、类型/单元测试是否通过”，不承担 GPU 推理验收
-- `conda + CUDA + 本地模型` 仍然是本项目的本地开发 / 演示环境
-- 后续如果要补 `self-hosted GPU smoke`、CD 部署、或更完整的集成测试，再作为下一阶段推进
+- [docs/roadmap.md](docs/roadmap.md)：项目阶段计划与完成情况
+- [docs/architecture.md](docs/architecture.md)：整体架构
+- [docs/api-design.md](docs/api-design.md)：接口设计
+- [docs/knowledge-base.md](docs/knowledge-base.md)：知识库方案
+- [docs/lipsync.md](docs/lipsync.md)：口型同步方案
+- [docs/gpu-upgrade.md](docs/gpu-upgrade.md)：显卡升级与迁移建议
+- [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)：测试服务器部署手册
 
-GitHub 仓库建议同时开启 branch protection / ruleset，并把下面两个检查设为 `main` 分支 required checks：
+## 当前重点问题
 
-- `frontend-build-test`
-- `backend-fast-tests`
+目前最需要继续打磨的不是“有没有功能”，而是“体验是否足够稳定”：
 
----
+- TTS 流式发声速度仍慢于理想状态
+- 4060 本机环境下偶发卡顿仍需继续优化
+- 口型同步主观体验已可用，但还需要更严格的量化验收
+- 最终部署、评测、交付材料还需要补齐
 
-## 评分对照
+## 说明
 
-| 评分项           | 分值 | 对应模块                 |
-| ---------------- | ---- | ------------------------ |
-| 功能完整度       | 40   | 全部功能模块             |
-| 技术与创新性     | 30   | 口型同步、RAG+大模型     |
-| 行业实用与体验性 | 20   | 交互流畅度、数字人表现力 |
-| 文档质量         | 10   | docs/ + PPT + 演示视频   |
----
+- 仓库体积相对偏大，主要原因是 `frontend/public/live2d/` 中直接纳入了 Live2D 模型资源。
+- `data/`、本地模型、虚拟环境、日志等运行时目录默认不纳入 Git。
+- 如果后续要做正式开源整理，建议把大体积数字人资源与模型下载步骤进一步拆分。
 
-## 测试服务器部署
+## License
 
-如果你要把当前版本部署到学校测试服务器，优先看这份中文手册：
-
-- [测试服务器 Docker Compose 部署手册](docs/deployment/test-server-docker.md)
-
-这份手册覆盖了：
-
-- `Ubuntu 22.04 + Docker + V100/A100` 的部署前提
-- `frontend + backend + postgres` 三服务 Compose 拉起
-- `git clone / git pull` 主路径与 `rsync` 兜底同步
-- `scp / rsync` 上传模型、CosyVoice、知识库
-- `ssh -L 18080:127.0.0.1:8080 user@server` 的访问方式
+当前仓库主要用于比赛开发与校内测试。  
+其中部分模型、数字人资源、第三方依赖存在各自的许可证约束，正式公开发布前需要逐项核对授权范围。

@@ -665,6 +665,49 @@ class KnowledgeImporter:
                 raise
         return imported
 
+    async def import_generated_markdown(
+        self,
+        db: AsyncSession,
+        *,
+        filename: str,
+        category: str,
+        title: str,
+        markdown_text: str,
+        stored_path: Path,
+    ) -> ImportedKnowledgeDoc:
+        cleaned_text = clean_text(markdown_text)
+        if not cleaned_text:
+            raise RuntimeError("Generated markdown is empty after cleanup.")
+
+        document = KnowledgeDoc(
+            filename=filename,
+            category=category,
+            stored_path=str(stored_path),
+            chunk_count=0,
+            status="processing",
+            error_message="",
+        )
+        db.add(document)
+        await db.commit()
+        await db.refresh(document)
+
+        parsed = ParsedKnowledgeDocument(
+            filename=filename,
+            source_path=stored_path,
+            title=title.strip() or Path(filename).stem,
+            category=category,
+            text=cleaned_text,
+            source_kind="generated_markdown",
+            metadata={"source_kind": "generated_markdown"},
+        )
+        embedder = build_embedding_service(self.settings)
+        try:
+            return await self._process_document_row(db, document, parsed, embedder=embedder)
+        except Exception as exc:
+            await db.rollback()
+            await self._mark_doc_error(db, document.id, str(exc))
+            raise
+
     async def delete_document(self, doc_id: str, db: AsyncSession) -> KnowledgeDoc | None:
         document = await db.get(KnowledgeDoc, doc_id)
         if document is None:

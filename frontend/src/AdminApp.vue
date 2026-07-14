@@ -24,6 +24,9 @@ import {
   fetchAvatarProfiles,
   fetchAvatarConfigByProfile,
   fetchDailyReports,
+  fetchKnowledgeGapDetail,
+  fetchKnowledgeGapSummary,
+  fetchKnowledgeGaps,
   fetchKnowledgeDocs,
   fetchLive2DModels,
   fetchReportSummary,
@@ -31,7 +34,9 @@ import {
   fetchVoiceProfiles,
   generateDailyReport,
   getAdminApiBaseUrl,
+  importKnowledgeGap,
   loginAdmin,
+  updateKnowledgeGap,
   updateAvatarConfig,
   uploadKnowledgeDoc,
   uploadVoiceProfile,
@@ -45,6 +50,9 @@ import type {
   DashboardKeywordCloudItem,
   DashboardOverview,
   DailyEmotionReport,
+  KnowledgeGapItem,
+  KnowledgeGapSummary,
+  KnowledgeGapUpdatePayload,
   KnowledgeDocItem,
   Live2DModelOption,
   ReportRangeSummary,
@@ -89,7 +97,24 @@ interface LineChartNode {
   ariaLabel: string
 }
 
-type AdminPageKey = 'overview' | 'dashboard' | 'avatar' | 'voices' | 'knowledge' | 'sessions' | 'reports'
+interface KnowledgeGapEditorState {
+  status: string
+  adminTitle: string
+  adminCategory: string
+  adminAnswer: string
+  adminNotes: string
+  filenamePrefix: string
+}
+
+type AdminPageKey =
+  | 'overview'
+  | 'dashboard'
+  | 'avatar'
+  | 'voices'
+  | 'knowledge'
+  | 'knowledge-gaps'
+  | 'sessions'
+  | 'reports'
 
 interface AdminPageMeta {
   key: AdminPageKey
@@ -102,6 +127,14 @@ interface AdminPageMeta {
 const API_BASE_URL = getAdminApiBaseUrl()
 const TOKEN_STORAGE_KEY = 'ai-chat-live2d.admin.token'
 const MODEL_FALLBACK = '/live2d/haru/haru_greeter_t03.model3.json'
+const KNOWLEDGE_GAP_STATUS_ORDER = [
+  'pending',
+  'draft',
+  'reviewing',
+  'resolved',
+  'imported',
+  'ignored',
+] as const
 const ADMIN_PAGES: AdminPageMeta[] = [
   {
     key: 'overview',
@@ -139,6 +172,13 @@ const ADMIN_PAGES: AdminPageMeta[] = [
     description: '上传文档、观察处理状态，并清理旧的知识条目。',
   },
   {
+    key: 'knowledge-gaps',
+    label: '知识缺口',
+    eyebrow: 'Knowledge Gaps',
+    title: '知识自扩容 / 知识缺口',
+    description: '集中查看未命中问题、补充草稿答案，并将整理后的内容一键导入知识库。',
+  },
+  {
     key: 'sessions',
     label: '会话记录',
     eyebrow: 'Sessions',
@@ -173,6 +213,10 @@ const loading = reactive({
   avatarProfileCreate: false,
   avatarProfileDelete: false,
   avatarSave: false,
+  knowledgeGapDetail: false,
+  knowledgeGapImport: false,
+  knowledgeGapReload: false,
+  knowledgeGapSave: false,
   knowledgeReload: false,
   knowledgeUpload: false,
   sessionDetail: false,
@@ -215,6 +259,28 @@ const voiceUploadFile = ref<File | null>(null)
 const knowledgeUploadForm = reactive({
   category: 'general',
 })
+
+const knowledgeGapFilters = reactive({
+  page: 1,
+  size: 12,
+  status: '',
+  search: '',
+})
+const knowledgeGapSearchInput = ref('')
+const knowledgeGapList = ref<KnowledgeGapItem[]>([])
+const knowledgeGapTotal = ref(0)
+const knowledgeGapSummary = ref<KnowledgeGapSummary | null>(null)
+const selectedKnowledgeGapId = ref('')
+const selectedKnowledgeGap = ref<KnowledgeGapItem | null>(null)
+const knowledgeGapEditor = reactive<KnowledgeGapEditorState>({
+  status: '',
+  adminTitle: '',
+  adminCategory: '',
+  adminAnswer: '',
+  adminNotes: '',
+  filenamePrefix: '',
+})
+let knowledgeGapDetailRequestId = 0
 
 const sessionSearch = ref('')
 const voiceUploadForm = reactive({
@@ -476,6 +542,44 @@ const reportSentimentChartNodes = computed(() =>
 const voiceProfileCount = computed(() => voiceProfiles.value.length)
 const recentKnowledgeDocs = computed(() => knowledgeDocs.value.slice(0, 3))
 const recentVoiceProfiles = computed(() => voiceProfiles.value.slice(0, 3))
+const knowledgeGapTopStatus = computed(() => {
+  return [...(knowledgeGapSummary.value?.statusCounts || [])].sort((left, right) => right.count - left.count)[0] ?? null
+})
+const knowledgeGapTotalPages = computed(() =>
+  Math.max(1, Math.ceil(knowledgeGapTotal.value / Math.max(1, knowledgeGapFilters.size))),
+)
+const knowledgeGapRangeStart = computed(() => {
+  if (!knowledgeGapTotal.value) {
+    return 0
+  }
+  return (knowledgeGapFilters.page - 1) * knowledgeGapFilters.size + 1
+})
+const knowledgeGapRangeEnd = computed(() =>
+  Math.min(knowledgeGapTotal.value, knowledgeGapFilters.page * knowledgeGapFilters.size),
+)
+const knowledgeGapStatusOptions = computed(() => {
+  const statuses = new Set<string>()
+  KNOWLEDGE_GAP_STATUS_ORDER.forEach((status) => statuses.add(status))
+  knowledgeGapSummary.value?.statusCounts.forEach((item) => {
+    if (item.status) {
+      statuses.add(item.status)
+    }
+  })
+  knowledgeGapList.value.forEach((item) => {
+    if (item.status) {
+      statuses.add(item.status)
+    }
+  })
+  if (selectedKnowledgeGap.value?.status) {
+    statuses.add(selectedKnowledgeGap.value.status)
+  }
+  return sortKnowledgeGapStatuses(Array.from(statuses))
+})
+const selectedKnowledgeGapInList = computed(() =>
+  knowledgeGapList.value.some((item) => item.id === selectedKnowledgeGapId.value),
+)
+const knowledgeGapDraftPayload = computed(() => buildKnowledgeGapDraftPayload())
+const knowledgeGapEditorDirty = computed(() => Object.keys(knowledgeGapDraftPayload.value).length > 0)
 const filteredAdminSessions = computed(() => {
   const keyword = sessionSearch.value.trim().toLowerCase()
   if (!keyword) {
@@ -498,6 +602,15 @@ const activePageMeta = computed(
 const pageUpdatedText = computed(() => {
   if (activePage.value === 'dashboard' && dashboardOverview.value) {
     return `统计区间：${dashboardOverview.value.dateFrom} 至 ${dashboardOverview.value.dateTo}`
+  }
+  if (activePage.value === 'knowledge-gaps') {
+    if (selectedKnowledgeGap.value) {
+      return `最近命中：${formatDateTime(selectedKnowledgeGap.value.lastSeenAt)}`
+    }
+    if (knowledgeGapSummary.value) {
+      return `累计问题 ${knowledgeGapSummary.value.totalQuestions}，命中 ${knowledgeGapSummary.value.totalOccurrences} 次`
+    }
+    return '知识缺口列表待加载'
   }
   if (activePage.value === 'reports' && reportSummary.value) {
     return `报告区间：${reportSummary.value.dateFrom} 至 ${reportSummary.value.dateTo}`
@@ -541,6 +654,11 @@ async function navigateToPage(page: AdminPageKey, options: { syncHash?: boolean 
 
   if (page === 'knowledge') {
     await loadKnowledgeList()
+    return
+  }
+
+  if (page === 'knowledge-gaps') {
+    await loadKnowledgeGapWorkspace({ preserveSelection: true })
     return
   }
 
@@ -590,6 +708,17 @@ watch(
   { deep: false },
 )
 
+watch(
+  () => knowledgeGapFilters.status,
+  async (status, previousStatus) => {
+    if (status === previousStatus || activePage.value !== 'knowledge-gaps') {
+      return
+    }
+    knowledgeGapFilters.page = 1
+    await loadKnowledgeGapWorkspace({ preserveSelection: true })
+  },
+)
+
 watch([adminPreviewPresentation, adminLive2dRef], ([presentation, live2d]) => {
   live2d?.setAvatarPresentation(presentation)
 })
@@ -603,15 +732,25 @@ function clearAuthSession() {
   adminUsername.value = ''
   modelOptions.value = []
   avatarProfiles.value = []
+  knowledgeGapList.value = []
+  knowledgeGapTotal.value = 0
+  knowledgeGapSummary.value = null
   knowledgeDocs.value = []
   knowledgeTotal.value = 0
   adminSessions.value = []
   selectedSessionId.value = ''
   selectedSessionDetail.value = null
+  selectedKnowledgeGapId.value = ''
+  selectedKnowledgeGap.value = null
   voiceProfiles.value = []
   dailyReports.value = []
   reportSummary.value = null
   dashboardOverview.value = null
+  knowledgeGapFilters.page = 1
+  knowledgeGapFilters.status = ''
+  knowledgeGapFilters.search = ''
+  knowledgeGapSearchInput.value = ''
+  resetKnowledgeGapEditor()
   localStorage.removeItem(TOKEN_STORAGE_KEY)
 }
 
@@ -698,6 +837,131 @@ function syncVoiceProfileToForm(profileId: string) {
   avatarForm.ttsReferenceText = profile.referenceText
 }
 
+function sortKnowledgeGapStatuses(statuses: string[]) {
+  return [...statuses].sort((left, right) => {
+    const leftIndex = KNOWLEDGE_GAP_STATUS_ORDER.indexOf(left as (typeof KNOWLEDGE_GAP_STATUS_ORDER)[number])
+    const rightIndex = KNOWLEDGE_GAP_STATUS_ORDER.indexOf(right as (typeof KNOWLEDGE_GAP_STATUS_ORDER)[number])
+
+    if (leftIndex === -1 && rightIndex === -1) {
+      return left.localeCompare(right)
+    }
+    if (leftIndex === -1) {
+      return 1
+    }
+    if (rightIndex === -1) {
+      return -1
+    }
+    return leftIndex - rightIndex
+  })
+}
+
+function normalizeKnowledgeGapText(value: string | null | undefined) {
+  return value ?? ''
+}
+
+function normalizeKnowledgeGapStatus(status: string) {
+  return status.trim().toLowerCase().replace(/\s+/g, '-')
+}
+
+function knowledgeGapStatusLabel(status: string) {
+  switch (status) {
+    case 'pending':
+    case 'open':
+      return '待处理'
+    case 'draft':
+      return '草稿中'
+    case 'reviewing':
+    case 'in_review':
+      return '审核中'
+    case 'resolved':
+    case 'completed':
+      return '已解决'
+    case 'imported':
+      return '已导入'
+    case 'ignored':
+      return '已忽略'
+    default:
+      return status || '未知'
+  }
+}
+
+function resetKnowledgeGapEditor() {
+  knowledgeGapEditor.status = ''
+  knowledgeGapEditor.adminTitle = ''
+  knowledgeGapEditor.adminCategory = ''
+  knowledgeGapEditor.adminAnswer = ''
+  knowledgeGapEditor.adminNotes = ''
+  knowledgeGapEditor.filenamePrefix = ''
+}
+
+function applyKnowledgeGapEditor(item: KnowledgeGapItem) {
+  knowledgeGapEditor.status = item.status || 'pending'
+  knowledgeGapEditor.adminTitle = normalizeKnowledgeGapText(item.adminTitle)
+  knowledgeGapEditor.adminCategory = normalizeKnowledgeGapText(item.adminCategory)
+  knowledgeGapEditor.adminAnswer = normalizeKnowledgeGapText(item.adminAnswer)
+  knowledgeGapEditor.adminNotes = normalizeKnowledgeGapText(item.adminNotes)
+  knowledgeGapEditor.filenamePrefix = ''
+}
+
+function resetKnowledgeGapSelection() {
+  selectedKnowledgeGapId.value = ''
+  selectedKnowledgeGap.value = null
+  resetKnowledgeGapEditor()
+}
+
+function patchKnowledgeGapListItem(item: KnowledgeGapItem) {
+  const index = knowledgeGapList.value.findIndex((entry) => entry.id === item.id)
+  if (index === -1) {
+    return
+  }
+  knowledgeGapList.value.splice(index, 1, item)
+}
+
+function buildKnowledgeGapDraftPayload(): KnowledgeGapUpdatePayload {
+  const item = selectedKnowledgeGap.value
+  if (!item) {
+    return {}
+  }
+
+  const payload: KnowledgeGapUpdatePayload = {}
+  if (knowledgeGapEditor.status !== (item.status || 'pending')) {
+    payload.status = knowledgeGapEditor.status
+  }
+  if (knowledgeGapEditor.adminTitle !== normalizeKnowledgeGapText(item.adminTitle)) {
+    payload.adminTitle = knowledgeGapEditor.adminTitle
+  }
+  if (knowledgeGapEditor.adminCategory !== normalizeKnowledgeGapText(item.adminCategory)) {
+    payload.adminCategory = knowledgeGapEditor.adminCategory
+  }
+  if (knowledgeGapEditor.adminAnswer !== normalizeKnowledgeGapText(item.adminAnswer)) {
+    payload.adminAnswer = knowledgeGapEditor.adminAnswer
+  }
+  if (knowledgeGapEditor.adminNotes !== normalizeKnowledgeGapText(item.adminNotes)) {
+    payload.adminNotes = knowledgeGapEditor.adminNotes
+  }
+  return payload
+}
+
+function buildKnowledgeGapImportPayload() {
+  return {
+    ...(knowledgeGapEditor.adminTitle.trim()
+      ? { adminTitle: knowledgeGapEditor.adminTitle.trim() }
+      : {}),
+    ...(knowledgeGapEditor.adminCategory.trim()
+      ? { adminCategory: knowledgeGapEditor.adminCategory.trim() }
+      : {}),
+    ...(knowledgeGapEditor.adminAnswer.trim()
+      ? { adminAnswer: knowledgeGapEditor.adminAnswer }
+      : {}),
+    ...(knowledgeGapEditor.adminNotes.trim()
+      ? { adminNotes: knowledgeGapEditor.adminNotes }
+      : {}),
+    ...(knowledgeGapEditor.filenamePrefix.trim()
+      ? { filenamePrefix: knowledgeGapEditor.filenamePrefix.trim() }
+      : {}),
+  }
+}
+
 function resetKnowledgeFileInput() {
   knowledgeUploadFile.value = null
   if (knowledgeFileInput.value) {
@@ -776,6 +1040,174 @@ function onKnowledgeFileSelected(event: Event) {
 function onVoiceFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
   voiceUploadFile.value = input.files?.[0] || null
+}
+
+async function openKnowledgeGap(gapId: string) {
+  if (!adminToken.value || !gapId) {
+    return
+  }
+
+  selectedKnowledgeGapId.value = gapId
+  const requestId = ++knowledgeGapDetailRequestId
+  loading.knowledgeGapDetail = true
+  try {
+    const item = await fetchKnowledgeGapDetail(API_BASE_URL, adminToken.value, gapId)
+    if (requestId !== knowledgeGapDetailRequestId) {
+      return
+    }
+    selectedKnowledgeGap.value = item
+    applyKnowledgeGapEditor(item)
+    patchKnowledgeGapListItem(item)
+  } catch (error) {
+    if (requestId !== knowledgeGapDetailRequestId) {
+      return
+    }
+    selectedKnowledgeGap.value = null
+    resetKnowledgeGapEditor()
+    handleAdminError(error, '加载知识缺口详情失败。')
+  } finally {
+    if (requestId === knowledgeGapDetailRequestId) {
+      loading.knowledgeGapDetail = false
+    }
+  }
+}
+
+async function loadKnowledgeGapWorkspace(
+  options: {
+    preserveSelection?: boolean
+    focusGapId?: string
+  } = {},
+) {
+  if (!adminToken.value) {
+    return
+  }
+
+  loading.knowledgeGapReload = true
+  try {
+    const [summary, result] = await Promise.all([
+      fetchKnowledgeGapSummary(API_BASE_URL, adminToken.value),
+      fetchKnowledgeGaps(API_BASE_URL, adminToken.value, {
+        page: knowledgeGapFilters.page,
+        size: knowledgeGapFilters.size,
+        status: knowledgeGapFilters.status || undefined,
+        search: knowledgeGapFilters.search || undefined,
+      }),
+    ])
+
+    knowledgeGapSummary.value = summary
+    knowledgeGapList.value = result.items
+    knowledgeGapTotal.value = result.total
+
+    const totalPages = Math.max(1, Math.ceil(result.total / Math.max(1, knowledgeGapFilters.size)))
+    if (knowledgeGapFilters.page > totalPages) {
+      knowledgeGapFilters.page = totalPages
+      await loadKnowledgeGapWorkspace(options)
+      return
+    }
+
+    const nextGapId =
+      options.focusGapId ||
+      (options.preserveSelection && selectedKnowledgeGapId.value ? selectedKnowledgeGapId.value : '') ||
+      result.items[0]?.id ||
+      ''
+
+    if (nextGapId) {
+      await openKnowledgeGap(nextGapId)
+      return
+    }
+
+    resetKnowledgeGapSelection()
+  } catch (error) {
+    handleAdminError(error, '加载知识缺口数据失败。')
+  } finally {
+    loading.knowledgeGapReload = false
+  }
+}
+
+async function applyKnowledgeGapFilters() {
+  knowledgeGapFilters.page = 1
+  knowledgeGapFilters.search = knowledgeGapSearchInput.value.trim()
+  await loadKnowledgeGapWorkspace({ preserveSelection: true })
+}
+
+async function clearKnowledgeGapFilters() {
+  const statusChanged = knowledgeGapFilters.status !== ''
+  knowledgeGapSearchInput.value = ''
+  knowledgeGapFilters.page = 1
+  knowledgeGapFilters.search = ''
+  knowledgeGapFilters.status = ''
+  if (statusChanged) {
+    return
+  }
+  await loadKnowledgeGapWorkspace()
+}
+
+async function changeKnowledgeGapPage(nextPage: number) {
+  if (
+    nextPage < 1 ||
+    nextPage > knowledgeGapTotalPages.value ||
+    nextPage === knowledgeGapFilters.page ||
+    loading.knowledgeGapReload
+  ) {
+    return
+  }
+
+  knowledgeGapFilters.page = nextPage
+  await loadKnowledgeGapWorkspace({ preserveSelection: true })
+}
+
+async function handleKnowledgeGapSave() {
+  if (!adminToken.value || !selectedKnowledgeGap.value) {
+    setNotice('error', '请先选择一个知识缺口。')
+    return
+  }
+
+  const payload = knowledgeGapDraftPayload.value
+  if (!Object.keys(payload).length) {
+    setNotice('info', '当前没有待保存的修改。')
+    return
+  }
+
+  loading.knowledgeGapSave = true
+  try {
+    const item = await updateKnowledgeGap(API_BASE_URL, adminToken.value, selectedKnowledgeGap.value.id, payload)
+    selectedKnowledgeGap.value = item
+    applyKnowledgeGapEditor(item)
+    patchKnowledgeGapListItem(item)
+    await loadKnowledgeGapWorkspace({ preserveSelection: true, focusGapId: item.id })
+    setNotice('success', '知识缺口草稿已保存。')
+  } catch (error) {
+    handleAdminError(error, '保存知识缺口草稿失败。')
+  } finally {
+    loading.knowledgeGapSave = false
+  }
+}
+
+async function handleKnowledgeGapImport() {
+  if (!adminToken.value || !selectedKnowledgeGap.value) {
+    setNotice('error', '请先选择一个知识缺口。')
+    return
+  }
+  if (!knowledgeGapEditor.adminAnswer.trim()) {
+    setNotice('error', '请先补充整理后的答案，再导入知识库。')
+    return
+  }
+
+  loading.knowledgeGapImport = true
+  try {
+    const result = await importKnowledgeGap(
+      API_BASE_URL,
+      adminToken.value,
+      selectedKnowledgeGap.value.id,
+      buildKnowledgeGapImportPayload(),
+    )
+    await loadKnowledgeGapWorkspace({ preserveSelection: true, focusGapId: result.item.id })
+    setNotice('success', result.message)
+  } catch (error) {
+    handleAdminError(error, '导入知识库失败。')
+  } finally {
+    loading.knowledgeGapImport = false
+  }
 }
 
 async function loadKnowledgeList() {
@@ -1037,6 +1469,9 @@ async function bootstrapAuth() {
   }
 
   await loadDashboardData()
+  if (activePage.value === 'knowledge-gaps') {
+    await loadKnowledgeGapWorkspace({ preserveSelection: true })
+  }
   if (activePage.value === 'dashboard') {
     await loadDashboardAnalyticsData()
   }
@@ -1064,6 +1499,9 @@ async function submitLogin() {
     adminToken.value = result.accessToken
     localStorage.setItem(TOKEN_STORAGE_KEY, result.accessToken)
     await loadDashboardData()
+    if (activePage.value === 'knowledge-gaps') {
+      await loadKnowledgeGapWorkspace({ preserveSelection: true })
+    }
     if (activePage.value === 'dashboard') {
       await loadDashboardAnalyticsData()
     }
@@ -1506,6 +1944,10 @@ async function handleHashChange() {
                 <button class="admin-quick-card" type="button" @click="navigateToPage('knowledge')">
                   <strong>知识库管理</strong>
                   <span>上传资料、观察处理状态、删除旧文档。</span>
+                </button>
+                <button class="admin-quick-card" type="button" @click="navigateToPage('knowledge-gaps')">
+                  <strong>知识缺口</strong>
+                  <span>查看热点未命中问题、保存草稿答案，并把整理结果导入知识库。</span>
                 </button>
                 <button class="admin-quick-card" type="button" @click="navigateToPage('sessions')">
                   <strong>会话记录</strong>
@@ -2120,6 +2562,405 @@ async function handleHashChange() {
               </article>
             </div>
           </section>
+        </div>
+
+        <div v-else-if="activePage === 'knowledge-gaps'" class="admin-page-stack">
+          <section class="admin-overview-stats">
+            <article class="admin-stat-card">
+              <span>问题条目</span>
+              <strong>{{ knowledgeGapSummary?.totalQuestions ?? 0 }}</strong>
+              <p>当前知识缺口去重后的问题数量。</p>
+            </article>
+            <article class="admin-stat-card">
+              <span>累计命中</span>
+              <strong>{{ knowledgeGapSummary?.totalOccurrences ?? 0 }}</strong>
+              <p>所有缺口问题在真实会话中累计出现次数。</p>
+            </article>
+            <article class="admin-stat-card">
+              <span>当前主状态</span>
+              <strong>{{ knowledgeGapTopStatus ? knowledgeGapStatusLabel(knowledgeGapTopStatus.status) : '待统计' }}</strong>
+              <p>
+                {{
+                  knowledgeGapTopStatus
+                    ? `${knowledgeGapTopStatus.count} 条处于该状态`
+                    : '进入页面后会自动拉取状态分布。'
+                }}
+              </p>
+            </article>
+          </section>
+
+          <section class="admin-panel">
+            <div class="admin-panel-header">
+              <div>
+                <p class="admin-section-tag">Knowledge Gap Summary</p>
+                <h3>热点问题与处理概览</h3>
+              </div>
+              <button
+                class="admin-secondary-button"
+                type="button"
+                :disabled="loading.knowledgeGapReload"
+                @click="loadKnowledgeGapWorkspace({ preserveSelection: true })"
+              >
+                {{ loading.knowledgeGapReload ? '刷新中..' : '刷新缺口数据' }}
+              </button>
+            </div>
+
+            <div class="admin-gap-summary-grid">
+              <div class="admin-overview-list">
+                <h4>状态分布</h4>
+                <div v-if="knowledgeGapSummary?.statusCounts?.length" class="admin-chip-row admin-chip-row-wrap">
+                  <button
+                    v-for="item in knowledgeGapSummary?.statusCounts"
+                    :key="item.status"
+                    class="admin-filter-chip"
+                    :data-active="knowledgeGapFilters.status === item.status"
+                    type="button"
+                    @click="knowledgeGapFilters.status = knowledgeGapFilters.status === item.status ? '' : item.status"
+                  >
+                    {{ knowledgeGapStatusLabel(item.status) }} · {{ item.count }}
+                  </button>
+                </div>
+                <p v-else class="admin-empty-hint">暂无状态统计。</p>
+              </div>
+
+              <div class="admin-overview-list">
+                <h4>热点 Highlights</h4>
+                <div v-if="knowledgeGapSummary?.highlights?.length" class="admin-gap-highlight-list">
+                  <button
+                    v-for="highlight in knowledgeGapSummary?.highlights"
+                    :key="highlight.id"
+                    class="admin-gap-highlight-card"
+                    type="button"
+                    @click="openKnowledgeGap(highlight.id)"
+                  >
+                    <div class="admin-gap-highlight-header">
+                      <strong>{{ highlight.representativeQuestion }}</strong>
+                      <span class="admin-badge" :data-status="normalizeKnowledgeGapStatus(highlight.status)">
+                        {{ knowledgeGapStatusLabel(highlight.status) }}
+                      </span>
+                    </div>
+                    <p>{{ highlight.occurrenceCount }} 次命中 · 最近出现 {{ formatDateTime(highlight.lastSeenAt) }}</p>
+                  </button>
+                </div>
+                <p v-else class="admin-empty-hint">暂无热点问题。</p>
+              </div>
+            </div>
+          </section>
+
+          <div class="admin-grid admin-grid-knowledge-gaps">
+            <section class="admin-panel">
+              <div class="admin-panel-header">
+                <div>
+                  <p class="admin-section-tag">Gap List</p>
+                  <h3>问题列表</h3>
+                </div>
+                <span class="admin-badge">{{ knowledgeGapTotal }} 条</span>
+              </div>
+
+              <form class="admin-gap-filter-grid" @submit.prevent="applyKnowledgeGapFilters">
+                <label class="admin-field">
+                  <span>状态筛选</span>
+                  <select v-model="knowledgeGapFilters.status">
+                    <option value="">全部状态</option>
+                    <option v-for="status in knowledgeGapStatusOptions" :key="status" :value="status">
+                      {{ knowledgeGapStatusLabel(status) }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="admin-field admin-gap-search-field">
+                  <span>关键词搜索</span>
+                  <input
+                    v-model.trim="knowledgeGapSearchInput"
+                    type="text"
+                    placeholder="搜索代表问题、用户原问或归一化问法"
+                  />
+                </label>
+
+                <button class="admin-secondary-button admin-align-end" type="submit">
+                  应用筛选
+                </button>
+                <button class="admin-ghost-button admin-align-end" type="button" @click="clearKnowledgeGapFilters">
+                  清空
+                </button>
+              </form>
+
+              <div class="admin-gap-list">
+                <p v-if="loading.knowledgeGapReload && !knowledgeGapList.length" class="admin-empty-hint">
+                  正在加载知识缺口列表...
+                </p>
+
+                <button
+                  v-for="item in knowledgeGapList"
+                  :key="item.id"
+                  class="admin-gap-card"
+                  :data-active="item.id === selectedKnowledgeGapId"
+                  type="button"
+                  @click="openKnowledgeGap(item.id)"
+                >
+                  <div class="admin-gap-card-header">
+                    <strong>{{ item.representativeQuestion }}</strong>
+                    <span class="admin-badge" :data-status="normalizeKnowledgeGapStatus(item.status)">
+                      {{ knowledgeGapStatusLabel(item.status) }}
+                    </span>
+                  </div>
+                  <p>{{ item.lastUserQuestion || item.normalizedQuestion || '暂无额外问题文本' }}</p>
+                  <div class="admin-chip-row admin-chip-row-wrap">
+                    <span class="admin-badge admin-badge-accent">{{ item.occurrenceCount }} 次命中</span>
+                    <span class="admin-badge">{{ item.sourceCount }} 个来源片段</span>
+                    <span v-if="item.adminAnswer" class="admin-badge">已写草稿</span>
+                    <span v-if="item.importedAt" class="admin-badge">已导入</span>
+                  </div>
+                  <div class="admin-gap-card-meta">
+                    <span>最近出现 {{ formatDateTime(item.lastSeenAt) }}</span>
+                    <span>{{ item.sampleQuestions.length }} 条样例问法</span>
+                  </div>
+                </button>
+
+                <p v-if="!knowledgeGapList.length && !loading.knowledgeGapReload" class="admin-empty-hint">
+                  当前筛选下没有知识缺口。
+                </p>
+              </div>
+
+              <div class="admin-gap-pagination">
+                <p class="admin-empty-hint">
+                  {{
+                    knowledgeGapTotal
+                      ? `第 ${knowledgeGapRangeStart}-${knowledgeGapRangeEnd} 条，共 ${knowledgeGapTotal} 条`
+                      : '暂无分页数据'
+                  }}
+                </p>
+                <div class="admin-inline-actions">
+                  <button
+                    class="admin-ghost-button"
+                    type="button"
+                    :disabled="knowledgeGapFilters.page <= 1 || loading.knowledgeGapReload"
+                    @click="changeKnowledgeGapPage(knowledgeGapFilters.page - 1)"
+                  >
+                    上一页
+                  </button>
+                  <span class="admin-badge">第 {{ knowledgeGapFilters.page }} / {{ knowledgeGapTotalPages }} 页</span>
+                  <button
+                    class="admin-ghost-button"
+                    type="button"
+                    :disabled="knowledgeGapFilters.page >= knowledgeGapTotalPages || loading.knowledgeGapReload"
+                    @click="changeKnowledgeGapPage(knowledgeGapFilters.page + 1)"
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section class="admin-panel admin-gap-detail-panel">
+              <div class="admin-panel-header">
+                <div>
+                  <p class="admin-section-tag">Gap Detail</p>
+                  <h3>{{ selectedKnowledgeGap?.representativeQuestion || '知识缺口详情' }}</h3>
+                </div>
+                <div class="admin-inline-actions">
+                  <button
+                    class="admin-secondary-button"
+                    type="button"
+                    :disabled="!selectedKnowledgeGap || !knowledgeGapEditorDirty || loading.knowledgeGapSave || loading.knowledgeGapImport || loading.knowledgeGapDetail"
+                    @click="handleKnowledgeGapSave"
+                  >
+                    {{ loading.knowledgeGapSave ? '保存中..' : '保存草稿' }}
+                  </button>
+                  <button
+                    class="admin-primary-button"
+                    type="button"
+                    :disabled="!selectedKnowledgeGap || !knowledgeGapEditor.adminAnswer.trim() || loading.knowledgeGapImport || loading.knowledgeGapSave || loading.knowledgeGapDetail"
+                    @click="handleKnowledgeGapImport"
+                  >
+                    {{ loading.knowledgeGapImport ? '导入中..' : '导入知识库' }}
+                  </button>
+                </div>
+              </div>
+
+              <template v-if="selectedKnowledgeGap">
+                <p
+                  v-if="!selectedKnowledgeGapInList && (knowledgeGapFilters.status || knowledgeGapFilters.search)"
+                  class="admin-empty-hint"
+                >
+                  当前详情不在左侧筛选结果内，可能已被状态或关键词过滤隐藏。
+                </p>
+
+                <dl class="admin-doc-meta admin-gap-meta-grid">
+                  <div>
+                    <dt>归一化问法</dt>
+                    <dd>{{ selectedKnowledgeGap.normalizedQuestion || '未记录' }}</dd>
+                  </div>
+                  <div>
+                    <dt>命中次数</dt>
+                    <dd>{{ selectedKnowledgeGap.occurrenceCount }}</dd>
+                  </div>
+                  <div>
+                    <dt>首次出现</dt>
+                    <dd>{{ formatDateTime(selectedKnowledgeGap.firstSeenAt) }}</dd>
+                  </div>
+                  <div>
+                    <dt>最近出现</dt>
+                    <dd>{{ formatDateTime(selectedKnowledgeGap.lastSeenAt) }}</dd>
+                  </div>
+                  <div>
+                    <dt>来源片段数</dt>
+                    <dd>{{ selectedKnowledgeGap.sourceCount }}</dd>
+                  </div>
+                  <div>
+                    <dt>最近置信度</dt>
+                    <dd>
+                      {{
+                        typeof selectedKnowledgeGap.lastConfidence === 'number'
+                          ? selectedKnowledgeGap.lastConfidence.toFixed(3)
+                          : '未记录'
+                      }}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>最近会话</dt>
+                    <dd>{{ selectedKnowledgeGap.lastSessionId || '未记录' }}</dd>
+                  </div>
+                  <div>
+                    <dt>导入结果</dt>
+                    <dd>
+                      {{
+                        selectedKnowledgeGap.knowledgeDocFilename
+                          ? `${selectedKnowledgeGap.knowledgeDocFilename} · ${formatDateTime(selectedKnowledgeGap.importedAt || '')}`
+                          : '尚未导入'
+                      }}
+                    </dd>
+                  </div>
+                </dl>
+
+                <p v-if="selectedKnowledgeGap.lastConfidenceNote" class="admin-inline-hint">
+                  置信度备注：{{ selectedKnowledgeGap.lastConfidenceNote }}
+                </p>
+
+                <div class="admin-gap-editor-grid">
+                  <label class="admin-field">
+                    <span>处理状态</span>
+                    <select v-model="knowledgeGapEditor.status">
+                      <option v-for="status in knowledgeGapStatusOptions" :key="status" :value="status">
+                        {{ knowledgeGapStatusLabel(status) }}
+                      </option>
+                    </select>
+                  </label>
+
+                  <label class="admin-field">
+                    <span>导入文件名前缀</span>
+                    <input v-model.trim="knowledgeGapEditor.filenamePrefix" type="text" placeholder="可选，如 scenic-faq" />
+                  </label>
+
+                  <label class="admin-field">
+                    <span>整理标题</span>
+                    <input v-model="knowledgeGapEditor.adminTitle" type="text" placeholder="用于沉淀进知识库的标题" />
+                  </label>
+
+                  <label class="admin-field">
+                    <span>知识分类</span>
+                    <input v-model="knowledgeGapEditor.adminCategory" type="text" placeholder="如 faq / ticket / parking" />
+                  </label>
+
+                  <label class="admin-field admin-gap-editor-span">
+                    <span>标准答案</span>
+                    <textarea
+                      v-model="knowledgeGapEditor.adminAnswer"
+                      rows="9"
+                      placeholder="在这里整理成最终可导入知识库的标准回答"
+                    />
+                  </label>
+
+                  <label class="admin-field admin-gap-editor-span">
+                    <span>管理员备注</span>
+                    <textarea
+                      v-model="knowledgeGapEditor.adminNotes"
+                      rows="4"
+                      placeholder="记录处理思路、来源确认结果或待补充事项"
+                    />
+                  </label>
+                </div>
+
+                <div class="admin-gap-action-bar">
+                  <p class="admin-inline-hint">
+                    {{ knowledgeGapEditorDirty ? '当前有未保存修改。' : '草稿内容已与当前详情同步。' }}
+                  </p>
+                  <div class="admin-chip-row admin-chip-row-wrap">
+                    <span class="admin-badge" :data-status="normalizeKnowledgeGapStatus(selectedKnowledgeGap.status)">
+                      {{ knowledgeGapStatusLabel(selectedKnowledgeGap.status) }}
+                    </span>
+                    <span v-if="selectedKnowledgeGap.importedAt" class="admin-badge">已导入 {{ formatDateTime(selectedKnowledgeGap.importedAt) }}</span>
+                    <span v-if="selectedKnowledgeGap.lastReplyKind" class="admin-badge">回复类型 {{ selectedKnowledgeGap.lastReplyKind }}</span>
+                  </div>
+                </div>
+
+                <div class="admin-overview-list">
+                  <h4>样例问法</h4>
+                  <div v-if="selectedKnowledgeGap.sampleQuestions.length" class="admin-chip-row admin-chip-row-wrap">
+                    <span
+                      v-for="question in selectedKnowledgeGap.sampleQuestions"
+                      :key="`${selectedKnowledgeGap.id}-${question}`"
+                      class="admin-badge admin-badge-question"
+                    >
+                      {{ question }}
+                    </span>
+                  </div>
+                  <p v-else class="admin-empty-hint">暂无样例问法。</p>
+                </div>
+
+                <div class="admin-gap-context-grid">
+                  <article class="admin-gap-context-card">
+                    <span>最近用户问题</span>
+                    <p class="admin-message-content">{{ selectedKnowledgeGap.lastUserQuestion || '未记录' }}</p>
+                  </article>
+                  <article class="admin-gap-context-card">
+                    <span>最近检索查询</span>
+                    <p class="admin-message-content">{{ selectedKnowledgeGap.lastQueryText || '未记录' }}</p>
+                  </article>
+                  <article class="admin-gap-context-card">
+                    <span>最近助手回复</span>
+                    <p class="admin-message-content">{{ selectedKnowledgeGap.lastAssistantReply || '未记录' }}</p>
+                  </article>
+                </div>
+
+                <div class="admin-overview-list">
+                  <h4>检索快照</h4>
+                  <div v-if="selectedKnowledgeGap.sourceSnapshot.length" class="admin-gap-source-list">
+                    <article
+                      v-for="source in selectedKnowledgeGap.sourceSnapshot"
+                      :key="`${selectedKnowledgeGap.id}-${source.filename}-${source.chunkIndex ?? 'na'}`"
+                      class="admin-gap-source-card"
+                    >
+                      <div class="admin-gap-source-header">
+                        <strong>{{ source.title || source.filename }}</strong>
+                        <span class="admin-badge">{{ source.category || '未分类' }}</span>
+                      </div>
+                      <p class="admin-gap-source-meta">
+                        {{ source.filename }} · chunk {{ source.chunkIndex ?? '--' }}
+                      </p>
+                      <p class="admin-message-content">{{ source.excerpt || '暂无摘录' }}</p>
+                      <div class="admin-chip-row admin-chip-row-wrap">
+                        <span class="admin-badge">
+                          召回 {{ typeof source.retrievalScore === 'number' ? source.retrievalScore.toFixed(3) : '--' }}
+                        </span>
+                        <span class="admin-badge">
+                          重排 {{ typeof source.rerankScore === 'number' ? source.rerankScore.toFixed(3) : '--' }}
+                        </span>
+                      </div>
+                    </article>
+                  </div>
+                  <p v-else class="admin-empty-hint">暂无检索快照。</p>
+                </div>
+
+                <p v-if="selectedKnowledgeGap.lastErrorMessage" class="admin-inline-error">
+                  {{ selectedKnowledgeGap.lastErrorMessage }}
+                </p>
+              </template>
+
+              <p v-else-if="loading.knowledgeGapDetail" class="admin-empty-hint">正在加载知识缺口详情...</p>
+              <p v-else class="admin-empty-hint">请先从左侧选择一个问题。</p>
+            </section>
+          </div>
         </div>
 
         <div v-else-if="activePage === 'sessions'" class="admin-page-stack">

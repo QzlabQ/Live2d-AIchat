@@ -14,6 +14,12 @@ import type {
   DashboardOverview,
   DailyEmotionReport,
   DailyEmotionReportListResponse,
+  KnowledgeGapImportPayload,
+  KnowledgeGapImportResult,
+  KnowledgeGapItem,
+  KnowledgeGapListResponse,
+  KnowledgeGapSummary,
+  KnowledgeGapUpdatePayload,
   KnowledgeDocListResponse,
   KnowledgeUploadResult,
   Live2DModelOption,
@@ -103,6 +109,76 @@ interface KnowledgeDocListResponseApi {
 interface KnowledgeUploadResultApi {
   doc_id: string
   status: string
+  message: string
+}
+
+interface KnowledgeGapSourceSnapshotItemApi {
+  filename: string
+  title: string | null
+  category: string | null
+  chunk_index: number | null
+  retrieval_score: number | null
+  rerank_score: number | null
+  excerpt: string
+}
+
+interface KnowledgeGapItemApi {
+  id: string
+  normalized_question: string
+  representative_question: string
+  sample_questions: string[]
+  occurrence_count: number
+  status: string
+  source_count: number
+  source_snapshot: KnowledgeGapSourceSnapshotItemApi[]
+  last_session_id: string | null
+  last_user_question: string | null
+  last_query_text: string | null
+  last_assistant_reply: string | null
+  last_reply_kind: string | null
+  last_confidence_note: string | null
+  last_confidence: number | null
+  admin_title: string | null
+  admin_category: string | null
+  admin_answer: string | null
+  admin_notes: string | null
+  knowledge_doc_id: string | null
+  knowledge_doc_filename: string | null
+  last_error_message: string | null
+  first_seen_at: string
+  last_seen_at: string
+  imported_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+interface KnowledgeGapListResponseApi {
+  total: number
+  items: KnowledgeGapItemApi[]
+}
+
+interface KnowledgeGapSummaryStatusCountApi {
+  status: string
+  count: number
+}
+
+interface KnowledgeGapHighlightItemApi {
+  id: string
+  representative_question: string
+  occurrence_count: number
+  status: string
+  last_seen_at: string
+}
+
+interface KnowledgeGapSummaryApi {
+  total_questions: number
+  total_occurrences: number
+  status_counts: KnowledgeGapSummaryStatusCountApi[]
+  highlights: KnowledgeGapHighlightItemApi[]
+}
+
+interface KnowledgeGapImportResultApi {
+  item: KnowledgeGapItemApi
   message: string
 }
 
@@ -351,6 +427,46 @@ function mapVoiceProfile(payload: VoiceProfileApi): VoiceProfile {
     durationMs: payload.duration_ms,
     mimeType: payload.mime_type,
     isDefault: payload.is_default,
+    createdAt: payload.created_at,
+    updatedAt: payload.updated_at,
+  }
+}
+
+function mapKnowledgeGapItem(payload: KnowledgeGapItemApi): KnowledgeGapItem {
+  return {
+    id: payload.id,
+    normalizedQuestion: payload.normalized_question,
+    representativeQuestion: payload.representative_question,
+    sampleQuestions: payload.sample_questions || [],
+    occurrenceCount: payload.occurrence_count,
+    status: payload.status,
+    sourceCount: payload.source_count,
+    sourceSnapshot: (payload.source_snapshot || []).map((item) => ({
+      filename: item.filename,
+      title: item.title,
+      category: item.category,
+      chunkIndex: item.chunk_index,
+      retrievalScore: item.retrieval_score,
+      rerankScore: item.rerank_score,
+      excerpt: item.excerpt,
+    })),
+    lastSessionId: payload.last_session_id,
+    lastUserQuestion: payload.last_user_question,
+    lastQueryText: payload.last_query_text,
+    lastAssistantReply: payload.last_assistant_reply,
+    lastReplyKind: payload.last_reply_kind,
+    lastConfidenceNote: payload.last_confidence_note,
+    lastConfidence: payload.last_confidence,
+    adminTitle: payload.admin_title,
+    adminCategory: payload.admin_category,
+    adminAnswer: payload.admin_answer,
+    adminNotes: payload.admin_notes,
+    knowledgeDocId: payload.knowledge_doc_id,
+    knowledgeDocFilename: payload.knowledge_doc_filename,
+    lastErrorMessage: payload.last_error_message,
+    firstSeenAt: payload.first_seen_at,
+    lastSeenAt: payload.last_seen_at,
+    importedAt: payload.imported_at,
     createdAt: payload.created_at,
     updatedAt: payload.updated_at,
   }
@@ -707,6 +823,118 @@ export async function deleteKnowledgeDoc(apiBaseUrl: string, token: string, docI
     headers: buildAuthHeaders(token, ''),
   })
   return await readJson<MessageResponse>(response, '删除知识库文档失败。')
+}
+
+export async function fetchKnowledgeGaps(
+  apiBaseUrl: string,
+  token: string,
+  options: {
+    page?: number
+    size?: number
+    status?: string
+    search?: string
+  } = {},
+): Promise<KnowledgeGapListResponse> {
+  const query = new URLSearchParams()
+  query.set('page', String(options.page ?? 1))
+  query.set('size', String(options.size ?? 12))
+  if (options.status) {
+    query.set('status', options.status)
+  }
+  if (options.search) {
+    query.set('search', options.search)
+  }
+
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/admin/knowledge/gaps?${query.toString()}`, {
+    headers: buildAuthHeaders(token, ''),
+  })
+  const payload = await readJson<KnowledgeGapListResponseApi>(response, '加载知识缺口列表失败。')
+  return {
+    total: payload.total,
+    items: payload.items.map(mapKnowledgeGapItem),
+  }
+}
+
+export async function fetchKnowledgeGapSummary(
+  apiBaseUrl: string,
+  token: string,
+): Promise<KnowledgeGapSummary> {
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/admin/knowledge/gaps/summary`, {
+    headers: buildAuthHeaders(token, ''),
+  })
+  const payload = await readJson<KnowledgeGapSummaryApi>(response, '加载知识缺口统计失败。')
+  return {
+    totalQuestions: payload.total_questions,
+    totalOccurrences: payload.total_occurrences,
+    statusCounts: (payload.status_counts || []).map((item) => ({
+      status: item.status,
+      count: item.count,
+    })),
+    highlights: (payload.highlights || []).map((item) => ({
+      id: item.id,
+      representativeQuestion: item.representative_question,
+      occurrenceCount: item.occurrence_count,
+      status: item.status,
+      lastSeenAt: item.last_seen_at,
+    })),
+  }
+}
+
+export async function fetchKnowledgeGapDetail(
+  apiBaseUrl: string,
+  token: string,
+  gapId: string,
+): Promise<KnowledgeGapItem> {
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/admin/knowledge/gaps/${gapId}`, {
+    headers: buildAuthHeaders(token, ''),
+  })
+  const payload = await readJson<KnowledgeGapItemApi>(response, '加载知识缺口详情失败。')
+  return mapKnowledgeGapItem(payload)
+}
+
+export async function updateKnowledgeGap(
+  apiBaseUrl: string,
+  token: string,
+  gapId: string,
+  payload: KnowledgeGapUpdatePayload,
+): Promise<KnowledgeGapItem> {
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/admin/knowledge/gaps/${gapId}`, {
+    method: 'PUT',
+    headers: buildAuthHeaders(token),
+    body: JSON.stringify({
+      ...(payload.status !== undefined ? { status: payload.status } : {}),
+      ...(payload.adminTitle !== undefined ? { admin_title: payload.adminTitle } : {}),
+      ...(payload.adminCategory !== undefined ? { admin_category: payload.adminCategory } : {}),
+      ...(payload.adminAnswer !== undefined ? { admin_answer: payload.adminAnswer } : {}),
+      ...(payload.adminNotes !== undefined ? { admin_notes: payload.adminNotes } : {}),
+    }),
+  })
+  const result = await readJson<KnowledgeGapItemApi>(response, '保存知识缺口草稿失败。')
+  return mapKnowledgeGapItem(result)
+}
+
+export async function importKnowledgeGap(
+  apiBaseUrl: string,
+  token: string,
+  gapId: string,
+  payload: KnowledgeGapImportPayload,
+): Promise<KnowledgeGapImportResult> {
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/admin/knowledge/gaps/${gapId}/import`, {
+    method: 'POST',
+    headers: buildAuthHeaders(token),
+    body: JSON.stringify({
+      ...(payload.adminTitle !== undefined ? { admin_title: payload.adminTitle } : {}),
+      ...(payload.adminCategory !== undefined ? { admin_category: payload.adminCategory } : {}),
+      ...(payload.adminAnswer !== undefined ? { admin_answer: payload.adminAnswer } : {}),
+      ...(payload.adminNotes !== undefined ? { admin_notes: payload.adminNotes } : {}),
+      ...(payload.filenamePrefix !== undefined ? { filename_prefix: payload.filenamePrefix } : {}),
+    }),
+  })
+  const result = await readJson<KnowledgeGapImportResultApi>(response, '导入知识库失败。')
+  return {
+    item: mapKnowledgeGapItem(result.item),
+    message: result.message,
+  }
 }
 
 export async function fetchVoiceProfiles(apiBaseUrl: string, token: string): Promise<VoiceProfile[]> {

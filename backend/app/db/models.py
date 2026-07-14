@@ -170,6 +170,53 @@ class KnowledgeDoc(Base):
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default='')
 
 
+class KnowledgeGap(Base):
+    __tablename__ = "knowledge_gaps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    normalized_question: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    representative_question: Mapped[str] = mapped_column(Text, nullable=False)
+    sample_questions: Mapped[list[str]] = mapped_column(
+        MutableList.as_mutable(JSON), nullable=False, default=list
+    )
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_snapshot: Mapped[list[dict[str, str | int | float | bool | None]]] = mapped_column(
+        MutableList.as_mutable(JSON), nullable=False, default=list
+    )
+    last_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_user_question: Mapped[str] = mapped_column(Text, nullable=False, default='')
+    last_query_text: Mapped[str] = mapped_column(Text, nullable=False, default='')
+    last_assistant_reply: Mapped[str] = mapped_column(Text, nullable=False, default='')
+    last_reply_kind: Mapped[str] = mapped_column(String(20), nullable=False, default='')
+    last_confidence_note: Mapped[str] = mapped_column(String(20), nullable=False, default='')
+    last_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    admin_title: Mapped[str] = mapped_column(String(255), nullable=False, default='')
+    admin_category: Mapped[str] = mapped_column(String(50), nullable=False, default='faq')
+    admin_answer: Mapped[str] = mapped_column(Text, nullable=False, default='')
+    admin_notes: Mapped[str] = mapped_column(Text, nullable=False, default='')
+    knowledge_doc_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    knowledge_doc_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_error_message: Mapped[str] = mapped_column(Text, nullable=False, default='')
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class VoiceProfile(Base):
     __tablename__ = "voice_profiles"
 

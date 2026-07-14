@@ -22,6 +22,7 @@ from app.services.conversation_state import (
 )
 from app.services.emotion import EmotionAnalysis, get_emotion_analyzer
 from app.services.avatar_trace import ReplyTrace, get_avatar_trace_service
+from app.services.knowledge_gaps import record_knowledge_gap, should_record_knowledge_gap
 from app.services.rag import get_rag_service
 from app.services.tts import TTSService, get_tts_service
 from app.services.visitor_sessions import save_session_message
@@ -534,6 +535,29 @@ async def process_text_message(
         emotion=result.emotion.label if result.emotion else locked.label,
         latency_ms=latency_ms,
     )
+    if should_record_knowledge_gap(
+        mode=result.mode,
+        query_text=query_text,
+        reply_kind=result.reply_kind,
+        confidence_note=result.confidence_note,
+        confidence=result.confidence,
+        source_count=len(result.sources),
+        needs_followup=result.needs_followup,
+    ):
+        try:
+            await record_knowledge_gap(
+                db_session,
+                session_id=session_id,
+                user_question=content,
+                query_text=query_text,
+                assistant_reply=result.text,
+                reply_kind=result.reply_kind,
+                confidence_note=result.confidence_note,
+                confidence=result.confidence,
+                sources=result.sources,
+            )
+        except Exception:
+            logger.exception("Failed to record knowledge gap for session=%s query=%s", session_id, query_text)
     logger.info(
         "reply_metrics session=%s streaming=%s %s",
         session_id,
