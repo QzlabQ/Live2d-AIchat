@@ -23,6 +23,15 @@ from app.core.config import Settings, get_settings
 PUNCTUATION_RE = re.compile(r"[，。！？!?；;、,\s]+")
 LATIN_VOWEL_RE = re.compile(r"[aeiouy]+", re.IGNORECASE)
 NON_ALPHA_RE = re.compile(r"[^a-z]")
+SPOKEN_GUIDANCE_RE = re.compile(
+    r"用(?P<style>[^。！？!?；;]{0,36}?)(?:语言|语气|方式|口吻|话术)"
+    r"(?:来)?(?:讲述|介绍|说明|解释|表达)(?P<object>[^。！？!?；;，,、]{0,80})"
+)
+VISITOR_PEDAGOGY_RE = re.compile(
+    r"[，,、]\s*(?:让|帮助|引导|带领|激发|方便)(?:游客|孩子|小朋友|大家|观众|用户)"
+    r"[^。！？!?；;]*"
+)
+GENERIC_TTS_OBJECTS = {"", "这段内容", "这句话", "一句话", "内容", "文本", "回答"}
 COSYVOICE_ALIGNMENT_KEYS = ("alignment", "alignments", "phonemes", "phoneme_alignment")
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 logger = logging.getLogger(__name__)
@@ -198,6 +207,24 @@ class TTSService:
         except Exception as exc:  # pragma: no cover - environment dependent
             self._engine_error = str(exc)
             return f"degraded:{self._engine_error}"
+
+    def _sanitize_synthesis_text(self, text: str) -> str:
+        def replace_directive(match: re.Match[str]) -> str:
+            obj = match.group("object").strip(" ：:，,、")
+            if obj in GENERIC_TTS_OBJECTS:
+                return ""
+            return obj
+
+        cleaned = str(text or "").replace("<|endofprompt|>", "").strip()
+        previous = None
+        while previous != cleaned:
+            previous = cleaned
+            cleaned = SPOKEN_GUIDANCE_RE.sub(replace_directive, cleaned)
+            cleaned = VISITOR_PEDAGOGY_RE.sub("", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if re.fullmatch(r"[。！？!?；;，,、.:\s：]+", cleaned):
+            return ""
+        return cleaned
 
     def warmup(self) -> None:
         if self.settings.tts_engine != "cosyvoice":
@@ -867,7 +894,7 @@ class TTSService:
         segments: AsyncIterator[tuple[int, str]],
     ) -> AsyncIterator[tuple[int, str]]:
         async for seq, text in segments:
-            cleaned = text.strip()
+            cleaned = self._sanitize_synthesis_text(text)
             if cleaned:
                 yield seq, cleaned
 
@@ -1037,7 +1064,7 @@ class TTSService:
         tts_emotion_enabled: bool = True,
     ):
         del voice_id
-        cleaned_text = text.strip()
+        cleaned_text = self._sanitize_synthesis_text(text)
         if not cleaned_text:
             return
 
@@ -1187,7 +1214,7 @@ class TTSService:
         speed: float | None = None,
         tts_emotion_enabled: bool = True,
     ) -> TTSChunk:
-        cleaned_text = text.strip()
+        cleaned_text = self._sanitize_synthesis_text(text)
         if not cleaned_text:
             return TTSChunk(seq=seq, text=text, audio_bytes=b'', phonemes=[])
 
@@ -1243,6 +1270,10 @@ class TTSService:
         emotion_enabled: bool = True,
     ) -> TTSChunk:
         del voice_id
+        cleaned_text = self._sanitize_synthesis_text(cleaned_text)
+        if not cleaned_text:
+            return TTSChunk(seq=seq, text="", audio_bytes=b"", phonemes=[])
+
         cosyvoice = self._load_cosyvoice_model()
         prompt_wav = self._resolve_reference_audio_path(reference_audio_path)
         instruct_text = self._build_cosyvoice_instruction(emotion, emotion_enabled=emotion_enabled)

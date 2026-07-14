@@ -206,6 +206,46 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(chunk.mime_type, 'audio/wav')
             self.assertGreater(len(chunk.audio_bytes), 0)
 
+    def test_cosyvoice_synthesis_strips_spoken_guidance_from_tts_text(self) -> None:
+        class FakeCosyVoiceModel:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def inference_instruct2(self, tts_text, instruct_text, prompt_wav, stream=False, speed=1.0):
+                self.calls.append(
+                    {
+                        'tts_text': tts_text,
+                        'instruct_text': instruct_text,
+                        'prompt_wav': prompt_wav,
+                        'stream': stream,
+                        'speed': speed,
+                    }
+                )
+                return {'tts_speech': [0.0, 0.2, -0.2, 0.0], 'sample_rate': 24000}
+
+        with TemporaryDirectory() as temp_dir:
+            prompt_wav = Path(temp_dir) / 'prompt.wav'
+            prompt_wav.write_bytes(b'fake wav')
+
+            service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
+            model = FakeCosyVoiceModel()
+            service._load_cosyvoice_model = lambda: model
+
+            service._synthesize_cosyvoice(
+                '九龙灌浴：用生动语言讲述释迦牟尼诞生的故事，让孩子理解佛教文化中的慈悲精神。',
+                seq=0,
+                voice_id=None,
+                emotion='neutral',
+                reference_audio_path=str(prompt_wav),
+                reference_text='prompt text',
+                speed=1.0,
+                emotion_enabled=True,
+            )
+
+        self.assertIn('释迦牟尼诞生的故事', model.calls[0]['tts_text'])
+        self.assertNotIn('用生动语言讲述', model.calls[0]['tts_text'])
+        self.assertNotIn('让孩子理解', model.calls[0]['tts_text'])
+
     async def test_cosyvoice2_streaming_yields_multiple_audio_chunks(self) -> None:
         class FakeCosyVoiceModel:
             def __init__(self) -> None:

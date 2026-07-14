@@ -25,6 +25,15 @@ ROUTE_PLAN_RE = re.compile(
     r"(?:(?P<label>[^\n：:]{2,40}路线(?:（[^）]+）)?)\s*\n)?路线规划[:：]\s*(?P<plan>[^\n]+)"
 )
 TIME_RANGE_RE = re.compile(r"(?P<time>\d{1,2}:\d{2}(?:\s*[-~至到]\s*\d{1,2}:\d{2})?)")
+SPOKEN_GUIDANCE_RE = re.compile(
+    r"用(?P<style>[^。！？!?；;]{0,36}?)(?:语言|语气|方式|口吻|话术)"
+    r"(?:来)?(?:讲述|介绍|说明|解释|表达)(?P<object>[^。！？!?；;，,、]{0,80})"
+)
+VISITOR_PEDAGOGY_RE = re.compile(
+    r"[，,、]\s*(?:让|帮助|引导|带领|激发|方便)(?:游客|孩子|小朋友|大家|观众|用户)"
+    r"[^。！？!?；;]*"
+)
+GENERIC_TTS_OBJECTS = {"", "这段内容", "这句话", "一句话", "内容", "文本", "回答"}
 STOP_TOKENS = {
     "请",
     "一下",
@@ -672,6 +681,7 @@ class ScenicRAGService:
     def _format_context(self, sources: list[RetrievedChunk]) -> str:
         blocks: list[str] = []
         for index, source in enumerate(sources, start=1):
+            cleaned_source_text = sanitize_source_text_for_answer(source.text)
             blocks.append(
                 "\n".join(
                     [
@@ -679,7 +689,7 @@ class ScenicRAGService:
                         f"文件：{source.filename}",
                         f"分类：{source.category}",
                         f"相关度：retrieval={source.retrieval_score:.3f}, rerank={source.rerank_score:.3f}",
-                        f"内容：{truncate_text(source.text, self.settings.rag_context_chars_per_chunk)}",
+                        f"内容：{truncate_text(cleaned_source_text, self.settings.rag_context_chars_per_chunk)}",
                     ]
                 )
             )
@@ -1041,10 +1051,38 @@ def truncate_text(text: str, limit: int) -> str:
     return cleaned[: limit - 1].rstrip() + "…"
 
 
+def strip_spoken_guidance(text: str) -> str:
+    def replace_directive(match: re.Match[str]) -> str:
+        obj = match.group("object").strip(" ：:，,、")
+        if obj in GENERIC_TTS_OBJECTS:
+            return ""
+        return obj
+
+    cleaned = text.replace("<|endofprompt|>", "")
+    previous = None
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = SPOKEN_GUIDANCE_RE.sub(replace_directive, cleaned)
+        cleaned = VISITOR_PEDAGOGY_RE.sub("", cleaned)
+    return cleaned
+
+
+def sanitize_source_text_for_answer(text: str) -> str:
+    lines: list[str] = []
+    for line in split_lines(text):
+        cleaned = sanitize_answer(line)
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines) or sanitize_answer(text)
+
+
 def sanitize_answer(text: str) -> str:
     cleaned = text.strip()
+    cleaned = strip_spoken_guidance(cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned)
     cleaned = re.sub(r"(参考资料[:：].*)$", "", cleaned, flags=re.IGNORECASE)
+    if re.fullmatch(r"[。！？!?；;，,、.:\s：]+", cleaned):
+        return ""
     return cleaned.strip()
 
 
@@ -1058,7 +1096,7 @@ def normalize_sentence_candidate(sentence: str, title: str) -> str:
         if len(prefix) <= 14 and not re.search(r"[，。！？!?；;：:（）()]", prefix):
             cleaned = suffix.strip()
 
-    return cleaned.strip(" ：:")
+    return sanitize_answer(cleaned).strip(" ：:")
 
 
 def append_citations(answer: str, sources: list[RetrievedChunk]) -> str:

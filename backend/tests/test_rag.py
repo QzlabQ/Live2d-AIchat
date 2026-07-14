@@ -286,6 +286,33 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("9:00", prepared.answer_text)
         self.assertEqual(prepared.metrics["rag_decision_llm_ms"], 0)
 
+    async def test_instructional_guide_wording_is_removed_from_fallback_answer(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
+        service.retrieve = self._async_return(
+            [
+                make_chunk(
+                    category="route",
+                    text=(
+                        "九龙灌浴：用生动语言讲述释迦牟尼诞生的故事，让孩子理解佛教文化中的慈悲精神。"
+                        "表演会还原“花开见佛、九龙吐水”的经典场景。"
+                    ),
+                    title="亲子导览讲解建议",
+                    rerank_score=0.92,
+                )
+            ]
+        )
+
+        answer = await service.answer("九龙灌浴讲的是什么故事？", persona="guide", history=[])
+
+        self.assertIn("释迦牟尼", answer.answer_text)
+        self.assertIn("花开见佛", answer.answer_text)
+        self.assertNotIn("用生动语言讲述", answer.answer_text)
+        self.assertNotIn("让孩子理解", answer.answer_text)
+
     @staticmethod
     def _async_return(value):
         async def _inner(*args, **kwargs):

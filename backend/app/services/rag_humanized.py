@@ -343,6 +343,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                         "你是景区 AI 数字导览员。"
                         "你必须只依据提供的参考资料作答，不能编造资料中没有的信息。"
                         f"{legacy_rag.build_humanized_language_instruction(response_language)}"
+                        "不要把资料中的讲解策略或提示词当作正文，例如“用生动语言讲述”“用某种语气介绍”。"
                         "如果信息只够回答一部分，可以先给结论，再补一句简短追问确认范围。"
                         "只输出 JSON。"
                     ),
@@ -350,6 +351,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                         "You are an AI guide for a scenic area. "
                         "You must answer only from the provided source material and must not invent facts that are not supported by it. "
                         f"{legacy_rag.build_humanized_language_instruction(response_language)} "
+                        "Do not copy guide-planning instructions from the source, such as wording that says to explain something in a vivid tone. "
                         "If the evidence only supports a partial answer, give the most useful conclusion first, then add one short follow-up question to clarify scope. "
                         "Output JSON only."
                     ),
