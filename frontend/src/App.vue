@@ -16,6 +16,7 @@ import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
 import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageMeta'
 import { buildComposerQuickHints, type ComposerMode } from './lib/chatComposerMode'
 import { buildPhotoQuestion, shouldEnterThinkingForPhoto } from './lib/photoQuestion'
+import { getRuntimeApiBaseUrl, getRuntimeWsBaseUrl } from './lib/runtimeBaseUrl'
 import { buildRouteRecommendationMessage } from './lib/toolResultMessage'
 import {
   AVATAR_DISPLAY_DEFAULTS,
@@ -63,8 +64,8 @@ import type {
 } from './types/chat'
 import type { VisitorAvatarProfileSummary } from './types/visitor'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1'
-const WS_BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://127.0.0.1:8000'
+const API_BASE_URL = getRuntimeApiBaseUrl(import.meta.env)
+const WS_BASE_URL = getRuntimeWsBaseUrl(import.meta.env, window.location)
 const DEFAULT_MODEL_PATH =
   import.meta.env.VITE_LIVE2D_MODEL_PATH || '/live2d/haru/haru_greeter_t03.model3.json'
 const HEARTBEAT_MS = Number(import.meta.env.VITE_HEARTBEAT_MS || 15000)

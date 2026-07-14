@@ -212,3 +212,18 @@ GitHub 仓库建议同时开启 branch protection / ruleset，并把下面两个
 | 技术与创新性     | 30   | 口型同步、RAG+大模型     |
 | 行业实用与体验性 | 20   | 交互流畅度、数字人表现力 |
 | 文档质量         | 10   | docs/ + PPT + 演示视频   |
+---
+
+## 测试服务器部署
+
+如果你要把当前版本部署到学校测试服务器，优先看这份中文手册：
+
+- [测试服务器 Docker Compose 部署手册](docs/deployment/test-server-docker.md)
+
+这份手册覆盖了：
+
+- `Ubuntu 22.04 + Docker + V100/A100` 的部署前提
+- `frontend + backend + postgres` 三服务 Compose 拉起
+- `git clone / git pull` 主路径与 `rsync` 兜底同步
+- `scp / rsync` 上传模型、CosyVoice、知识库
+- `ssh -L 18080:127.0.0.1:8080 user@server` 的访问方式

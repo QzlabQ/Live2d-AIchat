@@ -15,3 +15,5 @@ A5-景区导览服务AI数字人 - A组赛题 - 软件杯大赛官网.html
 tmp
 .worktrees/
 backend/logs/
+deploy/backend.env
+deploy/postgres.env
