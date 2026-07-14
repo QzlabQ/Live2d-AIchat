@@ -6,6 +6,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
+from time import perf_counter
 
 import httpx
 from langchain_core.prompts import ChatPromptTemplate
@@ -147,6 +148,7 @@ class PreparedRAGAnswer:
     followup_question: str = ""
     missing_slots: list[str] = field(default_factory=list)
     confidence_note: str = "confirmed"
+    metrics: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

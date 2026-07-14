@@ -88,6 +88,10 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 
 **TTS / 口型同步收尾计划**
 
+- [x] 4060 本机稳定播放档：`TTS_STREAM_PROFILE=stable`，前端默认使用更保守的 jitter buffer，优先减少播放中断流。
+- [x] TTS chunk 级 trace：记录 `tts_chunk_audio_ms / tts_chunk_gap_ms / tts_chunk_rtf / tts_model_ready_ms / tts_ws_send_lag_ms`，便于后续定位模型慢、发送慢还是播放端 underrun。
+- [x] TTS Provider 抽象：保留本机 `LocalCosyVoiceProvider`，预留 `RemoteTTSProvider`，未来接 A100/V100/Triton/vLLM 服务时不改前端协议。
+- [x] RAG 首字延迟拆分：新增 `rag_retrieve_ms / rag_rerank_ms / rag_decision_llm_ms / rag_prepare_total_ms`，并提供 `RAG_RESPONSE_MODE=fast_humanized` 快速口语化模式。
 - [ ] 默认流式 TTS 链路优先消费 CosyVoice2 的 `duration/alignment`，仅在结构化 timing 缺失时回退到波形包络口型。
 - [ ] 增加一轮口型对齐专项联调，记录“音频开始时间 / 嘴型开始时间 / 主观误差”，把 `< 80ms` 验收结果落到文档。
 
@@ -99,7 +103,7 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
   - `thinking` → 眼神偏移 + 眉毛微蹙
   - `excited` → 眼睛睁大 + 手势
 - [x] 动作协调：游客发问后先进入 `thinking`，首个真实音频 chunk 到达后切到 `speaking`，播放结束后 `cooldown -> idle`
-- [x] 后端 reply trace：异步记录 `llm_first_delta_ms / tts_first_segment_ms / tts_first_audio_chunk_ms / text_done_ms / audio_done_ms / avatar_phase_*`，落盘到 `backend/logs/avatar_trace.log`
+- [x] 后端 reply trace：异步记录 RAG、ASR、TTS chunk、前端 buffer/underrun 与 `avatar_phase_*`，落盘到 `backend/logs/avatar_trace.log`
 
 **里程碑验收**：问"这里有什么历史故事？"→ 口型同步回答，表情自然
 
@@ -147,16 +151,20 @@ Week 8    │ Phase 5：测试 + 文档 + 收尾
 
 **数据大屏**
 
-- [ ] 今日/本周服务人次（折线图）
-- [ ] 热门问答 Top10（条形图）
-- [ ] 游客满意度趋势（情感评分折线）
-- [ ] 关注点词云（高频实体词）
-- [ ] 实时在线人数
+- [x] 今日/本周服务人次（折线图）
+- [x] 热门问答 Top10（条形图）
+- [x] 游客满意度趋势（情感评分折线）
+- [x] 关注点词云（高频实体词）
+- [x] 实时在线人数
+
+实现状态：管理后台“数据大屏”页已按以上 5 个模块独立展示；后端 `GET /api/v1/admin/dashboard/overview` 提供 `service_trend`、`top_questions`、`satisfaction_trend`、`keyword_cloud`、`realtime_online_count`，前端使用原生 SVG/CSS 渲染折线图、条形图和词云。
 
 **感受度报告**
 
-- [ ] 报告页面：情感趋势图 + 关注点分析 + LLM生成文字摘要
-- [ ] 支持按日期范围筛选
+- [x] 报告页面：情感趋势图 + 关注点分析 + LLM生成文字摘要
+- [x] 支持按日期范围筛选
+
+实现状态：管理后台已提供独立“感受度报告”页面，接入 `GET /api/v1/admin/reports/summary`、`GET /api/v1/admin/reports/daily`、`POST /api/v1/admin/reports/daily/generate`；页面支持日期范围筛选、手动生成日报、情绪趋势节点读数、关注点分析和日报列表。
 
 **体验优化**
 

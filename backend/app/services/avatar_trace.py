@@ -26,11 +26,15 @@ class ReplyTrace:
     segment_count: int = 0
     audio_chunk_count: int = 0
     max_chunk_gap_ms: int = 0
+    tts_chunks: list[dict[str, int | float]] = field(default_factory=list)
     _last_audio_chunk_at_ms: int | None = field(default=None, init=False, repr=False)
 
     def mark(self, name: str, at_ms: int) -> None:
         if name not in self.metrics:
             self.metrics[name] = int(at_ms)
+
+    def set_metric(self, name: str, value_ms: int) -> None:
+        self.metrics[name] = int(value_ms)
 
     def observe_audio_chunk(self, at_ms: int) -> None:
         observed_at = int(at_ms)
@@ -41,6 +45,38 @@ class ReplyTrace:
                 observed_at - self._last_audio_chunk_at_ms,
             )
         self._last_audio_chunk_at_ms = observed_at
+
+    def observe_tts_chunk(
+        self,
+        *,
+        seq: int,
+        chunk_index: int,
+        sent_at_ms: int,
+        audio_duration_ms: int,
+        model_ready_ms: int,
+        send_lag_ms: int,
+    ) -> None:
+        observed_at = int(sent_at_ms)
+        gap_ms = 0
+        self.audio_chunk_count += 1
+        if self._last_audio_chunk_at_ms is not None:
+            gap_ms = observed_at - self._last_audio_chunk_at_ms
+            self.max_chunk_gap_ms = max(self.max_chunk_gap_ms, gap_ms)
+        self._last_audio_chunk_at_ms = observed_at
+        duration_ms = max(int(audio_duration_ms), 0)
+        rtf = round(float(model_ready_ms) / duration_ms, 3) if duration_ms > 0 else 0.0
+        self.tts_chunks.append(
+            {
+                "seq": int(seq),
+                "chunk_index": int(chunk_index),
+                "sent_at_ms": observed_at,
+                "tts_chunk_audio_ms": duration_ms,
+                "tts_model_ready_ms": int(model_ready_ms),
+                "tts_ws_send_lag_ms": int(send_lag_ms),
+                "tts_chunk_gap_ms": int(max(gap_ms, 0)),
+                "tts_chunk_rtf": rtf,
+            }
+        )
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -54,6 +90,7 @@ class ReplyTrace:
             "segment_count": self.segment_count,
             "audio_chunk_count": self.audio_chunk_count,
             "max_chunk_gap_ms": self.max_chunk_gap_ms,
+            "tts_chunks": list(self.tts_chunks),
             "metrics": dict(self.metrics),
         }
 

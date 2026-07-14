@@ -201,6 +201,10 @@ async def stream_assistant_reply(
         if name not in metrics:
             metrics[name] = trace.metrics[name]
 
+    def set_stage_metric(name: str, value_ms: int) -> None:
+        trace.set_metric(name, value_ms)
+        metrics[name] = int(value_ms)
+
     async def send_avatar_phase(phase: str, reason: str) -> None:
         at_ms = elapsed_ms()
         trace.mark(f"avatar_phase_{phase}_ms", at_ms)
@@ -235,6 +239,11 @@ async def stream_assistant_reply(
                 trace.segment_count += 1
                 await segment_queue.put(QueuedTTSSegment(seq=next_segment_seq, text=event.content))
                 next_segment_seq += 1
+                continue
+
+            if event.kind == "metrics":
+                for metric_name, metric_value in event.metrics.items():
+                    set_stage_metric(metric_name, metric_value)
                 continue
 
             if event.kind == "final":
@@ -293,7 +302,6 @@ async def stream_assistant_reply(
             chunk_sent_at_ms = elapsed_ms()
             if trace.audio_chunk_count == 0:
                 await send_avatar_phase("speaking", "first_audio_chunk")
-            trace.observe_audio_chunk(chunk_sent_at_ms)
             send_started_at = perf_counter()
             await send_json(
                 {
@@ -308,13 +316,27 @@ async def stream_assistant_reply(
                     "is_final": tts_chunk.is_final,
                 }
             )
+            send_lag_ms = int((perf_counter() - send_started_at) * 1000)
+            audio_duration_ms = int(
+                len(tts_chunk.audio_bytes)
+                / max(int(tts_chunk.sample_rate) * int(tts_chunk.channels) * 2, 1)
+                * 1000
+            )
+            trace.observe_tts_chunk(
+                seq=tts_chunk.seq,
+                chunk_index=tts_chunk.chunk_index,
+                sent_at_ms=chunk_sent_at_ms,
+                audio_duration_ms=audio_duration_ms,
+                model_ready_ms=tts_chunk.model_chunk_ready_ms,
+                send_lag_ms=send_lag_ms,
+            )
             logger.info(
                 "tts_ws_chunk seq=%s idx=%s model_chunk_ready_ms=%s ws_chunk_sent_ms=%s chunk_send_lag_ms=%s",
                 tts_chunk.seq,
                 tts_chunk.chunk_index,
                 tts_chunk.model_chunk_ready_ms,
                 int((perf_counter() - started_at) * 1000),
-                int((perf_counter() - send_started_at) * 1000),
+                send_lag_ms,
             )
         if tts_chunk.phonemes:
             await send_json(

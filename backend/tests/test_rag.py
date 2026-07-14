@@ -214,6 +214,78 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("natural, concise spoken English", messages[0]["content"])
         self.assertIn('"spoken_answer":"natural spoken English for visitors', messages[1]["content"])
 
+    async def test_prepare_stream_answer_records_rag_stage_metrics(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key="key"))
+        service.retrieve = self._async_return(
+            [
+                make_chunk(
+                    category="schedule",
+                    text="景区开放时间为9:00-21:30，冬季闭园会提前。",
+                    title="景区开放时间",
+                )
+            ]
+        )
+        service.llm = SimpleNamespace(
+            complete=self._async_return(
+                '{"spoken_answer":"景区一般9:00开放。","used_source_indexes":[1],"confidence_note":"confirmed"}'
+            )
+        )
+
+        prepared = await service.prepare_stream_answer("开放时间是什么时候？", persona="guide", history=[])
+
+        self.assertIn("rag_prepare_total_ms", prepared.metrics)
+        self.assertIn("rag_retrieve_ms", prepared.metrics)
+        self.assertIn("rag_rerank_ms", prepared.metrics)
+        self.assertIn("rag_decision_llm_ms", prepared.metrics)
+
+    async def test_prepare_stream_answer_records_metrics_for_empty_question(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
+
+        prepared = await service.prepare_stream_answer("   ", persona="guide", history=[])
+
+        self.assertEqual(prepared.reply_kind, "refuse")
+        self.assertIn("rag_prepare_total_ms", prepared.metrics)
+        self.assertEqual(prepared.metrics["rag_retrieve_ms"], 0)
+        self.assertEqual(prepared.metrics["rag_decision_llm_ms"], 0)
+
+    async def test_fast_humanized_schedule_skips_decision_llm_for_high_confidence_fallback(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(
+                Settings(chat_mode="rag", dashscope_api_key="key", rag_response_mode="fast_humanized")
+            )
+        service.retrieve = self._async_return(
+            [
+                make_chunk(
+                    category="schedule",
+                    text="景区开放时间为9:00-21:30，冬季闭园会提前。",
+                    title="景区开放时间",
+                    rerank_score=1.2,
+                )
+            ]
+        )
+
+        async def fail_if_called(*args, **kwargs):
+            raise AssertionError("decision LLM should be skipped for fast high-confidence schedule answers")
+
+        service.llm = SimpleNamespace(complete=fail_if_called)
+
+        prepared = await service.prepare_stream_answer("开放时间是什么时候？", persona="guide", history=[])
+
+        self.assertFalse(prepared.used_llm)
+        self.assertIn("9:00", prepared.answer_text)
+        self.assertEqual(prepared.metrics["rag_decision_llm_ms"], 0)
+
     @staticmethod
     def _async_return(value):
         async def _inner(*args, **kwargs):

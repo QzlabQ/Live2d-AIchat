@@ -61,16 +61,124 @@ class StreamingTTSChunk:
     model_chunk_ready_ms: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class TTSStreamProfile:
+    name: str
+    initial_token_hop_len: int
+    growth_factor: float
+    max_hop_multiplier: int
+
+
+STREAM_PROFILES: dict[str, TTSStreamProfile] = {
+    "stable": TTSStreamProfile(
+        name="stable",
+        initial_token_hop_len=25,
+        growth_factor=2.0,
+        max_hop_multiplier=4,
+    ),
+    "balanced": TTSStreamProfile(
+        name="balanced",
+        initial_token_hop_len=25,
+        growth_factor=1.5,
+        max_hop_multiplier=3,
+    ),
+    "low_latency": TTSStreamProfile(
+        name="low_latency",
+        initial_token_hop_len=25,
+        growth_factor=1.0,
+        max_hop_multiplier=1,
+    ),
+}
+
+
+def resolve_stream_profile(settings: Settings) -> TTSStreamProfile:
+    return STREAM_PROFILES.get(settings.tts_stream_profile, STREAM_PROFILES["stable"])
+
+
+def resolve_stream_hop_limit(
+    profile: TTSStreamProfile,
+    *,
+    base_token_hop_len: int,
+    configured_max_hop_len: int,
+) -> int:
+    base_hop = max(int(base_token_hop_len), 1)
+    profile_limit = base_hop * max(int(profile.max_hop_multiplier), 1)
+    configured_limit = max(int(configured_max_hop_len), base_hop)
+    if configured_limit <= base_hop:
+        return profile_limit
+    return min(configured_limit, profile_limit)
+
+
+class LocalCosyVoiceProvider:
+    def __init__(self, service: "TTSService") -> None:
+        self.service = service
+
+    async def stream_synthesize_reply(self, segments: AsyncIterator[tuple[int, str]], **kwargs):
+        async for chunk in self.service._stream_synthesize_reply_local(segments, **kwargs):
+            yield chunk
+
+
+class RemoteTTSProvider:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    async def stream_synthesize_reply(
+        self,
+        segments: AsyncIterator[tuple[int, str]],
+        **kwargs,
+    ) -> AsyncIterator[StreamingTTSChunk]:
+        async def iter_segment_payloads():
+            async for seq, text in segments:
+                yield {"seq": seq, "text": text}
+
+        payload = {
+            "segments": iter_segment_payloads(),
+            "voice_id": kwargs.get("voice_id"),
+            "emotion": kwargs.get("emotion"),
+            "reference_audio_path": kwargs.get("reference_audio_path"),
+            "reference_text": kwargs.get("reference_text"),
+            "speed": kwargs.get("speed"),
+            "tts_emotion_enabled": kwargs.get("tts_emotion_enabled"),
+        }
+        async for event in self._iter_remote_events(payload):
+            yield self._chunk_from_remote_event(event)
+
+    async def _iter_remote_events(self, payload: dict[str, object]):
+        del payload
+        if not self.settings.tts_remote_url:
+            raise RuntimeError("TTS_PROVIDER=remote requires TTS_REMOTE_URL.")
+        raise NotImplementedError(
+            f"TTS remote protocol {self.settings.tts_remote_protocol!r} is not implemented yet."
+        )
+
+    def _chunk_from_remote_event(self, event: dict[str, object]) -> StreamingTTSChunk:
+        return StreamingTTSChunk(
+            seq=int(event.get("seq", 0)),
+            chunk_index=int(event.get("chunk_index", 0)),
+            text=str(event.get("text", "")),
+            audio_bytes=bytes(event.get("audio_bytes", b"")),
+            phonemes=list(event.get("phonemes", [])),
+            offset_ms=int(event.get("offset_ms", 0)),
+            sample_rate=int(event.get("sample_rate", self.settings.tts_cosyvoice_sample_rate)),
+            channels=int(event.get("channels", 1)),
+            encoding=str(event.get("encoding", "pcm16le")),
+            is_final=bool(event.get("is_final", False)),
+            model_chunk_ready_ms=int(event.get("model_chunk_ready_ms", 0)),
+        )
+
+
 class TTSService:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._engine_error: str | None = None
         self._cosyvoice_model: object | None = None
         self._prompt_feature_cache: dict[tuple[str, str], dict[str, object]] = {}
+        self._local_provider = LocalCosyVoiceProvider(self)
+        self._remote_provider = RemoteTTSProvider(settings)
 
     @property
     def supports_reply_streaming(self) -> bool:
-        return self.settings.tts_engine == "cosyvoice"
+        return self.settings.tts_provider == "remote" or self.settings.tts_engine == "cosyvoice"
 
     def status(self) -> str:
         if self.settings.tts_engine == "mock":
@@ -203,6 +311,7 @@ class TTSService:
                 ) from patched_exc
 
     def _patch_cosyvoice_runtime_support(self, cosyvoice_module: object) -> None:
+        profile = resolve_stream_profile(self.settings)
         frontend_module = importlib.import_module("cosyvoice.cli.frontend")
         frontend_class = getattr(frontend_module, "CosyVoiceFrontEnd", None)
         if frontend_class is not None and not hasattr(frontend_class, "iter_text_normalize"):
@@ -286,10 +395,15 @@ class TTSService:
 
                 try:
                     token_offset = 0
-                    base_token_hop_len = int(getattr(self, "token_hop_len", 25))
+                    base_token_hop_len = int(getattr(self, "token_hop_len", profile.initial_token_hop_len))
                     token_hop_len = base_token_hop_len
-                    token_max_hop_len = int(getattr(self, "token_max_hop_len", base_token_hop_len))
-                    conservative_scale_factor = 1.0
+                    configured_max_hop_len = int(getattr(self, "token_max_hop_len", base_token_hop_len))
+                    token_max_hop_len = resolve_stream_hop_limit(
+                        profile,
+                        base_token_hop_len=base_token_hop_len,
+                        configured_max_hop_len=configured_max_hop_len,
+                    )
+                    stream_scale_factor = max(float(profile.growth_factor), 1.0)
                     prompt_token_pad = int(
                         np.ceil(flow_prompt_speech_token.shape[1] / max(base_token_hop_len, 1)) * base_token_hop_len
                         - flow_prompt_speech_token.shape[1]
@@ -312,7 +426,7 @@ class TTSService:
                                 finalize=False,
                             )
                             token_offset += this_token_hop_len
-                            next_hop = int(round(token_hop_len * conservative_scale_factor))
+                            next_hop = int(round(token_hop_len * stream_scale_factor))
                             token_hop_len = min(token_max_hop_len, max(base_token_hop_len, next_hop))
                             yield {"tts_speech": this_tts_speech.cpu()}
                         if (
@@ -982,7 +1096,7 @@ class TTSService:
         if last_chunk is not None:
             last_chunk.is_final = True
 
-    async def stream_synthesize_reply(
+    async def _stream_synthesize_reply_local(
         self,
         segments: AsyncIterator[tuple[int, str]],
         *,
@@ -1038,6 +1152,29 @@ class TTSService:
 
         if last_chunk is not None:
             last_chunk.is_final = True
+
+    async def stream_synthesize_reply(
+        self,
+        segments: AsyncIterator[tuple[int, str]],
+        *,
+        voice_id: str | None = None,
+        emotion: str | None = None,
+        reference_audio_path: str | None = None,
+        reference_text: str | None = None,
+        speed: float | None = None,
+        tts_emotion_enabled: bool = True,
+    ) -> AsyncIterator[StreamingTTSChunk]:
+        provider = self._remote_provider if self.settings.tts_provider == "remote" else self._local_provider
+        async for chunk in provider.stream_synthesize_reply(
+            segments,
+            voice_id=voice_id,
+            emotion=emotion,
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text,
+            speed=speed,
+            tts_emotion_enabled=tts_emotion_enabled,
+        ):
+            yield chunk
 
     async def synthesize_chunk(
         self,

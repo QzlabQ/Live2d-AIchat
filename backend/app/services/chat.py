@@ -54,6 +54,7 @@ class ReplyStreamEvent:
     followup_question: str = ""
     missing_slots: list[str] = field(default_factory=list)
     confidence_note: str = "confirmed"
+    metrics: dict[str, int] = field(default_factory=dict)
 
 
 class DisplayChunker:
@@ -440,6 +441,8 @@ class RAGGuideChatService(BaseGuideChatService):
             response_language=response_language,
         )
         fallback_text = prepared.answer_text or prepared.fallback_text or prepared.spoken_text
+        if prepared.metrics:
+            yield ReplyStreamEvent(kind="metrics", metrics=dict(prepared.metrics))
 
         if prepared.llm_messages:
             llm_client = getattr(rag_service, "llm", None)

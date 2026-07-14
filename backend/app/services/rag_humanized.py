@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from time import perf_counter
 
 import app.services.rag as legacy_rag
 from app.core.config import Settings
@@ -208,31 +209,54 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         history: list[dict[str, str]] | None = None,
         response_language: str | None = None,
     ) -> legacy_rag.PreparedRAGAnswer:
+        prepare_started_at = perf_counter()
+        metrics: dict[str, int] = {
+            "rag_retrieve_ms": 0,
+            "rag_rerank_ms": 0,
+            "rag_decision_llm_ms": 0,
+            "rag_prepare_total_ms": 0,
+        }
+
+        def finish(prepared: legacy_rag.PreparedRAGAnswer) -> legacy_rag.PreparedRAGAnswer:
+            metrics["rag_prepare_total_ms"] = int((perf_counter() - prepare_started_at) * 1000)
+            prepared.metrics.update(metrics)
+            return prepared
+
         query = legacy_rag.normalize_question(question)
         if not query:
-            return self._prepare_refusal(
-                legacy_rag.localized_text(
-                    response_language,
-                    "我刚才没有听清，你可以再说一遍吗？",
-                    "I didn't catch that clearly. Could you say it again?",
+            return finish(
+                self._prepare_refusal(
+                    legacy_rag.localized_text(
+                        response_language,
+                        "我刚才没有听清，你可以再说一遍吗？",
+                        "I didn't catch that clearly. Could you say it again?",
+                    )
                 )
             )
         if legacy_rag.is_out_of_domain_question(query):
-            return self._prepare_refusal(
-                legacy_rag.localized_text(
-                    response_language,
-                    "这个问题超出了我当前的景区知识范围。你可以继续问我景点、历史、路线或参观建议。",
-                    "That question is outside my current scenic-area knowledge. You can still ask me about spots, history, routes, or visit suggestions.",
+            return finish(
+                self._prepare_refusal(
+                    legacy_rag.localized_text(
+                        response_language,
+                        "这个问题超出了我当前的景区知识范围。你可以继续问我景点、历史、路线或参观建议。",
+                        "That question is outside my current scenic-area knowledge. You can still ask me about spots, history, routes, or visit suggestions.",
+                    )
                 )
             )
 
+        retrieve_started_at = perf_counter()
         candidates = await self.retrieve(query)
+        retrieve_elapsed_ms = int((perf_counter() - retrieve_started_at) * 1000)
+        metrics["rag_retrieve_ms"] = retrieve_elapsed_ms
+        metrics["rag_rerank_ms"] = retrieve_elapsed_ms
         if not self._has_grounded_context(query, candidates):
-            return self._prepare_refusal(
-                legacy_rag.localized_text(
-                    response_language,
-                    "我现在还没法根据现有知识库确认这个问题。你可以换个更具体的问法，我再帮你细看。",
-                    "I can't confirm that from the current knowledge base yet. If you make the question a bit more specific, I can check again.",
+            return finish(
+                self._prepare_refusal(
+                    legacy_rag.localized_text(
+                        response_language,
+                        "我现在还没法根据现有知识库确认这个问题。你可以换个更具体的问法，我再帮你细看。",
+                        "I can't confirm that from the current knowledge base yet. If you make the question a bit more specific, I can check again.",
+                    )
                 )
             )
 
@@ -261,8 +285,10 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
 
         decision = fallback_decision
         used_llm = False
-        if self.settings.dashscope_api_key:
+        fast_answer_allowed = self._can_use_fast_humanized_decision(query, selected, fallback_decision)
+        if self.settings.dashscope_api_key and not fast_answer_allowed:
             try:
+                decision_started_at = perf_counter()
                 raw = await self.llm.complete(
                     self._build_decision_messages(
                         question=query,
@@ -272,6 +298,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                         response_language=response_language,
                     )
                 )
+                metrics["rag_decision_llm_ms"] = int((perf_counter() - decision_started_at) * 1000)
                 decision = self._parse_reply_decision(raw, fallback_decision=fallback_decision)
                 used_llm = True
             except Exception:
@@ -283,7 +310,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             decision = fallback_decision
             used_llm = False
 
-        return legacy_rag.PreparedRAGAnswer(
+        prepared = legacy_rag.PreparedRAGAnswer(
             answer_text=answer_text,
             spoken_text=answer_text,
             sources=self._select_used_sources(selected, decision.used_source_indexes),
@@ -296,6 +323,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             missing_slots=decision.missing_slots,
             confidence_note=decision.confidence_note,
         )
+        return finish(prepared)
 
     def _build_decision_messages(
         self,
@@ -450,6 +478,24 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             used_source_indexes=[1] if sources else [],
             confidence_note="confirmed",
         )
+
+    def _can_use_fast_humanized_decision(
+        self,
+        question: str,
+        sources: list[legacy_rag.RetrievedChunk],
+        fallback_decision: legacy_rag.RAGReplyDecision,
+    ) -> bool:
+        if self.settings.rag_response_mode != "fast_humanized":
+            return False
+        if not fallback_decision.spoken_answer.strip():
+            return False
+        if not sources:
+            return False
+        intent = legacy_rag.detect_query_intent(question)
+        if intent not in {"schedule", "route", "overview", "history"}:
+            return False
+        best_score = max(sources[0].rerank_score, sources[0].retrieval_score)
+        return best_score >= 0.75
 
     def _humanize_fallback_answer(
         self,

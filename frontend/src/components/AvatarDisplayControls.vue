@@ -11,9 +11,15 @@ const props = withDefaults(
   defineProps<{
     modelValue: AvatarDisplayConfig
     compact?: boolean
+    showOffsetX?: boolean
+    showOffsetY?: boolean
+    showStageHeight?: boolean
   }>(),
   {
     compact: false,
+    showOffsetX: true,
+    showOffsetY: true,
+    showStageHeight: true,
   },
 )
 
@@ -50,7 +56,7 @@ function updateField(key: keyof AvatarDisplayConfig, rawValue: string | number) 
       />
     </label>
 
-    <label>
+    <label v-if="showOffsetX">
       <span>水平偏移</span>
       <output>{{ displayConfig.displayOffsetX.toFixed(2) }}</output>
       <input
@@ -63,7 +69,7 @@ function updateField(key: keyof AvatarDisplayConfig, rawValue: string | number) 
       />
     </label>
 
-    <label>
+    <label v-if="showOffsetY">
       <span>垂直偏移</span>
       <output>{{ displayConfig.displayOffsetY.toFixed(2) }}</output>
       <input
@@ -76,7 +82,7 @@ function updateField(key: keyof AvatarDisplayConfig, rawValue: string | number) 
       />
     </label>
 
-    <label>
+    <label v-if="showStageHeight">
       <span>舞台高度</span>
       <output>{{ Math.round(displayConfig.stageHeight) }}px</output>
       <input

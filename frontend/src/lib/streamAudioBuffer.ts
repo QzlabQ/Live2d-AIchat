@@ -11,21 +11,32 @@ export interface BufferedPlaybackState {
   isFinalChunkBuffered: boolean;
 }
 
-// initialChunkCount: 2 — wait for 2 streaming chunks before starting playback.
-// On RTX 4060, CosyVoice2-0.5B generates at ~0.8x real-time (≈330ms deficit/chunk).
-// Two pre-buffered chunks (~2700ms) sustain gap-free playback for ~8 more chunks
-// before the first underrun, covering most scenic-guide responses (8–12 chunks).
-// Trade-off: first-audio latency increases by ~1.7 s vs. initialChunkCount: 1.
-// A100 版本 (5–8x real-time)：generation always outpaces playback,
-// so revert for lowest first-audio latency:
-//   initialChunkCount: 1,    // 立刻开播，首包延迟最低
-//   minScheduledLeadMs: 150, // 余量充足，阈值可放宽
-export const DEFAULT_STREAM_AUDIO_POLICY: StreamAudioPolicy = {
-  initialBufferMs: 450,
-  initialChunkCount: 2,
-  minScheduledLeadMs: 300,
-  scheduleLookaheadMs: 30,
+export type StreamAudioPolicyProfile = 'low-latency' | 'balanced' | 'stable';
+
+export const STREAM_AUDIO_POLICIES: Record<StreamAudioPolicyProfile, StreamAudioPolicy> = {
+  'low-latency': {
+    initialBufferMs: 450,
+    initialChunkCount: 1,
+    minScheduledLeadMs: 150,
+    scheduleLookaheadMs: 30,
+  },
+  balanced: {
+    initialBufferMs: 450,
+    initialChunkCount: 2,
+    minScheduledLeadMs: 300,
+    scheduleLookaheadMs: 30,
+  },
+  stable: {
+    initialBufferMs: 1800,
+    initialChunkCount: 3,
+    minScheduledLeadMs: 1000,
+    scheduleLookaheadMs: 30,
+  },
 };
+
+// Default to the stability-focused RTX 4060 profile; callers can opt into
+// lower latency later without changing the playback decision helpers.
+export const DEFAULT_STREAM_AUDIO_POLICY: StreamAudioPolicy = STREAM_AUDIO_POLICIES.stable;
 
 export function shouldStartBufferedPlayback(
   state: BufferedPlaybackState,

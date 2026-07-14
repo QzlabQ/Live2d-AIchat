@@ -1018,8 +1018,25 @@ const currentAvatarName = computed(() => activeAvatarProfile.value?.name || '默
 const activeAvatarDisplayDefaults = computed(() =>
   mergeAvatarDisplayConfig(activeAvatarProfile.value ?? AVATAR_DISPLAY_DEFAULTS, null),
 )
+function stripVisitorScaleOnlyOverride(
+  override: Partial<AvatarDisplayConfig> | null | undefined,
+): Partial<AvatarDisplayConfig> | null {
+  if (!override) {
+    return null
+  }
+
+  if (typeof override.displayScale === 'number' && Number.isFinite(override.displayScale)) {
+    return { displayScale: override.displayScale }
+  }
+
+  return null
+}
+
 const avatarDisplayConfig = computed(() =>
-  mergeAvatarDisplayConfig(activeAvatarDisplayDefaults.value, localAvatarDisplayOverride.value),
+  mergeAvatarDisplayConfig(
+    activeAvatarDisplayDefaults.value,
+    stripVisitorScaleOnlyOverride(localAvatarDisplayOverride.value),
+  ),
 )
 const stageCardStyle = computed(() => buildStageHeightStyle(avatarDisplayConfig.value))
 const currentModelPath = computed(() => activeAvatarProfile.value?.modelPath || DEFAULT_MODEL_PATH)
@@ -1057,13 +1074,35 @@ function refreshAvatarDisplayOverride() {
   }
 
   const profileId = activeAvatarProfile.value?.id
-  localAvatarDisplayOverride.value = profileId
-    ? loadAvatarDisplayOverride(window.localStorage, profileId)
+  const override = profileId
+    ? stripVisitorScaleOnlyOverride(loadAvatarDisplayOverride(window.localStorage, profileId))
     : null
+
+  localAvatarDisplayOverride.value = override
+
+  if (!profileId) {
+    return
+  }
+
+  if (override) {
+    saveAvatarDisplayOverride(window.localStorage, profileId, override)
+    return
+  }
+
+  clearAvatarDisplayOverride(window.localStorage, profileId)
 }
 
 function updateVisitorAvatarDisplay(value: AvatarDisplayConfig) {
-  const patch = buildAvatarDisplayOverridePatch(activeAvatarDisplayDefaults.value, value)
+  const normalizedValue = {
+    ...value,
+    displayOffsetX: activeAvatarDisplayDefaults.value.displayOffsetX,
+    displayOffsetY: activeAvatarDisplayDefaults.value.displayOffsetY,
+    stageHeight: activeAvatarDisplayDefaults.value.stageHeight,
+  }
+  const patch = buildAvatarDisplayOverridePatch(activeAvatarDisplayDefaults.value, normalizedValue)
+  delete patch.displayOffsetX
+  delete patch.displayOffsetY
+  delete patch.stageHeight
   localAvatarDisplayOverride.value = Object.keys(patch).length > 0 ? patch : null
 
   if (typeof window === 'undefined') {
@@ -1483,6 +1522,9 @@ onBeforeUnmount(() => {
             <AvatarDisplayControls
               compact
               :model-value="avatarDisplayConfig"
+              :show-offset-x="false"
+              :show-offset-y="false"
+              :show-stage-height="false"
               @update:model-value="updateVisitorAvatarDisplay"
               @reset="resetVisitorAvatarDisplay"
             />
