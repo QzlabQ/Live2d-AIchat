@@ -528,7 +528,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(trace_service.enqueued_payloads[0]["audio_chunk_count"], 1)
         self.assertIn("tts_first_audio_chunk_ms", trace_service.enqueued_payloads[0]["metrics"])
-        self.assertGreaterEqual(
+        self.assertLessEqual(
             trace_service.enqueued_payloads[0]["metrics"]["tts_first_audio_chunk_ms"],
             trace_service.enqueued_payloads[0]["metrics"]["avatar_phase_speaking_ms"],
         )
