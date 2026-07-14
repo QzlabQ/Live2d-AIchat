@@ -472,8 +472,7 @@ button {
   flex: 0 0 auto;
   height: var(--avatar-stage-height, clamp(20rem, 45vh, 26rem));
   min-height: 20rem;
-  overflow: auto;
-  resize: vertical;
+  overflow: hidden;
   border-radius: 1.6rem;
   background:
     radial-gradient(

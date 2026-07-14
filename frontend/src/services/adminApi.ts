@@ -10,6 +10,8 @@ import type {
   AvatarProfileListResponse,
   AvatarProfileSummary,
   AvatarConfigUpdate,
+  DashboardEmotionSummary,
+  DashboardOverview,
   DailyEmotionReport,
   DailyEmotionReportListResponse,
   KnowledgeDocListResponse,
@@ -20,6 +22,7 @@ import type {
   VoiceProfile,
   VoiceProfileUploadResult,
 } from '../types/admin'
+import { getRuntimeApiBaseUrl } from '../lib/runtimeBaseUrl'
 
 interface AdminLoginResponseApi {
   access_token: string
@@ -164,6 +167,72 @@ interface ReportRangeSummaryApi {
   summary_text: string
 }
 
+interface DashboardQuestionItemApi {
+  question: string
+  count: number
+}
+
+interface DashboardSatisfactionTrendPointApi {
+  date: string
+  session_count: number
+  message_count: number
+  avg_latency_ms: number | null
+  score: number | null
+}
+
+interface DashboardServiceTrendPointApi {
+  date: string
+  service_count: number
+}
+
+interface DashboardKeywordCloudItemApi {
+  word: string
+  count: number
+  weight: number
+  source: string
+}
+
+interface DashboardOverviewApi {
+  period: string
+  date_from: string
+  date_to: string
+  service_count: number
+  session_count: number
+  message_count: number
+  user_message_count: number
+  assistant_message_count: number
+  realtime_online_count: number
+  avg_satisfaction: number | null
+  avg_latency_ms: number | null
+  overall_sentiment: string
+  top_questions: DashboardQuestionItemApi[]
+  service_trend: DashboardServiceTrendPointApi[]
+  satisfaction_trend: DashboardSatisfactionTrendPointApi[]
+  top_interest_tags: string[]
+  top_keywords: string[]
+  keyword_cloud: DashboardKeywordCloudItemApi[]
+  emotion_counts: Record<string, number>
+  summary_text: string
+}
+
+interface DashboardEmotionPointApi {
+  date: string
+  happy: number
+  neutral: number
+  negative: number
+  total: number
+  score: number | null
+}
+
+interface DashboardEmotionSummaryApi {
+  date_from: string
+  date_to: string
+  overall_sentiment: string
+  emotion_counts: Record<string, number>
+  trend: DashboardEmotionPointApi[]
+  summary_text: string
+}
+
 interface AdminSessionSummaryApi {
   session_id: string
   created_at: string
@@ -197,7 +266,7 @@ interface AdminSessionDetailApi {
   items: AdminSessionMessageApi[]
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1'
+const API_BASE_URL = getRuntimeApiBaseUrl(import.meta.env)
 
 function trimApiBaseUrl(apiBaseUrl: string) {
   return apiBaseUrl.replace(/\/+$/, '')
@@ -327,6 +396,66 @@ function mapAdminSessionMessage(payload: AdminSessionMessageApi): AdminSessionMe
     createdAt: payload.created_at,
     emotion: payload.emotion,
     latencyMs: payload.latency_ms,
+  }
+}
+
+function mapDashboardOverview(payload: DashboardOverviewApi): DashboardOverview {
+  return {
+    period: payload.period,
+    dateFrom: payload.date_from,
+    dateTo: payload.date_to,
+    serviceCount: payload.service_count,
+    sessionCount: payload.session_count,
+    messageCount: payload.message_count,
+    userMessageCount: payload.user_message_count,
+    assistantMessageCount: payload.assistant_message_count,
+    realtimeOnlineCount: payload.realtime_online_count,
+    avgSatisfaction: payload.avg_satisfaction,
+    avgLatencyMs: payload.avg_latency_ms,
+    overallSentiment: payload.overall_sentiment,
+    topQuestions: payload.top_questions.map((item) => ({
+      question: item.question,
+      count: item.count,
+    })),
+    serviceTrend: payload.service_trend.map((item) => ({
+      date: item.date,
+      serviceCount: item.service_count,
+    })),
+    satisfactionTrend: payload.satisfaction_trend.map((item) => ({
+      date: item.date,
+      sessionCount: item.session_count,
+      messageCount: item.message_count,
+      avgLatencyMs: item.avg_latency_ms,
+      score: item.score,
+    })),
+    topInterestTags: payload.top_interest_tags,
+    topKeywords: payload.top_keywords,
+    keywordCloud: payload.keyword_cloud.map((item) => ({
+      word: item.word,
+      count: item.count,
+      weight: item.weight,
+      source: item.source,
+    })),
+    emotionCounts: payload.emotion_counts,
+    summaryText: payload.summary_text,
+  }
+}
+
+function mapDashboardEmotionSummary(payload: DashboardEmotionSummaryApi): DashboardEmotionSummary {
+  return {
+    dateFrom: payload.date_from,
+    dateTo: payload.date_to,
+    overallSentiment: payload.overall_sentiment,
+    emotionCounts: payload.emotion_counts,
+    trend: payload.trend.map((item) => ({
+      date: item.date,
+      happy: item.happy,
+      neutral: item.neutral,
+      negative: item.negative,
+      total: item.total,
+      score: item.score,
+    })),
+    summaryText: payload.summary_text,
   }
 }
 
@@ -744,6 +873,46 @@ export async function fetchReportSummary(
     overallSentiment: payload.overall_sentiment,
     summaryText: payload.summary_text,
   }
+}
+
+export async function fetchDashboardOverview(
+  apiBaseUrl: string,
+  token: string,
+  options: {
+    period?: 'today' | 'week' | 'month'
+  } = {},
+): Promise<DashboardOverview> {
+  const query = new URLSearchParams()
+  query.set('period', options.period ?? 'week')
+
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/admin/dashboard/overview?${query.toString()}`, {
+    headers: buildAuthHeaders(token, ''),
+  })
+  const payload = await readJson<DashboardOverviewApi>(response, 'Load dashboard overview failed.')
+  return mapDashboardOverview(payload)
+}
+
+export async function fetchDashboardEmotion(
+  apiBaseUrl: string,
+  token: string,
+  options: {
+    start?: string
+    end?: string
+  } = {},
+): Promise<DashboardEmotionSummary> {
+  const query = new URLSearchParams()
+  if (options.start) {
+    query.set('start', options.start)
+  }
+  if (options.end) {
+    query.set('end', options.end)
+  }
+
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/admin/dashboard/emotion?${query.toString()}`, {
+    headers: buildAuthHeaders(token, ''),
+  })
+  const payload = await readJson<DashboardEmotionSummaryApi>(response, 'Load dashboard emotion failed.')
+  return mapDashboardEmotionSummary(payload)
 }
 
 export async function generateDailyReport(

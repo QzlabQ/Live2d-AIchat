@@ -171,6 +171,10 @@ TTS_COSYVOICE_ONNX_PROVIDER=cpu
 TTS_COSYVOICE_SAMPLE_RATE=24000
 TTS_COSYVOICE_FP16=true
 TTS_COSYVOICE_LOAD_JIT=false
+TTS_PROVIDER=local
+TTS_REMOTE_URL=
+TTS_REMOTE_PROTOCOL=http_stream
+TTS_STREAM_PROFILE=stable
 TTS_SEGMENT_SOFT_MIN_CHARS=12
 TTS_SEGMENT_SOFT_MAX_CHARS=20
 TTS_SEGMENT_HARD_MAX_CHARS=28
@@ -178,6 +182,9 @@ DEFAULT_TTS_REFERENCE_AUDIO_PATH=./storage/vendor/CosyVoice/asset/zero_shot_prom
 DEFAULT_TTS_REFERENCE_TEXT=希望你以后能够做得比我还好。
 DEFAULT_TTS_SPEED=1.0
 DEFAULT_TTS_EMOTION_ENABLED=true
+
+CHAT_MODE=rag
+RAG_RESPONSE_MODE=fast_humanized
 ```
 
 说明：`voice_id` 现在只作为兼容展示字段保留，真实发声由 `avatar_config` 中的参考音频、参考文本、语速和情感开关决定。
@@ -186,7 +193,10 @@ DEFAULT_TTS_EMOTION_ENABLED=true
 
 - 当前推荐把 `CosyVoice2` 主模型放在 `cuda`，但把 `TTS_COSYVOICE_ONNX_PROVIDER` 固定为 `cpu`，避免 ONNX 前端额外吃显存。
 - `RAG_RERANKER_DEVICE` 和 `KNOWLEDGE_EMBEDDING_DEVICE` 继续保持 `cpu` 即可，不需要为了“统一环境”把知识库和 reranker 一起切到 GPU。
-- 这轮优先优化的是现有本机链路：更短的 TTS 分段、更早的首包发出、参考音频前处理缓存、前端 jitter buffer。
+- 这轮优先优化的是现有本机链路：更短的 TTS 分段、稳定档前端 jitter buffer、参考音频前处理缓存、TTS chunk 级 trace。
+- `TTS_STREAM_PROFILE=stable` 是 4060 默认推荐：首音频可以略晚一点，但会尽量攒够缓冲，降低播放中断流。
+- `RAG_RESPONSE_MODE=fast_humanized` 会让高置信常见问题跳过一次非流式 RAG 决策 LLM，低置信问题仍回退到完整人性化决策。
+- `TTS_PROVIDER=local` 表示继续使用本机 CosyVoice；后续接 A100/V100 独立服务时改成 `remote`，前端 WebSocket 协议不需要改。
 - `async_cosyvoice` / 官方 gRPC / Triton 暂时不接入。本轮先把本机 4060 方案跑顺，后续再做外部化。
 
 这一轮已经补上：
@@ -240,6 +250,10 @@ TTS_COSYVOICE_ONNX_PROVIDER=cpu
 TTS_COSYVOICE_SAMPLE_RATE=24000
 TTS_COSYVOICE_FP16=true
 TTS_COSYVOICE_LOAD_JIT=false
+TTS_PROVIDER=local
+TTS_REMOTE_URL=
+TTS_REMOTE_PROTOCOL=http_stream
+TTS_STREAM_PROFILE=stable
 TTS_SEGMENT_SOFT_MIN_CHARS=12
 TTS_SEGMENT_SOFT_MAX_CHARS=20
 TTS_SEGMENT_HARD_MAX_CHARS=28
@@ -247,6 +261,9 @@ DEFAULT_TTS_REFERENCE_AUDIO_PATH=./storage/vendor/CosyVoice/asset/zero_shot_prom
 DEFAULT_TTS_REFERENCE_TEXT=希望你以后能够做得比我还好。
 DEFAULT_TTS_SPEED=1.0
 DEFAULT_TTS_EMOTION_ENABLED=true
+
+CHAT_MODE=rag
+RAG_RESPONSE_MODE=fast_humanized
 ```
 
 - `DEFAULT_TTS_REFERENCE_AUDIO_PATH` 是默认参考音频，新建数据库或迁移旧库时会写入 `avatar_config.tts_reference_audio_path`
@@ -421,6 +438,8 @@ python -m scripts.evaluate_rag --dataset .\evals\phase2_rag_eval.50.jsonl --targ
 - `POST /api/v1/admin/reports/daily/generate`
 - `GET /api/v1/admin/reports/daily`
 - `GET /api/v1/admin/reports/summary`
+- `GET /api/v1/admin/dashboard/overview`
+- `GET /api/v1/admin/dashboard/emotion`
 - `WS /ws/chat/{session_id}`
 
 ## Phase 3 管理后台
@@ -431,6 +450,8 @@ python -m scripts.evaluate_rag --dataset .\evals\phase2_rag_eval.50.jsonl --targ
 - 知识库管理：上传、列表、处理状态、删除
 - 数字人配置：切换 Live2D 模型、编辑系统 Prompt、调整参考音频/参考文本/语速/情感开关
 - 音色资源库：上传参考音频、试听、删除，并将音色绑定到当前数字人配置
+- 数据大屏：按 roadmap 的五项展示今日/本周服务人次折线、热门问答 Top10 条形图、游客满意度趋势折线、关注点词云、实时在线人数
+- 感受度报告：按日期范围查看日报汇总、情绪分析与 LLM 摘要
 
 推荐最小配置：
 
@@ -447,6 +468,8 @@ ADMIN_VOICE_MAX_BYTES=33554432
 
 - 管理后台音色试听走受保护接口，因此前端会先带 Bearer Token 拉取音频，再用浏览器本地 `Blob URL` 播放
 - 当你在管理后台选择某个 `voice_profile` 并保存后，后端会自动同步 `voice_id`、`tts_reference_audio_path`、`tts_reference_text`
+- 数据大屏数据来自 `GET /api/v1/admin/dashboard/overview`，其中 `service_trend` 驱动服务人次折线，`satisfaction_trend` 驱动满意度折线，`keyword_cloud` 驱动关注点词云
+- 感受度报告数据来自 `GET /api/v1/admin/reports/summary` 和 `GET /api/v1/admin/reports/daily`，后台可通过 `POST /api/v1/admin/reports/daily/generate` 手动生成指定日期日报
 - `frontend/vite.config.ts` 已改为多页面构建，`npm run build` 会同时生成游客端与管理后台
 
 ## Phase 3 后端分析链路
@@ -493,3 +516,15 @@ ANALYTICS_REPORT_SAMPLE_SESSIONS=8
 - 如果暂时不走 Edge TTS，先把 `TTS_ENGINE=edge-tts` 改回 `TTS_ENGINE=mock`
 - 如果知识库导入要使用 `bge-m3`，优先保证本地模型目录已下载完成
 - 如果要验证 Phase 2 的生成式 RAG，记得配置 `DASHSCOPE_API_KEY`
+## 测试服务器 Docker 部署
+
+如果你要把后端连同前端、PostgreSQL 一起部署到测试服务器，请直接看：
+
+- [测试服务器 Docker Compose 部署手册](../docs/deployment/test-server-docker.md)
+
+部署版本的关键差异是：
+
+- Compose 文件不直接在仓库根目录启动，而是放在 `/opt/ai-chat-live2d/deploy`
+- 代码仓库放在 `/opt/ai-chat-live2d/app`
+- 模型、CosyVoice、知识库通过宿主机目录挂载，不放进镜像
+- 浏览器通过 `ssh -L 18080:127.0.0.1:8080 user@server` 访问，不要求服务器开放公网端口

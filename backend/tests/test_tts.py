@@ -7,7 +7,13 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from app.core.config import Settings
-from app.services.tts import StreamingTTSChunk, TTSService
+from app.services.tts import (
+    RemoteTTSProvider,
+    StreamingTTSChunk,
+    TTSService,
+    resolve_stream_hop_limit,
+    resolve_stream_profile,
+)
 
 
 HAPPY_INSTRUCT = '\u7528\u6109\u5feb\u3001\u4eb2\u5207\u3001\u81ea\u7136\u7684\u8bed\u6c14\u4ecb\u7ecd\u8fd9\u6bb5\u5185\u5bb9\u3002<|endofprompt|>'
@@ -44,6 +50,33 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service._build_cosyvoice_instruction('happy', emotion_enabled=True), HAPPY_INSTRUCT)
         self.assertEqual(service._build_cosyvoice_instruction('unknown', emotion_enabled=True), NEUTRAL_INSTRUCT)
         self.assertEqual(service._build_cosyvoice_instruction('excited', emotion_enabled=False), NEUTRAL_INSTRUCT)
+
+    def test_stream_profile_defaults_to_stable_for_4060(self) -> None:
+        profile = resolve_stream_profile(Settings(tts_stream_profile="stable"))
+
+        self.assertEqual(profile.name, "stable")
+        self.assertEqual(profile.initial_token_hop_len, 25)
+        self.assertEqual(profile.growth_factor, 2.0)
+        self.assertEqual(profile.max_hop_multiplier, 4)
+
+    def test_stream_profile_low_latency_keeps_fixed_small_chunks(self) -> None:
+        profile = resolve_stream_profile(Settings(tts_stream_profile="low_latency"))
+
+        self.assertEqual(profile.name, "low_latency")
+        self.assertEqual(profile.growth_factor, 1.0)
+        self.assertEqual(profile.max_hop_multiplier, 1)
+
+    def test_stable_stream_profile_expands_hop_when_vendor_max_matches_base(self) -> None:
+        profile = resolve_stream_profile(Settings(tts_stream_profile="stable"))
+
+        self.assertEqual(resolve_stream_hop_limit(profile, base_token_hop_len=25, configured_max_hop_len=25), 100)
+
+    def test_remote_provider_enables_reply_streaming_without_cosyvoice_engine(self) -> None:
+        service = TTSService(
+            Settings(tts_engine="mock", tts_provider="remote", tts_remote_url="http://tts.example/stream")
+        )
+
+        self.assertTrue(service.supports_reply_streaming)
 
     def test_reference_audio_path_resolves_relative_to_backend_root(self) -> None:
         backend_root = Path(__file__).resolve().parents[1]
@@ -97,7 +130,6 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
             service._resolve_cosyvoice_device = lambda: "cpu"
 
             service._load_cosyvoice_model()
-
         self.assertEqual(calls[0]['model_path'], str(Path(temp_dir)))
         self.assertTrue(calls[0]['fp16'])
 
@@ -340,6 +372,88 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.chunk_index, 0)
         self.assertFalse(first.is_final)
         self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].seq, 1)
+        self.assertTrue(remaining[0].is_final)
+
+    async def test_remote_tts_provider_streams_common_chunk_shape(self) -> None:
+        class FakeRemoteTTSProvider(RemoteTTSProvider):
+            async def _iter_remote_events(self, payload):
+                yield {
+                    "seq": 0,
+                    "chunk_index": 0,
+                    "text": "hello",
+                    "audio_bytes": b"\x01\x02",
+                    "phonemes": [{"ph": "a", "start": 0.0, "end": 0.1, "openY": 0.8, "form": 0.0}],
+                    "offset_ms": 0,
+                    "sample_rate": 24000,
+                    "is_final": True,
+                }
+
+        provider = FakeRemoteTTSProvider(Settings(tts_remote_url="http://tts.example/stream"))
+
+        async def segment_stream():
+            yield 0, "hello"
+
+        chunks = [
+            item
+            async for item in provider.stream_synthesize_reply(
+                segment_stream(),
+                voice_id="voice",
+                emotion="happy",
+                reference_audio_path=None,
+                reference_text=None,
+                speed=1.0,
+                tts_emotion_enabled=True,
+            )
+        ]
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIsInstance(chunks[0], StreamingTTSChunk)
+        self.assertEqual(chunks[0].seq, 0)
+        self.assertEqual(chunks[0].encoding, "pcm16le")
+        self.assertTrue(chunks[0].is_final)
+
+    async def test_remote_tts_provider_emits_first_chunk_before_all_segments_arrive(self) -> None:
+        release_second_segment = asyncio.Event()
+
+        class FakeRemoteTTSProvider(RemoteTTSProvider):
+            async def _iter_remote_events(self, payload):
+                segment_iter = payload["segments"]
+                first_segment = await anext(segment_iter)
+                self.first_segment = first_segment
+                yield {
+                    "seq": first_segment["seq"],
+                    "chunk_index": 0,
+                    "text": first_segment["text"],
+                    "audio_bytes": b"\x01\x02",
+                    "sample_rate": 24000,
+                    "is_final": False,
+                }
+                second_segment = await anext(segment_iter)
+                yield {
+                    "seq": second_segment["seq"],
+                    "chunk_index": 1,
+                    "text": second_segment["text"],
+                    "audio_bytes": b"\x03\x04",
+                    "sample_rate": 24000,
+                    "is_final": True,
+                }
+
+        provider = FakeRemoteTTSProvider(Settings(tts_remote_url="http://tts.example/stream"))
+
+        async def segment_stream():
+            yield 0, "first"
+            await release_second_segment.wait()
+            yield 1, "second"
+
+        stream = provider.stream_synthesize_reply(segment_stream())
+        first = await asyncio.wait_for(stream.__anext__(), timeout=0.3)
+        release_second_segment.set()
+        remaining = [item async for item in stream]
+
+        self.assertEqual(first.seq, 0)
+        self.assertEqual(provider.first_segment, {"seq": 0, "text": "first"})
+        self.assertFalse(first.is_final)
         self.assertEqual(remaining[0].seq, 1)
         self.assertTrue(remaining[0].is_final)
 

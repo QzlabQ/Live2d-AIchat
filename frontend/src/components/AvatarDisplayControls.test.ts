@@ -6,6 +6,9 @@ describe('AvatarDisplayControls source contract', () => {
 
   it('exposes avatar display fields and reset event', () => {
     expect(source).toContain('modelValue')
+    expect(source).toContain('showOffsetX')
+    expect(source).toContain('showOffsetY')
+    expect(source).toContain('showStageHeight')
     expect(source).toContain('displayScale')
     expect(source).toContain('displayOffsetX')
     expect(source).toContain('displayOffsetY')

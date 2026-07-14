@@ -7,11 +7,11 @@ import {
 } from '../src/lib/streamAudioBuffer'
 
 describe('streamAudioBuffer', () => {
-  it('uses the current default stream audio policy', () => {
+  it('uses the stable default stream audio policy', () => {
     expect(DEFAULT_STREAM_AUDIO_POLICY).toEqual({
-      initialBufferMs: 450,
-      initialChunkCount: 2,
-      minScheduledLeadMs: 300,
+      initialBufferMs: 1800,
+      initialChunkCount: 3,
+      minScheduledLeadMs: 1000,
       scheduleLookaheadMs: 30,
     })
   })
@@ -29,11 +29,11 @@ describe('streamAudioBuffer', () => {
     expect(shouldStart).toBe(false)
   })
 
-  it('does not start early when only one chunk is queued and the threshold is not met', () => {
+  it('does not start early when the stable thresholds are not met', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
-        bufferedAudioMs: 120,
-        pendingChunkCount: 1,
+        bufferedAudioMs: 1799,
+        pendingChunkCount: 2,
         isFinalChunkBuffered: false,
       },
       DEFAULT_STREAM_AUDIO_POLICY,
@@ -42,11 +42,11 @@ describe('streamAudioBuffer', () => {
     expect(shouldStart).toBe(false)
   })
 
-  it('starts buffered playback when enough chunks are queued', () => {
+  it('starts buffered playback when three chunks are queued', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
         bufferedAudioMs: 240,
-        pendingChunkCount: 2,
+        pendingChunkCount: 3,
         isFinalChunkBuffered: false,
       },
       DEFAULT_STREAM_AUDIO_POLICY,
@@ -58,9 +58,22 @@ describe('streamAudioBuffer', () => {
   it('starts buffered playback when buffered audio exceeds the initial threshold', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
-        bufferedAudioMs: 460,
+        bufferedAudioMs: 1800,
         pendingChunkCount: 1,
         isFinalChunkBuffered: false,
+      },
+      DEFAULT_STREAM_AUDIO_POLICY,
+    )
+
+    expect(shouldStart).toBe(true)
+  })
+
+  it('starts buffered playback for the final chunk even below the stable thresholds', () => {
+    const shouldStart = shouldStartBufferedPlayback(
+      {
+        bufferedAudioMs: 120,
+        pendingChunkCount: 1,
+        isFinalChunkBuffered: true,
       },
       DEFAULT_STREAM_AUDIO_POLICY,
     )

@@ -79,6 +79,15 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                 query_text: str | None = None,
                 history: list[dict[str, str]] | None = None,
             ):
+                yield ReplyStreamEvent(
+                    kind="metrics",
+                    metrics={
+                        "rag_retrieve_ms": 12,
+                        "rag_rerank_ms": 7,
+                        "rag_decision_llm_ms": 34,
+                        "rag_prepare_total_ms": 60,
+                    },
+                )
                 yield ReplyStreamEvent(kind="text_delta", content="Hello there.")
                 yield ReplyStreamEvent(kind="tts_segment", content="Hello there.")
                 yield ReplyStreamEvent(
@@ -121,7 +130,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                     seq=0,
                     chunk_index=0,
                     text="Hello there.",
-                    audio_bytes=b"\x01\x02\x03\x04",
+                    audio_bytes=b"\x01\x02" * 2400,
                     phonemes=[{"ph": "a", "start": 0.0, "end": 0.1, "openY": 0.8, "form": 0.0}],
                     offset_ms=0,
                     sample_rate=24000,
@@ -216,8 +225,14 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace_payload["metrics"]["asr_model_load_ms"], 84)
         self.assertEqual(trace_payload["metrics"]["asr_transcribe_ms"], 146)
         self.assertEqual(trace_payload["metrics"]["asr_total_ms"], 230)
+        self.assertEqual(trace_payload["metrics"]["rag_retrieve_ms"], 12)
+        self.assertEqual(trace_payload["metrics"]["rag_rerank_ms"], 7)
+        self.assertEqual(trace_payload["metrics"]["rag_decision_llm_ms"], 34)
+        self.assertEqual(trace_payload["metrics"]["rag_prepare_total_ms"], 60)
         self.assertIn("tts_first_segment_ms", trace_payload["metrics"])
         self.assertIn("tts_first_audio_chunk_ms", trace_payload["metrics"])
+        self.assertEqual(trace_payload["tts_chunks"][0]["tts_chunk_audio_ms"], 100)
+        self.assertIn("tts_ws_send_lag_ms", trace_payload["tts_chunks"][0])
         self.assertIn("text_done_ms", trace_payload["metrics"])
         self.assertIn("audio_done_ms", trace_payload["metrics"])
         self.assertIn("avatar_phase_thinking_ms", trace_payload["metrics"])

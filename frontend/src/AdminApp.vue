@@ -17,6 +17,7 @@ import {
   deleteAvatarProfile,
   deleteVoiceProfile,
   fetchAdminMe,
+  fetchDashboardOverview,
   fetchAdminSessionDetail,
   fetchAdminSessions,
   fetchAvatarConfig,
@@ -41,6 +42,8 @@ import type {
   AvatarConfig,
   AvatarProfileSummary,
   AvatarConfigUpdate,
+  DashboardKeywordCloudItem,
+  DashboardOverview,
   DailyEmotionReport,
   KnowledgeDocItem,
   Live2DModelOption,
@@ -77,7 +80,16 @@ interface AvatarFormState {
   updatedAt: string
 }
 
-type AdminPageKey = 'overview' | 'avatar' | 'voices' | 'knowledge' | 'sessions' | 'reports'
+interface LineChartNode {
+  key: string
+  x: string
+  y: string
+  label: string
+  valueLabel: string
+  ariaLabel: string
+}
+
+type AdminPageKey = 'overview' | 'dashboard' | 'avatar' | 'voices' | 'knowledge' | 'sessions' | 'reports'
 
 interface AdminPageMeta {
   key: AdminPageKey
@@ -97,6 +109,13 @@ const ADMIN_PAGES: AdminPageMeta[] = [
     eyebrow: 'Dashboard',
     title: '管理后台总览',
     description: '查看当前数字人配置、知识库状态和音色资源概况。',
+  },
+  {
+    key: 'dashboard',
+    label: '数据大屏',
+    eyebrow: 'Dashboard',
+    title: '数据大屏',
+    description: '集中查看服务人次、实时在线、热门问题和情绪趋势。',
   },
   {
     key: 'avatar',
@@ -128,10 +147,10 @@ const ADMIN_PAGES: AdminPageMeta[] = [
   },
   {
     key: 'reports',
-    label: '运营报告',
+    label: '感受度报告',
     eyebrow: 'Reports',
-    title: '运营报告',
-    description: '查看日报分析、时间范围汇总，并手动触发指定日期的分析生成。',
+    title: '感受度报告',
+    description: '查看日报分析、情绪趋势、关注点分析，并手动触发指定日期的报告生成。',
   },
 ]
 
@@ -150,6 +169,7 @@ const loginForm = reactive({
 
 const loading = reactive({
   dashboard: false,
+  dashboardAnalytics: false,
   avatarProfileCreate: false,
   avatarProfileDelete: false,
   avatarSave: false,
@@ -207,6 +227,125 @@ function formatDateInput(value: Date) {
   return value.toISOString().slice(0, 10)
 }
 
+function sentimentScore(value: string) {
+  switch (value) {
+    case 'positive':
+      return 4.6
+    case 'negative':
+      return 2.5
+    default:
+      return 3.6
+  }
+}
+
+function formatScore(score: number | null | undefined) {
+  if (typeof score !== 'number' || Number.isNaN(score)) {
+    return '--'
+  }
+  return `${score.toFixed(1)} / 5`
+}
+
+function questionBarWidth(count: number) {
+  return `${Math.max(14, (count / dashboardTopQuestionMax.value) * 100)}%`
+}
+
+function reportEmotionBarWidth(count: number) {
+  return `${Math.max(12, (count / reportEmotionMax.value) * 100)}%`
+}
+
+function isChartValue(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function buildLineChartPoints<T>(
+  items: T[],
+  valueGetter: (item: T) => number | null | undefined,
+  options: {
+    min?: number
+    max?: number
+  } = {},
+) {
+  const values = items.map((item) => valueGetter(item))
+  const validValues = values.filter(isChartValue)
+  if (!validValues.length) {
+    return ''
+  }
+
+  const min = options.min ?? Math.min(...validValues)
+  const max = options.max ?? Math.max(...validValues)
+  const range = Math.max(1, max - min)
+  const lastIndex = Math.max(1, values.length - 1)
+  return values
+    .map((value, index) => {
+      if (!isChartValue(value)) {
+        return null
+      }
+      const x = (index / lastIndex) * 100
+      const y = 46 - ((value - min) / range) * 38
+      return `${x.toFixed(2)},${y.toFixed(2)}`
+    })
+    .filter(Boolean)
+    .join(' ')
+}
+
+function buildLineChartNodes<T>(
+  items: T[],
+  valueGetter: (item: T) => number | null | undefined,
+  labelGetter: (item: T) => string,
+  valueLabelGetter: (item: T) => string,
+  options: {
+    min?: number
+    max?: number
+  } = {},
+): LineChartNode[] {
+  const values = items.map((item) => valueGetter(item))
+  const validValues = values.filter(isChartValue)
+  if (!validValues.length) {
+    return []
+  }
+
+  const min = options.min ?? Math.min(...validValues)
+  const max = options.max ?? Math.max(...validValues)
+  const range = Math.max(1, max - min)
+  const lastIndex = Math.max(1, values.length - 1)
+
+  return items
+    .map((item, index) => {
+      const value = values[index]
+      if (!isChartValue(value)) {
+        return null
+      }
+
+      const x = (index / lastIndex) * 100
+      const y = 46 - ((value - min) / range) * 38
+      const label = labelGetter(item)
+      const valueLabel = valueLabelGetter(item)
+      return {
+        key: `${label}-${index}`,
+        x: x.toFixed(2),
+        y: ((y / 52) * 100).toFixed(2),
+        label,
+        valueLabel,
+        ariaLabel: `${label}，${valueLabel}`,
+      }
+    })
+    .filter((item): item is LineChartNode => Boolean(item))
+}
+
+function wordCloudStyle(item: DashboardKeywordCloudItem) {
+  return {
+    fontSize: `${Math.max(0.86, Math.min(1.7, item.weight)).toFixed(2)}rem`,
+  }
+}
+
+function shouldShowTrendLabel(index: number, total: number) {
+  if (total <= 8) {
+    return true
+  }
+  const step = Math.ceil(total / 6)
+  return index === 0 || index === total - 1 || index % step === 0
+}
+
 const today = new Date()
 const sevenDaysAgo = new Date(today)
 sevenDaysAgo.setDate(today.getDate() - 6)
@@ -217,6 +356,7 @@ const reportFilters = reactive({
   generateDate: formatDateInput(today),
   forceRegenerate: false,
 })
+const dashboardPeriod = ref<'today' | 'week' | 'month'>('week')
 
 const modelOptions = ref<Live2DModelOption[]>([])
 const avatarProfiles = ref<AvatarProfileSummary[]>([])
@@ -227,6 +367,7 @@ const selectedSessionId = ref('')
 const selectedSessionDetail = ref<AdminSessionDetail | null>(null)
 const dailyReports = ref<DailyEmotionReport[]>([])
 const reportSummary = ref<ReportRangeSummary | null>(null)
+const dashboardOverview = ref<DashboardOverview | null>(null)
 const voiceProfiles = ref<VoiceProfile[]>([])
 const previewLoadingProfileId = ref<string | null>(null)
 const playingProfileId = ref<string | null>(null)
@@ -260,6 +401,78 @@ const currentModelLabel = computed(
 const emotionSummaryEntries = computed(() =>
   Object.entries(reportSummary.value?.emotionCounts || {}).sort((left, right) => right[1] - left[1]),
 )
+const dashboardTopQuestionMax = computed(() =>
+  Math.max(1, ...(dashboardOverview.value?.topQuestions.map((item) => item.count) || [])),
+)
+const reportEmotionMax = computed(() =>
+  Math.max(1, ...(emotionSummaryEntries.value.map(([, count]) => count) || [])),
+)
+const dashboardServiceTrend = computed(() => dashboardOverview.value?.serviceTrend || [])
+const dashboardSatisfactionTrend = computed(() => dashboardOverview.value?.satisfactionTrend || [])
+const dashboardKeywordCloudItems = computed(() => dashboardOverview.value?.keywordCloud || [])
+const dashboardServiceTrendMax = computed(() =>
+  Math.max(1, ...(dashboardServiceTrend.value.map((item) => item.serviceCount) || [])),
+)
+const dashboardPeriodLabel = computed(() => {
+  if (dashboardPeriod.value === 'today') {
+    return '今日服务人次'
+  }
+  if (dashboardPeriod.value === 'month') {
+    return '近 30 天服务人次'
+  }
+  return '本周服务人次'
+})
+const dashboardServiceLinePoints = computed(() =>
+  buildLineChartPoints(dashboardServiceTrend.value, (item) => item.serviceCount),
+)
+const dashboardServiceChartNodes = computed(() =>
+  buildLineChartNodes(
+    dashboardServiceTrend.value,
+    (item) => item.serviceCount,
+    (item) => item.date,
+    (item) => `${item.serviceCount} 人次`,
+  ),
+)
+const dashboardSatisfactionLinePoints = computed(() =>
+  buildLineChartPoints(dashboardSatisfactionTrend.value, (item) => item.score, {
+    min: 2,
+    max: 5,
+  }),
+)
+const dashboardSatisfactionChartNodes = computed(() =>
+  buildLineChartNodes(
+    dashboardSatisfactionTrend.value,
+    (item) => item.score,
+    (item) => item.date,
+    (item) => `${formatScore(item.score)}，${item.messageCount} 条消息`,
+    {
+      min: 2,
+      max: 5,
+    },
+  ),
+)
+const sortedDailyReports = computed(() =>
+  [...dailyReports.value].sort((left, right) => left.reportDate.localeCompare(right.reportDate)),
+)
+const reportSentimentLinePoints = computed(() =>
+  buildLineChartPoints(sortedDailyReports.value, (report) => sentimentScore(report.overallSentiment), {
+    min: 2,
+    max: 5,
+  }),
+)
+const reportSentimentChartNodes = computed(() =>
+  buildLineChartNodes(
+    sortedDailyReports.value,
+    (report) => sentimentScore(report.overallSentiment),
+    (report) => report.reportDate,
+    (report) =>
+      `${sentimentLabel(report.overallSentiment)}，${report.sessionCount} 会话，平均响应 ${formatLatency(report.avgAssistantLatencyMs)}`,
+    {
+      min: 2,
+      max: 5,
+    },
+  ),
+)
 const voiceProfileCount = computed(() => voiceProfiles.value.length)
 const recentKnowledgeDocs = computed(() => knowledgeDocs.value.slice(0, 3))
 const recentVoiceProfiles = computed(() => voiceProfiles.value.slice(0, 3))
@@ -283,6 +496,12 @@ const activePageMeta = computed(
   () => ADMIN_PAGES.find((item) => item.key === activePage.value) ?? ADMIN_PAGES[0],
 )
 const pageUpdatedText = computed(() => {
+  if (activePage.value === 'dashboard' && dashboardOverview.value) {
+    return `统计区间：${dashboardOverview.value.dateFrom} 至 ${dashboardOverview.value.dateTo}`
+  }
+  if (activePage.value === 'reports' && reportSummary.value) {
+    return `报告区间：${reportSummary.value.dateFrom} 至 ${reportSummary.value.dateTo}`
+  }
   if (activePage.value === 'sessions') {
     if (selectedSessionDetail.value) {
       return `会话更新时间：${formatDateTime(selectedSessionDetail.value.updatedAt)}`
@@ -332,6 +551,11 @@ async function navigateToPage(page: AdminPageKey, options: { syncHash?: boolean 
 
   if (page === 'avatar') {
     await loadDashboardData()
+    return
+  }
+
+  if (page === 'dashboard') {
+    await loadDashboardAnalyticsData()
     return
   }
 
@@ -387,6 +611,7 @@ function clearAuthSession() {
   voiceProfiles.value = []
   dailyReports.value = []
   reportSummary.value = null
+  dashboardOverview.value = null
   localStorage.removeItem(TOKEN_STORAGE_KEY)
 }
 
@@ -729,6 +954,23 @@ async function loadVoiceProfileList() {
   }
 }
 
+async function loadDashboardAnalyticsData() {
+  if (!adminToken.value) {
+    return
+  }
+
+  loading.dashboardAnalytics = true
+  try {
+    dashboardOverview.value = await fetchDashboardOverview(API_BASE_URL, adminToken.value, {
+      period: dashboardPeriod.value,
+    })
+  } catch (error) {
+    handleAdminError(error, '加载数据大屏失败。')
+  } finally {
+    loading.dashboardAnalytics = false
+  }
+}
+
 async function loadReportsData() {
   if (!adminToken.value) {
     return
@@ -750,7 +992,7 @@ async function loadReportsData() {
     reportSummary.value = summary
     dailyReports.value = reports.items
   } catch (error) {
-    handleAdminError(error, '加载运营报告失败。')
+    handleAdminError(error, '加载感受度报告失败。')
   } finally {
     loading.reportReload = false
   }
@@ -795,6 +1037,9 @@ async function bootstrapAuth() {
   }
 
   await loadDashboardData()
+  if (activePage.value === 'dashboard') {
+    await loadDashboardAnalyticsData()
+  }
   if (activePage.value === 'sessions') {
     await loadAdminSessionsData()
   }
@@ -819,6 +1064,9 @@ async function submitLogin() {
     adminToken.value = result.accessToken
     localStorage.setItem(TOKEN_STORAGE_KEY, result.accessToken)
     await loadDashboardData()
+    if (activePage.value === 'dashboard') {
+      await loadDashboardAnalyticsData()
+    }
     if (activePage.value === 'sessions') {
       await loadAdminSessionsData()
     }
@@ -1127,7 +1375,7 @@ async function handleHashChange() {
     <div v-else class="admin-shell">
       <aside class="admin-sidebar">
         <div class="admin-brand">
-          <p class="admin-eyebrow">Phase 3</p>
+          <p class="admin-eyebrow">Phase 4</p>
           <h1>管理后台</h1>
           <p class="admin-subtitle">按模块切换管理页面，避免所有能力堆叠在同一长页。</p>
         </div>
@@ -1243,6 +1491,10 @@ async function handleHashChange() {
               </div>
 
               <div class="admin-quick-actions">
+                <button class="admin-quick-card" type="button" @click="navigateToPage('dashboard')">
+                  <strong>数据大屏</strong>
+                  <span>查看会话规模、在线人数、热门问题和情绪趋势。</span>
+                </button>
                 <button class="admin-quick-card" type="button" @click="navigateToPage('avatar')">
                   <strong>数字人管理</strong>
                   <span>调整 Live2D、Prompt、参考音频和情感开关。</span>
@@ -1260,8 +1512,8 @@ async function handleHashChange() {
                   <span>查看真实 messages 时间线、情绪标签和回复耗时。</span>
                 </button>
                 <button class="admin-quick-card" type="button" @click="navigateToPage('reports')">
-                  <strong>运营报告</strong>
-                  <span>查看日报分析、时间范围汇总和响应延迟概况。</span>
+                  <strong>感受度报告</strong>
+                  <span>查看情绪趋势、关注点分析、日报摘要和响应延迟概况。</span>
                 </button>
               </div>
 
@@ -1284,6 +1536,232 @@ async function handleHashChange() {
                   </article>
                 </div>
               </div>
+            </section>
+          </div>
+        </div>
+
+        <div v-else-if="activePage === 'dashboard'" class="admin-page-stack">
+          <section class="admin-panel admin-panel-wide">
+            <div class="admin-panel-header">
+              <div>
+                <p class="admin-section-tag">Phase 4 数据大屏</p>
+                <h3>五项运营指标</h3>
+              </div>
+              <div class="admin-inline-actions">
+                <label class="admin-field admin-dashboard-period">
+                  <span>统计范围</span>
+                  <select v-model="dashboardPeriod" @change="loadDashboardAnalyticsData">
+                    <option value="today">今天</option>
+                    <option value="week">近 7 天</option>
+                    <option value="month">近 30 天</option>
+                  </select>
+                </label>
+                <button class="admin-secondary-button" type="button" :disabled="loading.dashboardAnalytics" @click="loadDashboardAnalyticsData">
+                  {{ loading.dashboardAnalytics ? '刷新中...' : '刷新大屏' }}
+                </button>
+              </div>
+            </div>
+            <p class="admin-report-summary-text">
+              {{ dashboardOverview?.summaryText || '暂无可展示的数据，先生成几轮会话后再来看大屏会更有感觉。' }}
+            </p>
+          </section>
+
+          <div class="admin-dashboard-roadmap-grid">
+            <section class="admin-panel admin-dashboard-module admin-dashboard-module-wide">
+              <div class="admin-panel-header">
+                <div>
+                  <p class="admin-section-tag">01 折线图</p>
+                  <h3>{{ dashboardPeriodLabel }}</h3>
+                </div>
+                <span class="admin-badge">累计 {{ dashboardOverview?.serviceCount ?? 0 }} 人次</span>
+              </div>
+
+              <div class="admin-line-chart" :data-empty="dashboardServiceLinePoints ? 'false' : 'true'">
+                <svg viewBox="0 0 100 52" preserveAspectRatio="none" aria-hidden="true">
+                  <line x1="0" y1="8" x2="100" y2="8" />
+                  <line x1="0" y1="27" x2="100" y2="27" />
+                  <line x1="0" y1="46" x2="100" y2="46" />
+                  <polyline v-if="dashboardServiceLinePoints" class="admin-line-chart-path" :points="dashboardServiceLinePoints" />
+                </svg>
+                <div v-if="dashboardServiceChartNodes.length" class="admin-line-chart-node-layer">
+                  <button
+                    v-for="node in dashboardServiceChartNodes"
+                    :key="node.key"
+                    class="admin-line-chart-node"
+                    type="button"
+                    :style="{ left: `${node.x}%`, top: `${node.y}%` }"
+                    :aria-label="node.ariaLabel"
+                    :title="node.ariaLabel"
+                  >
+                    <span class="admin-line-chart-dot"></span>
+                    <span class="admin-line-chart-tooltip">{{ node.label }}：{{ node.valueLabel }}</span>
+                  </button>
+                </div>
+                <p v-if="!dashboardServiceLinePoints" class="admin-empty-hint">暂无服务趋势数据。</p>
+              </div>
+
+              <div class="admin-line-chart-axis">
+                <span
+                  v-for="(item, index) in dashboardServiceTrend"
+                  :key="item.date"
+                  :data-visible="shouldShowTrendLabel(index, dashboardServiceTrend.length)"
+                >
+                  {{ item.date.slice(5) }}
+                </span>
+              </div>
+
+              <dl class="admin-dashboard-metric-row">
+                <div>
+                  <dt>峰值</dt>
+                  <dd>{{ dashboardServiceTrendMax }} 人次</dd>
+                </div>
+                <div>
+                  <dt>会话</dt>
+                  <dd>{{ dashboardOverview?.sessionCount ?? 0 }}</dd>
+                </div>
+                <div>
+                  <dt>消息</dt>
+                  <dd>{{ dashboardOverview?.messageCount ?? 0 }}</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section class="admin-panel admin-dashboard-module">
+              <div class="admin-panel-header">
+                <div>
+                  <p class="admin-section-tag">02 条形图</p>
+                  <h3>热门问答 Top10</h3>
+                </div>
+                <span class="admin-badge">{{ dashboardOverview?.topQuestions?.length ?? 0 }} 条</span>
+              </div>
+
+              <div class="admin-question-list admin-question-list-compact">
+                <article v-for="item in dashboardOverview?.topQuestions || []" :key="item.question" class="admin-question-card">
+                  <div class="admin-question-card-row">
+                    <div>
+                      <h4>{{ item.question }}</h4>
+                      <p>{{ item.count }} 次</p>
+                    </div>
+                    <strong>{{ item.count }}</strong>
+                  </div>
+                  <div class="admin-question-bar">
+                    <i :style="{ width: questionBarWidth(item.count) }"></i>
+                  </div>
+                </article>
+                <p v-if="!(dashboardOverview?.topQuestions?.length)" class="admin-empty-hint">暂无热门问题数据。</p>
+              </div>
+            </section>
+
+            <section class="admin-panel admin-dashboard-module admin-dashboard-module-wide">
+              <div class="admin-panel-header">
+                <div>
+                  <p class="admin-section-tag">03 情感评分折线</p>
+                  <h3>游客满意度趋势</h3>
+                </div>
+                <span class="admin-badge">均值 {{ formatScore(dashboardOverview?.avgSatisfaction ?? null) }}</span>
+              </div>
+
+              <div class="admin-line-chart admin-line-chart-warm" :data-empty="dashboardSatisfactionLinePoints ? 'false' : 'true'">
+                <svg viewBox="0 0 100 52" preserveAspectRatio="none" aria-hidden="true">
+                  <line x1="0" y1="8" x2="100" y2="8" />
+                  <line x1="0" y1="27" x2="100" y2="27" />
+                  <line x1="0" y1="46" x2="100" y2="46" />
+                  <polyline v-if="dashboardSatisfactionLinePoints" class="admin-line-chart-path" :points="dashboardSatisfactionLinePoints" />
+                </svg>
+                <div v-if="dashboardSatisfactionChartNodes.length" class="admin-line-chart-node-layer">
+                  <button
+                    v-for="node in dashboardSatisfactionChartNodes"
+                    :key="node.key"
+                    class="admin-line-chart-node"
+                    type="button"
+                    :style="{ left: `${node.x}%`, top: `${node.y}%` }"
+                    :aria-label="node.ariaLabel"
+                    :title="node.ariaLabel"
+                  >
+                    <span class="admin-line-chart-dot"></span>
+                    <span class="admin-line-chart-tooltip">{{ node.label }}：{{ node.valueLabel }}</span>
+                  </button>
+                </div>
+                <p v-if="!dashboardSatisfactionLinePoints" class="admin-empty-hint">暂无满意度趋势数据。</p>
+              </div>
+
+              <div class="admin-line-chart-axis">
+                <span
+                  v-for="(item, index) in dashboardSatisfactionTrend"
+                  :key="item.date"
+                  :data-visible="shouldShowTrendLabel(index, dashboardSatisfactionTrend.length)"
+                >
+                  {{ item.date.slice(5) }}
+                </span>
+              </div>
+
+              <dl class="admin-dashboard-metric-row">
+                <div>
+                  <dt>整体情绪</dt>
+                  <dd>{{ sentimentLabel(dashboardOverview?.overallSentiment || 'neutral') }}</dd>
+                </div>
+                <div>
+                  <dt>平均响应</dt>
+                  <dd>{{ formatLatency(dashboardOverview?.avgLatencyMs ?? null) }}</dd>
+                </div>
+                <div>
+                  <dt>助手消息</dt>
+                  <dd>{{ dashboardOverview?.assistantMessageCount ?? 0 }}</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section class="admin-panel admin-dashboard-module">
+              <div class="admin-panel-header">
+                <div>
+                  <p class="admin-section-tag">04 词云</p>
+                  <h3>关注点词云</h3>
+                </div>
+                <span class="admin-badge">高频实体词</span>
+              </div>
+
+              <div class="admin-word-cloud">
+                <span
+                  v-for="item in dashboardKeywordCloudItems"
+                  :key="`${item.source}-${item.word}`"
+                  class="admin-word-cloud-item"
+                  :data-source="item.source"
+                  :style="wordCloudStyle(item)"
+                >
+                  {{ item.word }}
+                  <small>{{ item.count }}</small>
+                </span>
+                <p v-if="!dashboardKeywordCloudItems.length" class="admin-empty-hint">暂无关注点词云数据。</p>
+              </div>
+            </section>
+
+            <section class="admin-panel admin-dashboard-module admin-realtime-panel">
+              <div class="admin-panel-header">
+                <div>
+                  <p class="admin-section-tag">05 实时</p>
+                  <h3>实时在线人数</h3>
+                </div>
+                <span class="admin-badge">近 10 分钟</span>
+              </div>
+
+              <div class="admin-realtime-display">
+                <strong>{{ dashboardOverview?.realtimeOnlineCount ?? 0 }}</strong>
+                <span>online</span>
+              </div>
+
+              <dl class="admin-dashboard-metric-row admin-dashboard-metric-row-compact">
+                <div>
+                  <dt>游客消息</dt>
+                  <dd>{{ dashboardOverview?.userMessageCount ?? 0 }}</dd>
+                </div>
+                <div>
+                  <dt>统计周期</dt>
+                  <dd>{{ dashboardOverview?.dateFrom ?? '--' }} 至 {{ dashboardOverview?.dateTo ?? '--' }}</dd>
+                </div>
+              </dl>
+              <p class="admin-report-summary-text">
+                在线人数按最近仍有活动的会话估算，用于现场运营和联调观察。
+              </p>
             </section>
           </div>
         </div>
@@ -1778,8 +2256,8 @@ async function handleHashChange() {
           <section class="admin-panel">
             <div class="admin-panel-header">
               <div>
-                <p class="admin-section-tag">Phase 3 后端能力</p>
-                <h3>日报生成与感受度汇总</h3>
+                <p class="admin-section-tag">Phase 4 感受度报告</p>
+                <h3>日报生成与体验感知汇总</h3>
               </div>
               <button class="admin-secondary-button" type="button" :disabled="loading.reportReload" @click="loadReportsData">
                 {{ loading.reportReload ? '刷新中...' : '刷新报告数据' }}
@@ -1845,7 +2323,53 @@ async function handleHashChange() {
                 <span class="admin-badge">{{ sentimentLabel(reportSummary?.overallSentiment || 'neutral') }}</span>
               </div>
 
-              <p class="admin-report-summary-text">{{ reportSummary?.summaryText || '当前还没有可展示的运营摘要。' }}</p>
+              <p class="admin-report-summary-text">{{ reportSummary?.summaryText || '当前还没有可展示的感受度摘要。' }}</p>
+
+              <div class="admin-report-trend-grid">
+                <div class="admin-overview-list">
+                  <h4>情绪趋势</h4>
+                  <div class="admin-line-chart admin-line-chart-warm admin-report-line-chart" :data-empty="reportSentimentLinePoints ? 'false' : 'true'">
+                    <svg viewBox="0 0 100 52" preserveAspectRatio="none" aria-hidden="true">
+                      <line x1="0" y1="8" x2="100" y2="8" />
+                      <line x1="0" y1="27" x2="100" y2="27" />
+                      <line x1="0" y1="46" x2="100" y2="46" />
+                      <polyline v-if="reportSentimentLinePoints" class="admin-line-chart-path" :points="reportSentimentLinePoints" />
+                    </svg>
+                    <div v-if="reportSentimentChartNodes.length" class="admin-line-chart-node-layer">
+                      <button
+                        v-for="node in reportSentimentChartNodes"
+                        :key="node.key"
+                        class="admin-line-chart-node"
+                        type="button"
+                        :style="{ left: `${node.x}%`, top: `${node.y}%` }"
+                        :aria-label="node.ariaLabel"
+                        :title="node.ariaLabel"
+                      >
+                        <span class="admin-line-chart-dot"></span>
+                        <span class="admin-line-chart-tooltip">{{ node.label }}：{{ node.valueLabel }}</span>
+                      </button>
+                    </div>
+                    <p v-if="!reportSentimentLinePoints" class="admin-empty-hint">暂无情绪趋势数据。</p>
+                  </div>
+                  <div class="admin-line-chart-axis">
+                    <span
+                      v-for="(report, index) in sortedDailyReports"
+                      :key="report.reportDate"
+                      :data-visible="shouldShowTrendLabel(index, sortedDailyReports.length)"
+                    >
+                      {{ report.reportDate.slice(5) }}
+                    </span>
+                  </div>
+                </div>
+
+                <div class="admin-overview-list">
+                  <h4>关注点概览</h4>
+                  <p v-if="!(reportSummary?.topKeywords?.length)" class="admin-empty-hint">暂无关注词。</p>
+                  <div class="admin-chip-row admin-chip-row-wrap" v-else>
+                    <span v-for="item in reportSummary?.topKeywords" :key="item" class="admin-badge">{{ item }}</span>
+                  </div>
+                </div>
+              </div>
 
               <div class="admin-overview-list-grid">
                 <div class="admin-overview-list">
@@ -1870,6 +2394,9 @@ async function handleHashChange() {
                 <p v-if="!emotionSummaryEntries.length" class="admin-empty-hint">暂无情绪聚合数据。</p>
                 <article v-for="[emotion, count] in emotionSummaryEntries" :key="emotion" class="admin-mini-card">
                   <strong>{{ emotion }}</strong>
+                  <div class="admin-question-bar">
+                    <i :style="{ width: reportEmotionBarWidth(count) }"></i>
+                  </div>
                   <span>{{ count }} 次</span>
                 </article>
               </div>
@@ -1884,7 +2411,7 @@ async function handleHashChange() {
               </div>
 
               <div class="admin-list">
-                <article v-for="report in dailyReports" :key="report.reportDate" class="admin-list-card">
+                <article v-for="report in sortedDailyReports" :key="report.reportDate" class="admin-list-card">
                   <div class="admin-list-card-header">
                     <div>
                       <h4>{{ report.reportDate }}</h4>

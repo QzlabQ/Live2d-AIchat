@@ -204,3 +204,69 @@ export interface ReportRangeSummary {
   overallSentiment: string
   summaryText: string
 }
+
+export interface DashboardQuestionItem {
+  question: string
+  count: number
+}
+
+export interface DashboardSatisfactionTrendPoint {
+  date: string
+  sessionCount: number
+  messageCount: number
+  avgLatencyMs: number | null
+  score: number | null
+}
+
+export interface DashboardServiceTrendPoint {
+  date: string
+  serviceCount: number
+}
+
+export interface DashboardKeywordCloudItem {
+  word: string
+  count: number
+  weight: number
+  source: string
+}
+
+export interface DashboardOverview {
+  period: string
+  dateFrom: string
+  dateTo: string
+  serviceCount: number
+  sessionCount: number
+  messageCount: number
+  userMessageCount: number
+  assistantMessageCount: number
+  realtimeOnlineCount: number
+  avgSatisfaction: number | null
+  avgLatencyMs: number | null
+  overallSentiment: string
+  topQuestions: DashboardQuestionItem[]
+  serviceTrend: DashboardServiceTrendPoint[]
+  satisfactionTrend: DashboardSatisfactionTrendPoint[]
+  topInterestTags: string[]
+  topKeywords: string[]
+  keywordCloud: DashboardKeywordCloudItem[]
+  emotionCounts: Record<string, number>
+  summaryText: string
+}
+
+export interface DashboardEmotionPoint {
+  date: string
+  happy: number
+  neutral: number
+  negative: number
+  total: number
+  score: number | null
+}
+
+export interface DashboardEmotionSummary {
+  dateFrom: string
+  dateTo: string
+  overallSentiment: string
+  emotionCounts: Record<string, number>
+  trend: DashboardEmotionPoint[]
+  summaryText: string
+}

@@ -41,6 +41,44 @@ class ReplyTraceTestCase(unittest.TestCase):
         self.assertEqual(payload["audio_chunk_count"], 3)
         self.assertEqual(payload["max_chunk_gap_ms"], 130)
 
+    def test_observe_tts_chunk_records_detailed_metrics(self) -> None:
+        trace = ReplyTrace(
+            reply_id="reply-2",
+            session_id="session-2",
+            streaming=True,
+            chat_mode="rag",
+            tts_engine="cosyvoice",
+        )
+
+        trace.observe_tts_chunk(
+            seq=1,
+            chunk_index=2,
+            sent_at_ms=500,
+            audio_duration_ms=1200,
+            model_ready_ms=430,
+            send_lag_ms=7,
+        )
+
+        payload = trace.to_payload()
+
+        self.assertEqual(payload["audio_chunk_count"], 1)
+        self.assertEqual(payload["max_chunk_gap_ms"], 0)
+        self.assertEqual(
+            payload["tts_chunks"],
+            [
+                {
+                    "seq": 1,
+                    "chunk_index": 2,
+                    "sent_at_ms": 500,
+                    "tts_chunk_audio_ms": 1200,
+                    "tts_model_ready_ms": 430,
+                    "tts_ws_send_lag_ms": 7,
+                    "tts_chunk_gap_ms": 0,
+                    "tts_chunk_rtf": 0.358,
+                }
+            ],
+        )
+
 
 class TraceLoggerWorkerTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_worker_writes_structured_log(self) -> None:

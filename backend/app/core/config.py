@@ -68,11 +68,16 @@ class Settings(BaseSettings):
     tts_cosyvoice_sample_rate: int = 24000
     tts_cosyvoice_fp16: bool = True
     tts_cosyvoice_load_jit: bool = False
+    tts_provider: str = "local"
+    tts_remote_url: str = ""
+    tts_remote_protocol: str = "http_stream"
+    tts_stream_profile: str = "stable"
     tts_segment_soft_min_chars: int = 12
     tts_segment_soft_max_chars: int = 20
     tts_segment_hard_max_chars: int = 28
 
     chat_mode: str = "template"
+    rag_response_mode: str = "humanized"
     rag_retrieval_top_k: int = 8
     rag_rerank_top_n: int = 4
     rag_context_docs: int = 3
@@ -125,6 +130,38 @@ class Settings(BaseSettings):
         normalized = str(value or "zh").strip().lower()
         if normalized not in {"zh", "en"}:
             raise ValueError("DEFAULT_AVATAR_RESPONSE_LANGUAGE must be either 'zh' or 'en'.")
+        return normalized
+
+    @field_validator("tts_provider", mode="before")
+    @classmethod
+    def normalize_tts_provider(cls, value: object) -> str:
+        normalized = str(value or "local").strip().lower()
+        if normalized not in {"local", "remote"}:
+            raise ValueError("TTS_PROVIDER must be either 'local' or 'remote'.")
+        return normalized
+
+    @field_validator("tts_remote_protocol", mode="before")
+    @classmethod
+    def normalize_tts_remote_protocol(cls, value: object) -> str:
+        normalized = str(value or "http_stream").strip().lower()
+        if normalized not in {"http_stream", "websocket", "grpc"}:
+            raise ValueError("TTS_REMOTE_PROTOCOL must be http_stream, websocket, or grpc.")
+        return normalized
+
+    @field_validator("tts_stream_profile", mode="before")
+    @classmethod
+    def normalize_tts_stream_profile(cls, value: object) -> str:
+        normalized = str(value or "stable").strip().lower()
+        if normalized not in {"stable", "balanced", "low_latency"}:
+            raise ValueError("TTS_STREAM_PROFILE must be stable, balanced, or low_latency.")
+        return normalized
+
+    @field_validator("rag_response_mode", mode="before")
+    @classmethod
+    def normalize_rag_response_mode(cls, value: object) -> str:
+        normalized = str(value or "humanized").strip().lower()
+        if normalized not in {"humanized", "fast_humanized"}:
+            raise ValueError("RAG_RESPONSE_MODE must be humanized or fast_humanized.")
         return normalized
 
     @field_validator(
