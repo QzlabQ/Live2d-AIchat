@@ -44,6 +44,10 @@ async def ensure_default_avatar_config() -> None:
                 tts_reference_text=settings.default_tts_reference_text,
                 tts_speed=settings.default_tts_speed,
                 tts_emotion_enabled=settings.default_tts_emotion_enabled,
+                display_scale=1.0,
+                display_offset_x=0.0,
+                display_offset_y=0.0,
+                stage_height=420,
             )
         )
         await session.commit()

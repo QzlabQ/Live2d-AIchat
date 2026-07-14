@@ -27,6 +27,10 @@ export interface AvatarConfig {
   ttsReferenceText: string
   ttsSpeed: number
   ttsEmotionEnabled: boolean
+  displayScale: number
+  displayOffsetX: number
+  displayOffsetY: number
+  stageHeight: number
   createdAt: string
   updatedAt: string
 }
@@ -42,6 +46,10 @@ export interface AvatarConfigUpdate {
   ttsReferenceText?: string
   ttsSpeed?: number
   ttsEmotionEnabled?: boolean
+  displayScale?: number
+  displayOffsetX?: number
+  displayOffsetY?: number
+  stageHeight?: number
 }
 
 export interface AvatarProfileSummary {
@@ -52,6 +60,10 @@ export interface AvatarProfileSummary {
   modelPath: string
   voiceId: string
   responseLanguage: 'zh' | 'en'
+  displayScale: number
+  displayOffsetX: number
+  displayOffsetY: number
+  stageHeight: number
   updatedAt: string
 }
 
@@ -70,6 +82,10 @@ export interface AvatarProfileCreatePayload {
   ttsReferenceText: string
   ttsSpeed: number
   ttsEmotionEnabled: boolean
+  displayScale?: number
+  displayOffsetX?: number
+  displayOffsetY?: number
+  stageHeight?: number
   activate?: boolean
 }
 

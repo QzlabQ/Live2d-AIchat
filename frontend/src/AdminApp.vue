@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
+import AdminEmotionPreviewPanel from './components/AdminEmotionPreviewPanel.vue'
+import AvatarDisplayControls from './components/AvatarDisplayControls.vue'
 import Live2DStage from './components/Live2DStage.vue'
+import {
+  AVATAR_DISPLAY_DEFAULTS,
+  clampAvatarDisplayConfig,
+  type AvatarDisplayConfig,
+} from './lib/avatarDisplay'
+import type { AvatarPresentation } from './lib/avatarPresentation'
 import {
   activateAvatarProfile,
   createAvatarProfile,
@@ -61,6 +69,10 @@ interface AvatarFormState {
   ttsReferenceText: string
   ttsSpeed: number
   ttsEmotionEnabled: boolean
+  displayScale: number
+  displayOffsetX: number
+  displayOffsetY: number
+  stageHeight: number
   createdAt: string
   updatedAt: string
 }
@@ -165,6 +177,10 @@ const avatarForm = reactive<AvatarFormState>({
   ttsReferenceText: '',
   ttsSpeed: 1,
   ttsEmotionEnabled: true,
+  displayScale: AVATAR_DISPLAY_DEFAULTS.displayScale,
+  displayOffsetX: AVATAR_DISPLAY_DEFAULTS.displayOffsetX,
+  displayOffsetY: AVATAR_DISPLAY_DEFAULTS.displayOffsetY,
+  stageHeight: AVATAR_DISPLAY_DEFAULTS.stageHeight,
   createdAt: '',
   updatedAt: '',
 })
@@ -172,6 +188,7 @@ const avatarForm = reactive<AvatarFormState>({
 const knowledgeCategoryFilter = ref('')
 const knowledgeFileInput = ref<HTMLInputElement | null>(null)
 const voiceFileInput = ref<HTMLInputElement | null>(null)
+const adminLive2dRef = ref<InstanceType<typeof Live2DStage> | null>(null)
 const knowledgeUploadFile = ref<File | null>(null)
 const voiceUploadFile = ref<File | null>(null)
 
@@ -213,6 +230,15 @@ const reportSummary = ref<ReportRangeSummary | null>(null)
 const voiceProfiles = ref<VoiceProfile[]>([])
 const previewLoadingProfileId = ref<string | null>(null)
 const playingProfileId = ref<string | null>(null)
+const adminPreviewPresentation = ref<AvatarPresentation>({
+  phase: 'idle',
+  emotion: 'neutral',
+  emotionStage: 'final',
+  allowIdleMotion: false,
+  motionIntensity: 'none',
+  lipSyncActive: false,
+  activeReplyId: null,
+})
 const audioPreviewUrls = new Map<string, string>()
 let previewAudio: HTMLAudioElement | null = null
 
@@ -221,6 +247,10 @@ const selectedAvatarProfile = computed(
   () => avatarProfiles.value.find((item) => item.id === avatarForm.id) || null,
 )
 const previewModelPath = computed(() => avatarForm.modelPath || modelOptions.value[0]?.path || MODEL_FALLBACK)
+const adminPreviewStageStyle = computed(() => ({
+  height: `${Math.round(avatarForm.stageHeight)}px`,
+  minHeight: `${Math.round(avatarForm.stageHeight)}px`,
+}))
 const selectedVoiceProfile = computed(
   () => voiceProfiles.value.find((item) => item.id === avatarForm.voiceProfileId) || null,
 )
@@ -336,6 +366,10 @@ watch(
   { deep: false },
 )
 
+watch([adminPreviewPresentation, adminLive2dRef], ([presentation, live2d]) => {
+  live2d?.setAvatarPresentation(presentation)
+})
+
 function setNotice(kind: NoticeKind, text: string) {
   notice.value = { kind, text }
 }
@@ -373,7 +407,24 @@ function handleAdminError(error: unknown, fallback: string) {
   setNotice('error', message)
 }
 
+function applyAvatarDisplayConfig(config: AvatarDisplayConfig) {
+  avatarForm.displayScale = Number(config.displayScale.toFixed(2))
+  avatarForm.displayOffsetX = Number(config.displayOffsetX.toFixed(2))
+  avatarForm.displayOffsetY = Number(config.displayOffsetY.toFixed(2))
+  avatarForm.stageHeight = Math.round(config.stageHeight)
+}
+
+function updateAdminAvatarDisplay(value: AvatarDisplayConfig) {
+  applyAvatarDisplayConfig(clampAvatarDisplayConfig(value))
+}
+
+function resetAdminAvatarDisplay() {
+  applyAvatarDisplayConfig(AVATAR_DISPLAY_DEFAULTS)
+}
+
 function applyAvatarConfig(config: AvatarConfig) {
+  const displayConfig = clampAvatarDisplayConfig(config)
+
   avatarForm.id = config.id
   avatarForm.name = config.name
   avatarForm.slug = config.slug
@@ -387,6 +438,7 @@ function applyAvatarConfig(config: AvatarConfig) {
   avatarForm.ttsReferenceText = config.ttsReferenceText
   avatarForm.ttsSpeed = config.ttsSpeed
   avatarForm.ttsEmotionEnabled = config.ttsEmotionEnabled
+  applyAvatarDisplayConfig(displayConfig)
   avatarForm.createdAt = config.createdAt
   avatarForm.updatedAt = config.updatedAt
 }
@@ -403,6 +455,10 @@ function buildAvatarProfilePayload(name: string) {
     ttsReferenceText: avatarForm.ttsReferenceText,
     ttsSpeed: Number(avatarForm.ttsSpeed.toFixed(2)),
     ttsEmotionEnabled: avatarForm.ttsEmotionEnabled,
+    displayScale: Number(avatarForm.displayScale.toFixed(2)),
+    displayOffsetX: Number(avatarForm.displayOffsetX.toFixed(2)),
+    displayOffsetY: Number(avatarForm.displayOffsetY.toFixed(2)),
+    stageHeight: Math.round(avatarForm.stageHeight),
     activate: true,
   }
 }
@@ -807,6 +863,10 @@ async function saveAvatarSettings() {
       ttsReferenceText: avatarForm.ttsReferenceText,
       ttsSpeed: Number(avatarForm.ttsSpeed.toFixed(2)),
       ttsEmotionEnabled: avatarForm.ttsEmotionEnabled,
+      displayScale: Number(avatarForm.displayScale.toFixed(2)),
+      displayOffsetX: Number(avatarForm.displayOffsetX.toFixed(2)),
+      displayOffsetY: Number(avatarForm.displayOffsetY.toFixed(2)),
+      stageHeight: Math.round(avatarForm.stageHeight),
     }
     const result = await updateAvatarConfig(API_BASE_URL, adminToken.value, payload, { profileId: avatarForm.id })
     applyAvatarConfig(await fetchAvatarConfigByProfile(API_BASE_URL, adminToken.value, avatarForm.id))
@@ -1238,8 +1298,14 @@ async function handleHashChange() {
               <span class="admin-badge">{{ selectedAvatarProfile?.name || currentModelLabel }}</span>
             </div>
 
-            <div class="admin-preview-stage">
-              <Live2DStage :model-path="previewModelPath" />
+            <div class="admin-preview-stage" :style="adminPreviewStageStyle">
+              <Live2DStage
+                ref="adminLive2dRef"
+                :model-path="previewModelPath"
+                :model-scale="avatarForm.displayScale"
+                :model-offset-x="avatarForm.displayOffsetX"
+                :model-offset-y="avatarForm.displayOffsetY"
+              />
             </div>
 
             <div class="admin-preview-meta">
@@ -1256,6 +1322,8 @@ async function handleHashChange() {
                 <strong>{{ avatarForm.ttsSpeed.toFixed(2) }}x</strong>
               </div>
             </div>
+
+            <AdminEmotionPreviewPanel @preview="adminPreviewPresentation = $event" />
           </section>
 
           <section class="admin-panel">
@@ -1376,6 +1444,23 @@ async function handleHashChange() {
                   当前语言为 {{ avatarForm.responseLanguage === 'en' ? 'English' : '中文' }}。如需英语数字人，建议在 Prompt 里继续保留英语人设描述。
                 </span>
               </label>
+
+              <section class="admin-form-section">
+                <div>
+                  <p class="admin-section-tag">展示参数</p>
+                  <h4>Live2D 缩放 / 偏移</h4>
+                </div>
+                <AvatarDisplayControls
+                  :model-value="{
+                    displayScale: avatarForm.displayScale,
+                    displayOffsetX: avatarForm.displayOffsetX,
+                    displayOffsetY: avatarForm.displayOffsetY,
+                    stageHeight: avatarForm.stageHeight
+                  }"
+                  @update:model-value="updateAdminAvatarDisplay"
+                  @reset="resetAdminAvatarDisplay"
+                />
+              </section>
 
               <button class="admin-primary-button" type="submit" :disabled="loading.avatarSave">
                 {{ loading.avatarSave ? '保存中...' : '保存数字人配置' }}

@@ -117,6 +117,7 @@ class SessionMigrationTestCase(unittest.IsolatedAsyncioTestCase):
             patch("app.db.session.ensure_session_updated_at_column", new=AsyncMock()) as ensure_session_mock,
             patch("app.db.session.ensure_avatar_config_tts_columns", new=AsyncMock()) as ensure_avatar_mock,
             patch("app.db.session.ensure_avatar_config_response_language_column", new=AsyncMock()) as ensure_avatar_language_mock,
+            patch("app.db.session.ensure_avatar_config_display_columns", new=AsyncMock()) as ensure_avatar_display_mock,
             patch("app.db.session.engine") as engine_mock,
         ):
             connection = AsyncMock()
@@ -132,6 +133,7 @@ class SessionMigrationTestCase(unittest.IsolatedAsyncioTestCase):
             ensure_session_mock.assert_awaited_once_with(engine_mock)
             ensure_avatar_mock.assert_awaited_once()
             ensure_avatar_language_mock.assert_awaited_once()
+            ensure_avatar_display_mock.assert_awaited_once_with(engine_mock)
 
 
 class VisitorSessionsApiTestCase(unittest.IsolatedAsyncioTestCase):

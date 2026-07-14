@@ -470,9 +470,10 @@ button {
   position: relative;
   margin: 1rem 1.35rem 0;
   flex: 0 0 auto;
-  height: clamp(20rem, 45vh, 26rem);
+  height: var(--avatar-stage-height, clamp(20rem, 45vh, 26rem));
   min-height: 20rem;
-  overflow: hidden;
+  overflow: auto;
+  resize: vertical;
   border-radius: 1.6rem;
   background:
     radial-gradient(
@@ -490,6 +491,49 @@ button {
   height: 5.4rem;
   background: radial-gradient(circle, rgba(10, 21, 31, 0.52), transparent 68%);
   pointer-events: none;
+  z-index: 1;
+}
+
+.stage-display-toggle {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 4;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  padding: 0.58rem 0.9rem;
+  background: rgba(8, 20, 31, 0.68);
+  color: #fff7ea;
+  box-shadow: 0 12px 26px rgba(8, 20, 31, 0.24);
+  backdrop-filter: blur(10px);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.stage-display-toggle:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 30px rgba(8, 20, 31, 0.3);
+  background: rgba(8, 20, 31, 0.78);
+}
+
+.stage-display-popover {
+  position: absolute;
+  top: 3.9rem;
+  right: 1rem;
+  z-index: 5;
+  width: min(20rem, calc(100% - 2rem));
+  border-radius: 1.35rem;
+  background: rgba(255, 252, 246, 0.96);
+  box-shadow: 0 22px 44px rgba(8, 20, 31, 0.24);
+  backdrop-filter: blur(14px);
+}
+
+.stage-display-popover .avatar-display-controls {
+  background:
+    radial-gradient(circle at top right, rgba(255, 245, 220, 0.74), transparent 42%),
+    rgba(255, 255, 255, 0.78);
 }
 
 .stage-caption {
@@ -785,6 +829,62 @@ button {
 
 .emotion-keywords {
   opacity: 0.88;
+}
+
+.avatar-display-controls {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid rgba(25, 74, 103, 0.1);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(255, 245, 220, 0.58), transparent 42%),
+    rgba(255, 255, 255, 0.54);
+}
+
+.avatar-display-controls-compact {
+  padding: 0.85rem;
+  gap: 0.7rem;
+}
+
+.avatar-display-controls label {
+  display: grid;
+  grid-template-columns: minmax(5rem, auto) minmax(3.2rem, auto);
+  gap: 0.48rem 0.75rem;
+  align-items: center;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+}
+
+.avatar-display-controls output {
+  justify-self: end;
+  color: var(--ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.avatar-display-controls input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.avatar-display-reset {
+  justify-self: start;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.58rem 0.88rem;
+  background: rgba(25, 74, 103, 0.08);
+  color: var(--ink-strong);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.avatar-display-reset:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 18px rgba(25, 74, 103, 0.12);
+  background: rgba(25, 74, 103, 0.12);
 }
 
 .meter {

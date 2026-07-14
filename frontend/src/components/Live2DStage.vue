@@ -4,6 +4,10 @@ import { Live2DModel } from 'pixi-live2d-display/cubism4'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import {
+  AVATAR_DISPLAY_DEFAULTS,
+  computeLive2DPlacement,
+} from '../lib/avatarDisplay'
+import {
   buildEmotionTarget,
   buildExpressionTarget,
   currentPhoneme,
@@ -12,6 +16,12 @@ import {
   mouthPoseFromFrame,
   resolveModelAssetUrl,
 } from '../lib/lipsync'
+import {
+  buildEmotionMotionProfile,
+  pickAvailableMotion,
+  resolveEmotionMotionCandidates,
+  shouldTriggerEmotionMotion,
+} from '../lib/avatarMotion'
 import type { AvatarPresentation } from '../lib/avatarPresentation'
 import type {
   EmotionStage,
@@ -65,9 +75,16 @@ interface LipSyncState {
   stopAt: number
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelPath: string
-}>()
+  modelScale?: number
+  modelOffsetX?: number
+  modelOffsetY?: number
+}>(), {
+  modelScale: AVATAR_DISPLAY_DEFAULTS.displayScale,
+  modelOffsetX: AVATAR_DISPLAY_DEFAULTS.displayOffsetX,
+  modelOffsetY: AVATAR_DISPLAY_DEFAULTS.displayOffsetY,
+})
 
 const stageHost = ref<HTMLDivElement | null>(null)
 const loadError = ref('')
@@ -78,6 +95,9 @@ let model: RuntimeLive2DModel | null = null
 let resizeObserver: ResizeObserver | null = null
 let idleTimer = 0
 let lipSyncState: LipSyncState | null = null
+let availableMotionGroups = new Set<string>()
+let lastTriggeredMotionKey = ''
+let lastTriggeredMotionAt = 0
 let currentOpen = 0.06
 let currentForm = 0
 const MOUTH_OPEN_IDS = ['ParamMouthOpenY', 'PARAM_MOUTH_OPEN_Y']
@@ -124,6 +144,18 @@ function rebuildEmotionTarget() {
   ])
 }
 
+function resetExpressionState() {
+  for (const key of Object.keys(expressionTargets)) {
+    delete expressionTargets[key]
+  }
+
+  for (const key of Object.keys(currentEmotionValues)) {
+    delete currentEmotionValues[key]
+  }
+
+  rebuildEmotionTarget()
+}
+
 function setMouthPose(targetOpen: number, targetForm: number) {
   currentOpen += (targetOpen - currentOpen) * 0.35
   currentForm += (targetForm - currentForm) * 0.35
@@ -139,16 +171,23 @@ function resizeModel() {
 
   const { clientWidth, clientHeight } = stageHost.value
   const bounds = model.getLocalBounds()
-  const modelWidth = Math.max(bounds.width || 1, 1)
-  const modelHeight = Math.max(bounds.height || 1, 1)
-  const isCompact = clientWidth < 720
-  const widthRatio = isCompact ? 0.82 : 0.74
-  const heightRatio = isCompact ? 0.84 : 0.78
-  const scale = Math.min((clientWidth * widthRatio) / modelWidth, (clientHeight * heightRatio) / modelHeight)
+  const placement = computeLive2DPlacement(
+    { width: clientWidth, height: clientHeight },
+    {
+      width: bounds.width || model.width || 1,
+      height: bounds.height || model.height || 1,
+    },
+    {
+      displayScale: props.modelScale,
+      displayOffsetX: props.modelOffsetX,
+      displayOffsetY: props.modelOffsetY,
+      stageHeight: clientHeight,
+    },
+  )
 
-  model.scale.set(scale)
-  model.pivot.set(bounds.x + modelWidth / 2, bounds.y + modelHeight * 0.82)
-  model.position.set(clientWidth / 2, clientHeight * (isCompact ? 0.94 : 0.92))
+  model.scale.set(placement.scale)
+  model.anchor.set(0.5, 0.88)
+  model.position.set(placement.x, placement.y)
 }
 
 function playIdleMotion() {
@@ -170,19 +209,67 @@ function playIdleMotion() {
   }, 12000)
 }
 
-function applyLightPhaseMotion(t: number) {
-  if (currentAvatarPresentation.motionIntensity !== 'light') {
+function applyPresentationMotion(t: number) {
+  const profile = buildEmotionMotionProfile(currentAvatarPresentation)
+  if (
+    currentAvatarPresentation.phase === 'idle' &&
+    currentAvatarPresentation.motionIntensity === 'normal' &&
+    currentAvatarPresentation.allowIdleMotion
+  ) {
     return
   }
 
-  const speakingScale = currentAvatarPresentation.phase === 'speaking' ? 1 : 0.55
   const angleBase = currentEmotionValues.ParamAngleX ?? targetEmotionValues.ParamAngleX ?? 0
+  const angleYBase = currentEmotionValues.ParamAngleY ?? targetEmotionValues.ParamAngleY ?? 0
   const bodyBase = currentEmotionValues.ParamBodyAngleX ?? targetEmotionValues.ParamBodyAngleX ?? 0
+  const eyeXBase = currentEmotionValues.ParamEyeBallX ?? targetEmotionValues.ParamEyeBallX ?? 0
   const eyeBase = currentEmotionValues.ParamEyeBallY ?? targetEmotionValues.ParamEyeBallY ?? 0
 
-  safeSetParameter('ParamAngleX', angleBase + Math.sin(t * 1.6) * 0.38 * speakingScale)
-  safeSetParameter('ParamBodyAngleX', bodyBase + Math.sin(t * 1.2 + 0.4) * 0.28 * speakingScale)
-  safeSetParameter('ParamEyeBallY', eyeBase + Math.sin(t * 0.9) * 0.025 * speakingScale)
+  safeSetParameter(
+    'ParamAngleX',
+    angleBase + profile.angleXOffset + Math.sin(t * profile.angleXSpeed) * profile.angleXAmplitude,
+  )
+  safeSetParameter(
+    'ParamAngleY',
+    angleYBase + profile.angleYOffset + Math.sin(t * profile.angleYSpeed + 0.3) * profile.angleYAmplitude,
+  )
+  safeSetParameter(
+    'ParamBodyAngleX',
+    bodyBase + profile.bodyXOffset + Math.sin(t * profile.bodyXSpeed + 0.4) * profile.bodyXAmplitude,
+  )
+  safeSetParameter(
+    'ParamEyeBallX',
+    eyeXBase + profile.eyeXOffset + Math.sin(t * profile.eyeXSpeed + 0.2) * profile.eyeXAmplitude,
+  )
+  safeSetParameter(
+    'ParamEyeBallY',
+    eyeBase + profile.eyeYOffset + Math.sin(t * profile.eyeYSpeed + 0.6) * profile.eyeYAmplitude,
+  )
+}
+
+function maybeTriggerEmotionMotion(previous: AvatarPresentation, next: AvatarPresentation) {
+  if (!model || !shouldTriggerEmotionMotion(previous, next)) {
+    return
+  }
+
+  const picked = pickAvailableMotion(availableMotionGroups, resolveEmotionMotionCandidates(next))
+  if (!picked) {
+    return
+  }
+
+  const motionKey = `${next.phase}:${next.emotion}:${picked}`
+  const now = performance.now()
+  if (motionKey === lastTriggeredMotionKey && now - lastTriggeredMotionAt < 1800) {
+    return
+  }
+
+  try {
+    model.motion(picked)
+    lastTriggeredMotionKey = motionKey
+    lastTriggeredMotionAt = now
+  } catch {
+    return
+  }
 }
 
 function startBreathingLoop() {
@@ -192,7 +279,8 @@ function startBreathingLoop() {
     }
 
     const t = performance.now() / 1000
-    safeSetParameter('ParamBreath', (Math.sin(t * 1.2) + 1) / 2)
+    const profile = buildEmotionMotionProfile(currentAvatarPresentation)
+    safeSetParameter('ParamBreath', (Math.sin(t * profile.breathSpeed) + 1) / 2)
 
     for (const id of emotionParamIds) {
       const current = currentEmotionValues[id] ?? 0
@@ -201,7 +289,7 @@ function startBreathingLoop() {
       currentEmotionValues[id] = next
       safeSetParameter(id, next)
     }
-    applyLightPhaseMotion(t)
+    applyPresentationMotion(t)
 
     if (lipSyncState) {
       const { frames, audio, audioContext, startedAt, stopAt, useAudioContextClock } = lipSyncState
@@ -223,7 +311,7 @@ function startBreathingLoop() {
       return
     }
 
-    setMouthPose(0.06 + Math.sin(t * 2.3) * 0.01, currentForm * 0.85)
+    setMouthPose(0.06 + Math.sin(t * profile.mouthIdleSpeed) * profile.mouthIdleAmplitude, currentForm * 0.85)
   })
 }
 
@@ -244,6 +332,9 @@ async function createModel() {
 
   const settings = (await response.json()) as ModelSettings
   settings.url = props.modelPath
+  availableMotionGroups = new Set(Object.keys(settings.FileReferences?.Motions ?? {}))
+  lastTriggeredMotionKey = ''
+  lastTriggeredMotionAt = 0
 
   if (settings.FileReferences?.DisplayInfo) {
     delete settings.FileReferences.DisplayInfo
@@ -257,6 +348,7 @@ async function createModel() {
     }
   }
 
+  resetExpressionState()
   for (const expression of settings.FileReferences?.Expressions ?? []) {
     const url = resolveModelAssetUrl(props.modelPath, expression.File)
     const expressionResponse = await fetch(url)
@@ -326,6 +418,10 @@ function destroyModelRuntime() {
   }
   pixiApp = null
   model = null
+  availableMotionGroups = new Set()
+  lastTriggeredMotionKey = ''
+  lastTriggeredMotionAt = 0
+  resetExpressionState()
   currentOpen = 0.06
   currentForm = 0
 }
@@ -351,9 +447,11 @@ function setEmotion(emotion: EmotionValue, stage: EmotionStage = 'final') {
 }
 
 function setAvatarPresentation(presentation: AvatarPresentation) {
+  const previousPresentation = currentAvatarPresentation
   const wasIdleMotionAllowed = currentAvatarPresentation.allowIdleMotion
   currentAvatarPresentation = presentation
   setEmotion(presentation.emotion, presentation.emotionStage)
+  maybeTriggerEmotionMotion(previousPresentation, presentation)
 
   if (!wasIdleMotionAllowed && presentation.allowIdleMotion && model) {
     try {
@@ -438,6 +536,13 @@ watch(
       return
     }
     await loadModel()
+  },
+)
+
+watch(
+  () => [props.modelScale, props.modelOffsetX, props.modelOffsetY],
+  () => {
+    resizeModel()
   },
 )
 </script>

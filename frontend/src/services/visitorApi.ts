@@ -59,6 +59,10 @@ interface VisitorAvatarProfileSummaryApi {
   slug: string
   is_active: boolean
   model_path: string
+  display_scale: number
+  display_offset_x: number
+  display_offset_y: number
+  stage_height: number
   updated_at: string
 }
 
@@ -117,6 +121,10 @@ function mapVisitorAvatarProfile(
     slug: payload.slug,
     isActive: payload.is_active,
     modelPath: payload.model_path,
+    displayScale: payload.display_scale,
+    displayOffsetX: payload.display_offset_x,
+    displayOffsetY: payload.display_offset_y,
+    stageHeight: payload.stage_height,
     updatedAt: payload.updated_at,
   }
 }

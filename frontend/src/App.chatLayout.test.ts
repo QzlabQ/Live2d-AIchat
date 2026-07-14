@@ -14,4 +14,12 @@ describe('App chat layout', () => {
       /<div class="chat-panel-body">[\s\S]*<div class="chat-panel-scroll">[\s\S]*<ChatTranscript[\s\S]*<\/div>[\s\S]*<div class="chat-panel-dock">[\s\S]*<ChatComposer/s,
     )
   })
+
+  test('visitor stage exposes display controls without moving the composer dock', () => {
+    expect(appSource).toContain('<AvatarDisplayControls')
+    expect(appSource).toContain('visitorDisplayControlsOpen')
+    expect(appSource).toContain(':model-scale="avatarDisplayConfig.displayScale"')
+    expect(appSource).toContain(':style="stageCardStyle"')
+    expect(appSource).toContain('chat-panel-dock')
+  })
 })

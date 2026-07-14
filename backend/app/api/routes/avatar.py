@@ -158,6 +158,14 @@ async def apply_avatar_payload(
         avatar.tts_speed = payload.tts_speed
     if payload.tts_emotion_enabled is not None:
         avatar.tts_emotion_enabled = payload.tts_emotion_enabled
+    if payload.display_scale is not None:
+        avatar.display_scale = payload.display_scale
+    if payload.display_offset_x is not None:
+        avatar.display_offset_x = payload.display_offset_x
+    if payload.display_offset_y is not None:
+        avatar.display_offset_y = payload.display_offset_y
+    if payload.stage_height is not None:
+        avatar.stage_height = payload.stage_height
 
     if manual_voice_override and "voice_profile_id" not in provided:
         avatar.voice_profile_id = None
@@ -172,6 +180,10 @@ def serialize_avatar_profile(profile: AvatarConfig) -> AvatarProfileSummary:
         model_path=profile.model_path,
         voice_id=profile.voice_id,
         response_language=profile.response_language,
+        display_scale=profile.display_scale,
+        display_offset_x=profile.display_offset_x,
+        display_offset_y=profile.display_offset_y,
+        stage_height=profile.stage_height,
         updated_at=profile.updated_at,
     )
 
@@ -211,6 +223,10 @@ async def create_avatar_profile(
         tts_reference_text=payload.tts_reference_text,
         tts_speed=payload.tts_speed,
         tts_emotion_enabled=payload.tts_emotion_enabled,
+        display_scale=payload.display_scale,
+        display_offset_x=payload.display_offset_x,
+        display_offset_y=payload.display_offset_y,
+        stage_height=payload.stage_height,
     )
     db.add(profile)
     await db.flush()

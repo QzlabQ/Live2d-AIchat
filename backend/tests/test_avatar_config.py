@@ -12,6 +12,7 @@ from app.core.config import Settings
 from app.db.base import Base
 from app.db.migrations import (
     ensure_avatar_config_admin_columns,
+    ensure_avatar_config_display_columns,
     ensure_avatar_config_profile_columns,
     ensure_avatar_config_response_language_column,
     ensure_avatar_config_tts_columns,
@@ -117,6 +118,40 @@ class AvatarConfigMigrationTestCase(unittest.IsolatedAsyncioTestCase):
 
                 self.assertIn('response_language', names)
                 self.assertEqual(row['response_language'], 'zh')
+            finally:
+                await engine.dispose()
+
+    async def test_sqlite_migration_adds_display_columns_to_old_schema(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'old.db'
+            engine = create_async_engine(f'sqlite+aiosqlite:///{db_path}')
+            try:
+                async with engine.begin() as connection:
+                    await connection.execute(text('''CREATE TABLE avatar_config (id INTEGER PRIMARY KEY AUTOINCREMENT, model_path VARCHAR(255) NOT NULL, voice_id VARCHAR(100) NOT NULL, persona TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL)'''))
+                    await connection.execute(text('''INSERT INTO avatar_config (model_path, voice_id, persona) VALUES ('model', 'voice', 'persona')'''))
+
+                await ensure_avatar_config_display_columns(engine)
+
+                async with engine.connect() as connection:
+                    columns = (await connection.execute(text('PRAGMA table_info(avatar_config)'))).mappings().all()
+                    names = {column['name'] for column in columns}
+                    row = (
+                        await connection.execute(
+                            text(
+                                'SELECT display_scale, display_offset_x, display_offset_y, stage_height '
+                                'FROM avatar_config LIMIT 1'
+                            )
+                        )
+                    ).mappings().one()
+
+                self.assertIn('display_scale', names)
+                self.assertIn('display_offset_x', names)
+                self.assertIn('display_offset_y', names)
+                self.assertIn('stage_height', names)
+                self.assertEqual(row['display_scale'], 1.0)
+                self.assertEqual(row['display_offset_x'], 0.0)
+                self.assertEqual(row['display_offset_y'], 0.0)
+                self.assertEqual(row['stage_height'], 420)
             finally:
                 await engine.dispose()
 
@@ -303,6 +338,73 @@ class AvatarConfigApiTestCase(unittest.IsolatedAsyncioTestCase):
     def test_avatar_config_update_rejects_out_of_range_tts_speed(self) -> None:
         with self.assertRaises(ValidationError):
             AvatarConfigUpdate(tts_speed=2.0)
+
+    async def test_avatar_config_api_reads_and_updates_display_fields(self) -> None:
+        with TemporaryDirectory() as temp_dir, TemporaryDirectory(dir=BACKEND_ROOT) as prompt_dir:
+            db_path = Path(temp_dir) / 'api.db'
+            engine = create_async_engine(f'sqlite+aiosqlite:///{db_path}')
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+            prompt_wav = Path(prompt_dir) / 'prompt.wav'
+            prompt_wav.write_bytes(b'fake wav')
+
+            try:
+                async with engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+
+                async with session_factory() as session:
+                    session.add(
+                        AvatarConfig(
+                            model_path='model',
+                            voice_id='voice',
+                            persona='persona',
+                            tts_reference_audio_path=str(prompt_wav),
+                            tts_reference_text='old text',
+                            tts_speed=1.0,
+                            tts_emotion_enabled=True,
+                        )
+                    )
+                    await session.commit()
+
+                    before = await get_avatar_config(session)
+                    self.assertEqual(before.display_scale, 1.0)
+                    self.assertEqual(before.display_offset_x, 0.0)
+                    self.assertEqual(before.display_offset_y, 0.0)
+                    self.assertEqual(before.stage_height, 420)
+
+                    await update_avatar_config(
+                        AvatarConfigUpdate(
+                            display_scale=1.24,
+                            display_offset_x=0.08,
+                            display_offset_y=-0.12,
+                            stage_height=560,
+                        ),
+                        db=session,
+                    )
+
+                    after = await get_avatar_config(session)
+                    self.assertEqual(after.display_scale, 1.24)
+                    self.assertEqual(after.display_offset_x, 0.08)
+                    self.assertEqual(after.display_offset_y, -0.12)
+                    self.assertEqual(after.stage_height, 560)
+            finally:
+                await engine.dispose()
+
+    def test_avatar_config_update_rejects_out_of_range_display_fields(self) -> None:
+        invalid_payloads = [
+            {'display_scale': 0.59},
+            {'display_scale': 1.81},
+            {'display_offset_x': -0.51},
+            {'display_offset_x': 0.51},
+            {'display_offset_y': -0.51},
+            {'display_offset_y': 0.51},
+            {'stage_height': 319},
+            {'stage_height': 761},
+        ]
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValidationError):
+                    AvatarConfigUpdate(**payload)
 
     async def test_avatar_profiles_can_be_isolated_by_active_profile(self) -> None:
         with TemporaryDirectory() as temp_dir, TemporaryDirectory(dir=BACKEND_ROOT) as prompt_dir:

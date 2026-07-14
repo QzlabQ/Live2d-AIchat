@@ -54,6 +54,10 @@ interface AvatarConfigApi {
   tts_reference_text: string
   tts_speed: number
   tts_emotion_enabled: boolean
+  display_scale: number
+  display_offset_x: number
+  display_offset_y: number
+  stage_height: number
   created_at: string
   updated_at: string
 }
@@ -66,6 +70,10 @@ interface AvatarProfileSummaryApi {
   model_path: string
   voice_id: string
   response_language: 'zh' | 'en'
+  display_scale: number
+  display_offset_x: number
+  display_offset_y: number
+  stage_height: number
   updated_at: string
 }
 
@@ -237,6 +245,10 @@ function mapAvatarConfig(payload: AvatarConfigApi): AvatarConfig {
     ttsReferenceText: payload.tts_reference_text,
     ttsSpeed: payload.tts_speed,
     ttsEmotionEnabled: payload.tts_emotion_enabled,
+    displayScale: payload.display_scale,
+    displayOffsetX: payload.display_offset_x,
+    displayOffsetY: payload.display_offset_y,
+    stageHeight: payload.stage_height,
     createdAt: payload.created_at,
     updatedAt: payload.updated_at,
   }
@@ -251,6 +263,10 @@ function mapAvatarProfileSummary(payload: AvatarProfileSummaryApi): AvatarProfil
     modelPath: payload.model_path,
     voiceId: payload.voice_id,
     responseLanguage: payload.response_language,
+    displayScale: payload.display_scale,
+    displayOffsetX: payload.display_offset_x,
+    displayOffsetY: payload.display_offset_y,
+    stageHeight: payload.stage_height,
     updatedAt: payload.updated_at,
   }
 }
@@ -411,6 +427,10 @@ export async function createAvatarProfile(
       tts_reference_text: payload.ttsReferenceText,
       tts_speed: payload.ttsSpeed,
       tts_emotion_enabled: payload.ttsEmotionEnabled,
+      display_scale: payload.displayScale,
+      display_offset_x: payload.displayOffsetX,
+      display_offset_y: payload.displayOffsetY,
+      stage_height: payload.stageHeight,
       activate: payload.activate ?? true,
     }),
   })
@@ -466,6 +486,10 @@ export async function updateAvatarConfig(
     ...(payload.ttsEmotionEnabled !== undefined
       ? { tts_emotion_enabled: payload.ttsEmotionEnabled }
       : {}),
+    ...(payload.displayScale !== undefined ? { display_scale: payload.displayScale } : {}),
+    ...(payload.displayOffsetX !== undefined ? { display_offset_x: payload.displayOffsetX } : {}),
+    ...(payload.displayOffsetY !== undefined ? { display_offset_y: payload.displayOffsetY } : {}),
+    ...(payload.stageHeight !== undefined ? { stage_height: payload.stageHeight } : {}),
   }
 
   const query = new URLSearchParams()
