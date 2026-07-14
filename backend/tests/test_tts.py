@@ -94,6 +94,7 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
                 )
             )
             service._import_cosyvoice_module = lambda: SimpleNamespace(CosyVoice2=fake_factory)
+            service._resolve_cosyvoice_device = lambda: "cpu"
 
             service._load_cosyvoice_model()
 
@@ -127,7 +128,6 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(calls, {'feat': 1, 'token': 1, 'embedding': 1})
-            service._resolve_cosyvoice_device = lambda: "cpu"
 
     def test_cosyvoice2_synthesis_uses_instruct2_signature(self) -> None:
         class FakeCosyVoiceModel:
@@ -153,6 +153,7 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
             service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
             model = FakeCosyVoiceModel()
             service._load_cosyvoice_model = lambda: model
+            service._resolve_cosyvoice_device = lambda: "cpu"
 
             chunk = service._synthesize_cosyvoice(
                 'welcome',
