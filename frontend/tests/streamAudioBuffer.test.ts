@@ -82,8 +82,38 @@ describe('streamAudioBuffer', () => {
   })
 
   it('resets buffered playback when scheduled lead has already drained', () => {
-    expect(shouldResetBufferedPlayback(0)).toBe(true)
-    expect(shouldResetBufferedPlayback(-15)).toBe(true)
-    expect(shouldResetBufferedPlayback(120)).toBe(false)
+    expect(
+      shouldResetBufferedPlayback(
+        {
+          bufferedAudioMs: 200,
+          pendingChunkCount: 1,
+          isFinalChunkBuffered: false,
+        },
+        0,
+        DEFAULT_STREAM_AUDIO_POLICY,
+      ),
+    ).toBe(true)
+    expect(
+      shouldResetBufferedPlayback(
+        {
+          bufferedAudioMs: 1200,
+          pendingChunkCount: 2,
+          isFinalChunkBuffered: false,
+        },
+        -15,
+        DEFAULT_STREAM_AUDIO_POLICY,
+      ),
+    ).toBe(false)
+    expect(
+      shouldResetBufferedPlayback(
+        {
+          bufferedAudioMs: 200,
+          pendingChunkCount: 1,
+          isFinalChunkBuffered: false,
+        },
+        120,
+        DEFAULT_STREAM_AUDIO_POLICY,
+      ),
+    ).toBe(false)
   })
 })

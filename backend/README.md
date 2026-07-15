@@ -60,6 +60,20 @@ python -m pip uninstall -y onnxruntime onnxruntime-gpu
 python -m pip install -r requirements.tts.txt --no-build-isolation
 ```
 
+如果你是在 Linux 原生服务器上用 `requirements.runtime.txt` 做整套安装，并且希望 CosyVoice 前端 ONNX 也走 GPU，推荐把修复顺序固定成：
+
+```bash
+python -m pip install -r requirements.runtime.txt --no-build-isolation
+python -m pip uninstall -y onnxruntime onnxruntime-gpu
+python -m pip install onnxruntime-gpu==1.18.0 --no-build-isolation
+python - <<'PY'
+import onnxruntime as ort
+print(ort.get_available_providers())
+PY
+```
+
+如果输出里没有 `CUDAExecutionProvider`，不要继续启动后端。先修环境，再启动。
+
 如果你要在本项目里启用“本地 CosyVoice + 情感指令发声”模式，推荐下载 `CosyVoice2-0.5B`。
 - 后端当前使用 `inference_instruct2`，由自然语言情感指令控制语气
 - `voice_id` 只作为兼容展示字段保留，真实音色来自 avatar 配置里的参考音频和参考文本
@@ -83,6 +97,8 @@ python -c "from huggingface_hub import snapshot_download; snapshot_download(repo
 - `requirements.txt` 里故意不再包含 `numpy`
 - `requirements.tts.txt` 是本项目为 CosyVoice 推理整理的最小运行时依赖集合
 - `requirements.tts.txt` 当前仍保留 `onnxruntime-gpu` 依赖，但本项目默认把 `TTS_COSYVOICE_ONNX_PROVIDER` 固定为 `cpu`，优先把 4060 显存留给 CosyVoice2 主模型
+- `chromadb` 和 `faster-whisper` 的依赖链会重新拉入 CPU 版 `onnxruntime`
+- 只要你重新安装过知识库 / ASR 相关依赖，就要再次执行一次 provider 校验，确认 `CUDAExecutionProvider` 还在
 - `openai-whisper` 在 Windows 下需要 `--no-build-isolation` 才能稳定构建
 - 在 `conda` 环境里，`numpy` 和 `torch` 这类二进制包优先用 `conda install`，不要再单独 `pip install numpy` / `pip install torch`
 - 否则很容易出现 Windows 下的 `DLL load failed`、`numpy C-extensions failed` 这类混装问题
@@ -171,6 +187,8 @@ TTS_COSYVOICE_ONNX_PROVIDER=cpu
 TTS_COSYVOICE_SAMPLE_RATE=24000
 TTS_COSYVOICE_FP16=true
 TTS_COSYVOICE_LOAD_JIT=false
+TTS_COSYVOICE_LOAD_TRT=false
+TTS_COSYVOICE_TRT_CONCURRENT=1
 TTS_PROVIDER=local
 TTS_REMOTE_URL=
 TTS_REMOTE_PROTOCOL=http_stream
@@ -186,6 +204,17 @@ DEFAULT_TTS_EMOTION_ENABLED=true
 CHAT_MODE=rag
 RAG_RESPONSE_MODE=fast_humanized
 ```
+
+如果你是在 V100 这类显存更宽裕、并且更重视连续播放稳定性的服务器上部署，建议直接参考 `../deploy/backend.env.v100.example`：
+
+- `TTS_COSYVOICE_ONNX_PROVIDER=cuda`
+- `TTS_COSYVOICE_LOAD_TRT=true`
+- `TTS_COSYVOICE_TRT_CONCURRENT=1`
+- `TTS_STREAM_PROFILE=stable`
+- `TTS_SEGMENT_SOFT_MIN_CHARS=22`
+- `TTS_SEGMENT_SOFT_MAX_CHARS=40`
+- `TTS_SEGMENT_HARD_MAX_CHARS=64`
+- 首次部署前先预构建或加载 `flow.decoder.estimator.fp16.mygpu.plan`
 
 说明：`voice_id` 现在只作为兼容展示字段保留，真实发声由 `avatar_config` 中的参考音频、参考文本、语速和情感开关决定。
 

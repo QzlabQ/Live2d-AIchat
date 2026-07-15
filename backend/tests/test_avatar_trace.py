@@ -1,11 +1,29 @@
 import json
+import importlib
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import APIRouter
+
 from app.services.avatar_trace import ReplyTrace, TraceLoggerWorker
+from app.services.tts import TTSRuntimeValidationError
+
+
+def import_main_for_lifespan_tests():
+    with patch.dict(
+        sys.modules,
+        {
+            "app.api.router": SimpleNamespace(api_router=APIRouter()),
+            "app.api.ws_router": SimpleNamespace(websocket_router=APIRouter()),
+        },
+    ):
+        import app.main as main_module
+
+        return importlib.reload(main_module)
 
 
 class ReplyTraceTestCase(unittest.TestCase):
@@ -63,6 +81,9 @@ class ReplyTraceTestCase(unittest.TestCase):
 
         self.assertEqual(payload["audio_chunk_count"], 1)
         self.assertEqual(payload["max_chunk_gap_ms"], 0)
+        self.assertEqual(payload["tts_vendor_session_count"], 1)
+        self.assertEqual(payload["metrics"]["tts_total_token_wait_ms"], 0)
+        self.assertEqual(payload["metrics"]["tts_total_token2wav_ms"], 0)
         self.assertEqual(
             payload["tts_chunks"],
             [
@@ -75,9 +96,64 @@ class ReplyTraceTestCase(unittest.TestCase):
                     "tts_ws_send_lag_ms": 7,
                     "tts_chunk_gap_ms": 0,
                     "tts_chunk_rtf": 0.358,
+                    "token_wait_ms": 0,
+                    "token2wav_ms": 0,
+                    "hop_len": 0,
+                    "token_offset": 0,
+                    "chunk_supply_lag_ms": 0,
+                    "is_final": False,
                 }
             ],
         )
+
+    def test_runtime_and_prompt_cache_snapshots_are_serialized(self) -> None:
+        trace = ReplyTrace(
+            reply_id="reply-4",
+            session_id="session-4",
+            streaming=True,
+            chat_mode="rag",
+            tts_engine="cosyvoice",
+        )
+
+        trace.set_runtime_snapshot(
+            {
+                "torch_cuda_available": True,
+                "torch_device_name": "Tesla V100-PCIE-32GB",
+                "requested_onnx_provider": "cuda",
+                "available_onnx_providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+                "tts_stream_profile": "balanced",
+                "tts_cosyvoice_load_trt": True,
+                "tts_cosyvoice_trt_concurrent": 1,
+                "tts_trt_engine_expected": True,
+                "tts_trt_engine_loaded": True,
+                "tts_segment_soft_min_chars": 22,
+                "tts_segment_soft_max_chars": 40,
+                "tts_segment_hard_max_chars": 64,
+                "tts_synthesis_strategy": "per_segment",
+            }
+        )
+        trace.set_prompt_cache_snapshot(hit=True, build_ms=18.5)
+
+        payload = trace.to_payload()
+
+        self.assertTrue(payload["torch_cuda_available"])
+        self.assertEqual(payload["torch_device_name"], "Tesla V100-PCIE-32GB")
+        self.assertEqual(payload["requested_onnx_provider"], "cuda")
+        self.assertEqual(
+            payload["available_onnx_providers"], ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        self.assertEqual(payload["tts_stream_profile"], "balanced")
+        self.assertTrue(payload["tts_cosyvoice_load_trt"])
+        self.assertEqual(payload["tts_cosyvoice_trt_concurrent"], 1)
+        self.assertTrue(payload["tts_trt_engine_expected"])
+        self.assertTrue(payload["tts_trt_engine_loaded"])
+        self.assertEqual(payload["tts_segment_soft_min_chars"], 22)
+        self.assertEqual(payload["tts_segment_soft_max_chars"], 40)
+        self.assertEqual(payload["tts_segment_hard_max_chars"], 64)
+        self.assertEqual(payload["tts_synthesis_strategy"], "per_segment")
+        self.assertEqual(payload["tts_vendor_session_count"], 0)
+        self.assertTrue(payload["prompt_cache_hit"])
+        self.assertEqual(payload["prompt_cache_build_ms"], 18.5)
 
 
 class TraceLoggerWorkerTestCase(unittest.IsolatedAsyncioTestCase):
@@ -113,7 +189,8 @@ class TraceLoggerWorkerTestCase(unittest.IsolatedAsyncioTestCase):
 
 class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_lifespan_starts_and_stops_trace_worker_without_skipping_existing_startup(self) -> None:
-        from app.main import lifespan
+        main_module = import_main_for_lifespan_tests()
+        lifespan = main_module.lifespan
 
         events: list[str] = []
 
@@ -123,6 +200,13 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
 
             async def stop(self) -> None:
                 events.append("trace_stop")
+
+        class FakeReportService:
+            async def start(self) -> None:
+                events.append("report_start")
+
+            async def stop(self) -> None:
+                events.append("report_stop")
 
         class FakeTTSService:
             def warmup(self) -> None:
@@ -147,10 +231,12 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.main.init_db", side_effect=fake_init_db),
             patch("app.main.ensure_default_avatar_config", side_effect=fake_seed),
+            patch("app.main.ensure_default_voice_profile", side_effect=fake_seed),
             patch("app.main.get_tts_service", return_value=FakeTTSService()),
             patch("app.main.get_asr_service", return_value=FakeASRService()),
             patch("app.main.asyncio.to_thread", side_effect=fake_to_thread),
             patch("app.main.get_avatar_trace_service", return_value=FakeTraceService()),
+            patch("app.main.get_report_service", return_value=FakeReportService()),
             patch("app.main.shutdown_db", side_effect=fake_shutdown_db),
         ):
             async with lifespan(SimpleNamespace()):
@@ -161,14 +247,74 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
             [
                 "init_db",
                 "seed",
+                "seed",
                 "tts_warmup",
                 "asr_warmup",
                 "trace_start",
+                "report_start",
                 "inside",
+                "report_stop",
                 "trace_stop",
                 "shutdown_db",
             ],
         )
+
+    async def test_lifespan_re_raises_fatal_tts_runtime_errors(self) -> None:
+        main_module = import_main_for_lifespan_tests()
+        lifespan = main_module.lifespan
+
+        events: list[str] = []
+
+        class FakeTraceService:
+            async def start(self) -> None:
+                events.append("trace_start")
+
+            async def stop(self) -> None:
+                events.append("trace_stop")
+
+        class FakeReportService:
+            async def start(self) -> None:
+                events.append("report_start")
+
+            async def stop(self) -> None:
+                events.append("report_stop")
+
+        class FatalTTSService:
+            def warmup(self) -> None:
+                raise TTSRuntimeValidationError("missing CUDAExecutionProvider")
+
+        class FakeASRService:
+            async def warmup(self) -> None:
+                events.append("asr_warmup")
+
+        async def fake_init_db() -> None:
+            events.append("init_db")
+
+        async def fake_seed() -> None:
+            events.append("seed")
+
+        async def fake_shutdown_db() -> None:
+            events.append("shutdown_db")
+
+        async def fake_to_thread(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with (
+            patch("app.main.init_db", side_effect=fake_init_db),
+            patch("app.main.ensure_default_avatar_config", side_effect=fake_seed),
+            patch("app.main.ensure_default_voice_profile", side_effect=fake_seed),
+            patch("app.main.get_tts_service", return_value=FatalTTSService()),
+            patch("app.main.get_asr_service", return_value=FakeASRService()),
+            patch("app.main.asyncio.to_thread", side_effect=fake_to_thread),
+            patch("app.main.get_avatar_trace_service", return_value=FakeTraceService()),
+            patch("app.main.get_report_service", return_value=FakeReportService()),
+            patch("app.main.shutdown_db", side_effect=fake_shutdown_db),
+        ):
+            with self.assertRaises(TTSRuntimeValidationError):
+                async with lifespan(SimpleNamespace()):
+                    pass
+
+        self.assertEqual(events, ["init_db", "seed", "seed", "report_stop", "trace_stop", "shutdown_db"])
 
 
 if __name__ == "__main__":

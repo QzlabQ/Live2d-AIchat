@@ -116,6 +116,7 @@ scp -r ./backend/storage/knowledge user@server:/opt/ai-chat-live2d/data/
 
 - `deploy/docker-compose.yml`
 - `deploy/backend.env.example`
+- `deploy/backend.env.v100.example`
 - `deploy/postgres.env.example`
 - `deploy/nginx/default.conf`
 
@@ -128,6 +129,22 @@ cp /opt/ai-chat-live2d/app/deploy/postgres.env.example /opt/ai-chat-live2d/deplo
 mkdir -p /opt/ai-chat-live2d/deploy/nginx
 cp /opt/ai-chat-live2d/app/deploy/nginx/default.conf /opt/ai-chat-live2d/deploy/nginx/default.conf
 ```
+
+如果你这台服务器是 V100，并且你更在意流式 TTS 连续播放稳定性，可以把第二行替换成：
+
+```bash
+cp /opt/ai-chat-live2d/app/deploy/backend.env.v100.example /opt/ai-chat-live2d/deploy/backend.env
+```
+
+这份 V100 示例会额外打开：
+
+- `TTS_COSYVOICE_ONNX_PROVIDER=cuda`
+- `TTS_COSYVOICE_LOAD_TRT=true`
+- `TTS_COSYVOICE_TRT_CONCURRENT=1`
+- `TTS_STREAM_PROFILE=stable`
+- `TTS_SEGMENT_SOFT_MIN_CHARS=22`
+- `TTS_SEGMENT_SOFT_MAX_CHARS=40`
+- `TTS_SEGMENT_HARD_MAX_CHARS=64`
 
 然后至少修改这几个值：
 
@@ -142,6 +159,39 @@ CORS_ORIGINS=http://127.0.0.1:18080,http://localhost:18080
 ```env
 # /opt/ai-chat-live2d/deploy/postgres.env
 POSTGRES_PASSWORD=请改成自己的数据库密码
+```
+
+## 5.1 V100 原生 venv 安装顺序与 TRT 校验
+
+如果这台 V100 服务器不是常驻跑 Docker，而是原生 `venv/conda` 部署，建议把运行时修复顺序固定成下面这样：
+
+```bash
+cd /opt/ai-chat-live2d/app/backend
+python -m pip install -r requirements.runtime.txt --no-build-isolation
+python -m pip uninstall -y onnxruntime onnxruntime-gpu
+python -m pip install onnxruntime-gpu==1.18.0 --no-build-isolation
+python - <<'PY'
+import onnxruntime as ort
+print(ort.get_available_providers())
+PY
+```
+
+输出里必须包含 `CUDAExecutionProvider`。如果没有，不要继续启动后端。
+
+注意：`chromadb` 和 `faster-whisper` 的依赖链可能会重新拉回 CPU 版 `onnxruntime`，所以只要后面改过依赖，就要再次执行一次 provider 校验。
+
+如果你准备启用 `TTS_COSYVOICE_LOAD_TRT=true`，再补一轮 TensorRT 自检和 engine 预热：
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+python -c "import tensorrt as trt; print(trt.__version__)"
+python -c "from cosyvoice.cli.cosyvoice import CosyVoice2; CosyVoice2('/opt/ai-chat-live2d/app/backend/storage/models/CosyVoice2-0.5B', load_trt=True, fp16=True)"
+```
+
+预期会生成或加载类似下面的 plan 文件：
+
+```text
+flow.decoder.estimator.fp16.mygpu.plan
 ```
 
 ## 6. 启动服务

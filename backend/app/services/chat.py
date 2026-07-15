@@ -133,38 +133,37 @@ class TTSSegmenter:
         if not self.buffer.strip():
             return None
 
-        strong = TTS_STRONG_BOUNDARY_RE.search(self.buffer)
-        strong_end = strong.end() if strong else None
+        buffer_len = len(self.buffer)
+        strong_within_hard = self._last_boundary_before(
+            TTS_STRONG_BOUNDARY_RE,
+            min(buffer_len, self.hard_max_chars),
+        )
+        strong_any = self._last_boundary_before(TTS_STRONG_BOUNDARY_RE, buffer_len)
 
-        if strong_end is not None and strong_end <= self.soft_max_chars:
-            return strong_end
+        # Prefer the latest sentence-ending boundary within the hard window, but
+        # keep accumulating if the completed sentence is still too short. This
+        # amortizes per-segment TTS startup on longer replies.
+        if strong_within_hard is not None and strong_within_hard >= self.soft_min_chars:
+            return strong_within_hard
 
-        if len(self.buffer) >= self.soft_min_chars:
-            if strong_end is not None and strong_end > self.soft_max_chars:
-                soft_before_strong = self._last_boundary_before(
-                    TTS_SOFT_BOUNDARY_RE,
-                    min(strong_end, self.soft_max_chars),
-                )
-                if soft_before_strong is not None and soft_before_strong >= self.soft_min_chars:
-                    return soft_before_strong
-
+        if buffer_len >= self.soft_min_chars:
             if force:
-                soft_forced = self._last_boundary_before(TTS_SOFT_BOUNDARY_RE, len(self.buffer))
+                soft_forced = self._last_boundary_before(TTS_SOFT_BOUNDARY_RE, buffer_len)
                 if soft_forced is not None:
                     return soft_forced
-                if strong_end is not None:
-                    return strong_end
-                return len(self.buffer)
+                if strong_any is not None:
+                    return strong_any
+                return buffer_len
 
             if TTS_SOFT_BOUNDARY_RE.search(self.buffer[-2:]):
-                return len(self.buffer)
+                return buffer_len
 
-            if len(self.buffer) >= self.soft_max_chars:
-                soft_cut = self._last_boundary_before(TTS_SOFT_BOUNDARY_RE, len(self.buffer))
+            if buffer_len >= self.soft_max_chars:
+                soft_cut = self._last_boundary_before(TTS_SOFT_BOUNDARY_RE, buffer_len)
                 if soft_cut is not None and soft_cut >= self.soft_min_chars:
                     return soft_cut
 
-        if len(self.buffer) > self.hard_max_chars:
+        if buffer_len > self.hard_max_chars:
             soft_cut = self._last_boundary_before(TTS_SOFT_BOUNDARY_RE, self.hard_max_chars)
             if soft_cut is not None and soft_cut >= self.soft_min_chars:
                 return soft_cut
@@ -174,11 +173,10 @@ class TTSSegmenter:
                 return fallback_cut
             return self.hard_max_chars
 
-        if strong_end is not None:
-            return strong_end
-
         if force:
-            return len(self.buffer)
+            if strong_any is not None:
+                return strong_any
+            return buffer_len
         return None
 
     def _last_boundary_before(self, pattern: re.Pattern[str], limit: int) -> int | None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 import importlib
@@ -68,6 +68,14 @@ class StreamingTTSChunk:
     encoding: str = "pcm16le"
     is_final: bool = False
     model_chunk_ready_ms: int = 0
+    prompt_cache_hit: bool | None = None
+    prompt_cache_build_ms: float | None = None
+    token_wait_ms: int = 0
+    token2wav_ms: int = 0
+    hop_len: int = 0
+    token_offset: int = 0
+    tts_llm_done_ms: int | None = None
+    tts_final_decode_enter_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +124,16 @@ def resolve_stream_hop_limit(
     if configured_limit <= base_hop:
         return profile_limit
     return min(configured_limit, profile_limit)
+
+
+class TTSRuntimeValidationError(RuntimeError):
+    """Raised when the configured TTS runtime is invalid for the active server."""
+
+
+@dataclass(frozen=True, slots=True)
+class PromptFeatureCacheSnapshot:
+    hit: bool
+    build_ms: float
 
 
 class LocalCosyVoiceProvider:
@@ -182,6 +200,23 @@ class TTSService:
         self._engine_error: str | None = None
         self._cosyvoice_model: object | None = None
         self._prompt_feature_cache: dict[tuple[str, str], dict[str, object]] = {}
+        self._runtime_trace_snapshot: dict[str, object] = {
+            "requested_onnx_provider": self._normalize_cosyvoice_onnx_provider(
+                self.settings.tts_cosyvoice_onnx_provider
+            ),
+            "available_onnx_providers": [],
+            "torch_cuda_available": None,
+            "torch_device_name": None,
+            "tts_stream_profile": resolve_stream_profile(self.settings).name,
+            "tts_cosyvoice_load_trt": self.settings.tts_cosyvoice_load_trt,
+            "tts_cosyvoice_trt_concurrent": self.settings.tts_cosyvoice_trt_concurrent,
+            "tts_trt_engine_expected": self.settings.tts_cosyvoice_load_trt,
+            "tts_trt_engine_loaded": False,
+            "tts_segment_soft_min_chars": self.settings.tts_segment_soft_min_chars,
+            "tts_segment_soft_max_chars": self.settings.tts_segment_soft_max_chars,
+            "tts_segment_hard_max_chars": self.settings.tts_segment_hard_max_chars,
+            "tts_synthesis_strategy": self._resolve_tts_synthesis_strategy(),
+        }
         self._local_provider = LocalCosyVoiceProvider(self)
         self._remote_provider = RemoteTTSProvider(settings)
 
@@ -207,6 +242,37 @@ class TTSService:
         except Exception as exc:  # pragma: no cover - environment dependent
             self._engine_error = str(exc)
             return f"degraded:{self._engine_error}"
+
+    def get_runtime_trace_snapshot(self) -> dict[str, object]:
+        self._refresh_runtime_trace_snapshot()
+        return dict(self._runtime_trace_snapshot)
+
+    def _refresh_runtime_trace_snapshot(self, **overrides: object) -> None:
+        snapshot = {
+            "requested_onnx_provider": self._normalize_cosyvoice_onnx_provider(
+                self.settings.tts_cosyvoice_onnx_provider
+            ),
+            "available_onnx_providers": [],
+            "torch_cuda_available": None,
+            "torch_device_name": None,
+            "tts_stream_profile": resolve_stream_profile(self.settings).name,
+            "tts_cosyvoice_load_trt": self.settings.tts_cosyvoice_load_trt,
+            "tts_cosyvoice_trt_concurrent": self.settings.tts_cosyvoice_trt_concurrent,
+            "tts_trt_engine_expected": self.settings.tts_cosyvoice_load_trt,
+            "tts_trt_engine_loaded": False,
+            "tts_segment_soft_min_chars": self.settings.tts_segment_soft_min_chars,
+            "tts_segment_soft_max_chars": self.settings.tts_segment_soft_max_chars,
+            "tts_segment_hard_max_chars": self.settings.tts_segment_hard_max_chars,
+            "tts_synthesis_strategy": self._resolve_tts_synthesis_strategy(),
+        }
+        snapshot.update(self._runtime_trace_snapshot)
+        snapshot.update(overrides)
+        self._runtime_trace_snapshot = snapshot
+
+    def _resolve_tts_synthesis_strategy(self) -> str:
+        if self.settings.tts_provider == "remote":
+            return "remote"
+        return "per_segment"
 
     def _sanitize_synthesis_text(self, text: str) -> str:
         def replace_directive(match: re.Match[str]) -> str:
@@ -274,6 +340,9 @@ class TTSService:
 
     def _load_cosyvoice_model(self) -> object:
         if self._cosyvoice_model is not None:
+            self._refresh_runtime_trace_snapshot(
+                tts_trt_engine_loaded=bool(self.settings.tts_cosyvoice_load_trt)
+            )
             return self._cosyvoice_model
 
         model_path = self._resolve_backend_path(self.settings.tts_cosyvoice_model_path)
@@ -289,24 +358,92 @@ class TTSService:
         if factory is None:
             raise RuntimeError("未找到 cosyvoice.cli.cosyvoice.CosyVoice2，请检查本地 CosyVoice 安装。")
 
+        factory_kwargs: dict[str, object] = {
+            "load_jit": self.settings.tts_cosyvoice_load_jit,
+            "fp16": self.settings.tts_cosyvoice_fp16,
+        }
+        if self.settings.tts_cosyvoice_load_trt:
+            factory_kwargs["load_trt"] = True
+            factory_kwargs["trt_concurrent"] = self.settings.tts_cosyvoice_trt_concurrent
+
         try:
-            self._cosyvoice_model = factory(
-                str(model_path),
-                load_jit=self.settings.tts_cosyvoice_load_jit,
-                fp16=self.settings.tts_cosyvoice_fp16,
-            )
-        except TypeError:
+            self._cosyvoice_model = factory(str(model_path), **factory_kwargs)
+        except TypeError as exc:
+            if self.settings.tts_cosyvoice_load_trt:
+                raise TTSRuntimeValidationError(
+                    "TTS_COSYVOICE_LOAD_TRT=true，但当前 CosyVoice 运行时不支持 TensorRT 初始化参数。"
+                ) from exc
             self._cosyvoice_model = factory(str(model_path))
+        except Exception as exc:
+            if self.settings.tts_cosyvoice_load_trt:
+                raise TTSRuntimeValidationError(
+                    "TTS_COSYVOICE_LOAD_TRT=true，但 CosyVoice TensorRT 运行时初始化失败。"
+                ) from exc
+            raise
 
         self._move_cosyvoice_runtime(self._cosyvoice_model, device)
+        self._refresh_runtime_trace_snapshot(
+            tts_trt_engine_loaded=bool(self.settings.tts_cosyvoice_load_trt)
+        )
 
         return self._cosyvoice_model
 
+    def _normalize_cosyvoice_onnx_provider(self, provider: str | None) -> str:
+        normalized = str(provider or "cpu").strip().lower()
+        if normalized not in {"cpu", "cuda", "auto"}:
+            return "cpu"
+        return normalized
+
+    def _inspect_cosyvoice_runtime_environment(self, requested_provider: str) -> str:
+        try:
+            import torch
+        except Exception as exc:  # pragma: no cover - runtime dependency
+            raise RuntimeError("CosyVoice 需要可用的 PyTorch 运行时。") from exc
+
+        torch_cuda_available = bool(torch.cuda.is_available())
+        torch_device_name = torch.cuda.get_device_name(0) if torch_cuda_available else None
+        available_onnx_providers: list[str] = []
+        try:
+            import onnxruntime as ort
+        except Exception as exc:  # pragma: no cover - runtime dependency
+            self._refresh_runtime_trace_snapshot(
+                requested_onnx_provider=requested_provider,
+                available_onnx_providers=[],
+                torch_cuda_available=torch_cuda_available,
+                torch_device_name=torch_device_name,
+            )
+            if requested_provider == "cuda":
+                raise TTSRuntimeValidationError(
+                    "TTS_COSYVOICE_ONNX_PROVIDER=cuda，但当前环境无法导入 onnxruntime。"
+                ) from exc
+            logger.warning("onnxruntime import failed; CosyVoice frontend will fall back to CPU.")
+            return "cpu"
+
+        available_onnx_providers = [str(item) for item in ort.get_available_providers()]
+        effective_provider = requested_provider
+        has_cuda_provider = "CUDAExecutionProvider" in available_onnx_providers
+        self._refresh_runtime_trace_snapshot(
+            requested_onnx_provider=requested_provider,
+            available_onnx_providers=available_onnx_providers,
+            torch_cuda_available=torch_cuda_available,
+            torch_device_name=torch_device_name,
+        )
+        if requested_provider == "auto":
+            effective_provider = "cuda" if torch_cuda_available and has_cuda_provider else "cpu"
+            if effective_provider == "cpu":
+                logger.warning(
+                    "CosyVoice ONNX provider auto fallback to CPU; CUDAExecutionProvider unavailable."
+                )
+        elif requested_provider == "cuda" and not has_cuda_provider:
+            raise TTSRuntimeValidationError(
+                "TTS_COSYVOICE_ONNX_PROVIDER=cuda，但当前 onnxruntime 未暴露 CUDAExecutionProvider。"
+            )
+        return effective_provider
+
     def _configure_cosyvoice_runtime_environment(self) -> None:
-        provider = self.settings.tts_cosyvoice_onnx_provider.strip().lower()
-        if provider not in {"cpu", "cuda", "auto"}:
-            provider = "cpu"
-        os.environ["COSYVOICE_ONNX_PROVIDER"] = provider
+        requested_provider = self._normalize_cosyvoice_onnx_provider(self.settings.tts_cosyvoice_onnx_provider)
+        effective_provider = self._inspect_cosyvoice_runtime_environment(requested_provider)
+        os.environ["COSYVOICE_ONNX_PROVIDER"] = effective_provider
 
     def _import_cosyvoice_module(self):
         try:
@@ -407,21 +544,38 @@ class TTSService:
                 prompt_speech_feat = kwargs.get("prompt_speech_feat", torch.zeros(1, 0, 80))
                 source_speech_token = kwargs.get("source_speech_token", torch.zeros(1, 0, dtype=torch.int32))
                 this_uuid = str(uuid.uuid1())
+                stream_started_at = perf_counter()
+                llm_done_state = {"at_ms": None}
                 with self.lock:
                     self.tts_speech_token_dict[this_uuid], self.llm_end_dict[this_uuid] = [], False
                     self.hift_cache_dict[this_uuid] = None
 
+                def mark_llm_done() -> None:
+                    if llm_done_state["at_ms"] is None:
+                        llm_done_state["at_ms"] = int(round((perf_counter() - stream_started_at) * 1000))
+
+                def llm_target() -> None:
+                    try:
+                        self.llm_job(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid)
+                    finally:
+                        mark_llm_done()
+
+                def vc_target() -> None:
+                    try:
+                        self.vc_job(source_speech_token, this_uuid)
+                    finally:
+                        mark_llm_done()
+
                 if source_speech_token.shape[1] == 0:
-                    producer = threading.Thread(
-                        target=self.llm_job,
-                        args=(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid),
-                    )
+                    producer = threading.Thread(target=llm_target)
                 else:
-                    producer = threading.Thread(target=self.vc_job, args=(source_speech_token, this_uuid))
+                    producer = threading.Thread(target=vc_target)
                 producer.start()
 
                 try:
                     token_offset = 0
+                    total_token_wait_ms = 0
+                    total_token2wav_ms = 0
                     base_token_hop_len = int(getattr(self, "token_hop_len", profile.initial_token_hop_len))
                     token_hop_len = base_token_hop_len
                     configured_max_hop_len = int(getattr(self, "token_max_hop_len", base_token_hop_len))
@@ -436,44 +590,86 @@ class TTSService:
                         - flow_prompt_speech_token.shape[1]
                     )
                     while True:
-                        time.sleep(0.05)
-                        this_token_hop_len = token_hop_len + prompt_token_pad if token_offset == 0 else token_hop_len
-                        if len(self.tts_speech_token_dict[this_uuid]) - token_offset >= this_token_hop_len + self.flow.pre_lookahead_len:
-                            this_tts_speech_token = torch.tensor(
-                                self.tts_speech_token_dict[this_uuid][: token_offset + this_token_hop_len + self.flow.pre_lookahead_len]
-                            ).unsqueeze(dim=0)
-                            this_tts_speech = self.token2wav(
-                                token=this_tts_speech_token,
-                                prompt_token=flow_prompt_speech_token,
-                                prompt_feat=prompt_speech_feat,
-                                embedding=flow_embedding,
-                                token_offset=token_offset,
-                                uuid=this_uuid,
-                                stream=stream,
-                                finalize=False,
-                            )
-                            token_offset += this_token_hop_len
-                            next_hop = int(round(token_hop_len * stream_scale_factor))
-                            token_hop_len = min(token_max_hop_len, max(base_token_hop_len, next_hop))
-                            yield {"tts_speech": this_tts_speech.cpu()}
-                        if (
-                            self.llm_end_dict[this_uuid] is True
-                            and len(self.tts_speech_token_dict[this_uuid]) - token_offset
-                            < this_token_hop_len + self.flow.pre_lookahead_len
-                        ):
+                        wait_started_at = perf_counter()
+                        should_finalize = False
+                        while True:
+                            time.sleep(0.05)
+                            this_token_hop_len = token_hop_len + prompt_token_pad if token_offset == 0 else token_hop_len
+                            available_tokens = len(self.tts_speech_token_dict[this_uuid]) - token_offset
+                            if available_tokens >= this_token_hop_len + self.flow.pre_lookahead_len:
+                                break
+                            if (
+                                self.llm_end_dict[this_uuid] is True
+                                and available_tokens < this_token_hop_len + self.flow.pre_lookahead_len
+                            ):
+                                should_finalize = True
+                                break
+                        token_wait_ms = int(round((perf_counter() - wait_started_at) * 1000))
+                        if should_finalize:
                             break
+                        chunk_token_offset = token_offset
+                        token2wav_started_at = perf_counter()
+                        this_tts_speech_token = torch.tensor(
+                            self.tts_speech_token_dict[this_uuid][
+                                : chunk_token_offset + this_token_hop_len + self.flow.pre_lookahead_len
+                            ]
+                        ).unsqueeze(dim=0)
+                        this_tts_speech = self.token2wav(
+                            token=this_tts_speech_token,
+                            prompt_token=flow_prompt_speech_token,
+                            prompt_feat=prompt_speech_feat,
+                            embedding=flow_embedding,
+                            token_offset=chunk_token_offset,
+                            uuid=this_uuid,
+                            stream=stream,
+                            finalize=False,
+                        )
+                        token2wav_ms = int(round((perf_counter() - token2wav_started_at) * 1000))
+                        total_token_wait_ms += token_wait_ms
+                        total_token2wav_ms += token2wav_ms
+                        token_offset += this_token_hop_len
+                        next_hop = int(round(token_hop_len * stream_scale_factor))
+                        token_hop_len = min(token_max_hop_len, max(base_token_hop_len, next_hop))
+                        yield {
+                            "tts_speech": this_tts_speech.cpu(),
+                            "_ai_chat_trace": {
+                                "token_wait_ms": token_wait_ms,
+                                "token2wav_ms": token2wav_ms,
+                                "hop_len": this_token_hop_len,
+                                "token_offset": chunk_token_offset,
+                                "is_final": False,
+                            },
+                        }
                     producer.join()
+                    mark_llm_done()
+                    final_decode_enter_ms = int(round((perf_counter() - stream_started_at) * 1000))
+                    final_token_offset = token_offset
+                    final_hop_len = max(len(self.tts_speech_token_dict[this_uuid]) - final_token_offset, 0)
+                    token2wav_started_at = perf_counter()
                     this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
                     this_tts_speech = self.token2wav(
                         token=this_tts_speech_token,
                         prompt_token=flow_prompt_speech_token,
                         prompt_feat=prompt_speech_feat,
                         embedding=flow_embedding,
-                        token_offset=token_offset,
+                        token_offset=final_token_offset,
                         uuid=this_uuid,
                         finalize=True,
                     )
-                    yield {"tts_speech": this_tts_speech.cpu()}
+                    final_token2wav_ms = int(round((perf_counter() - token2wav_started_at) * 1000))
+                    total_token2wav_ms += final_token2wav_ms
+                    yield {
+                        "tts_speech": this_tts_speech.cpu(),
+                        "_ai_chat_trace": {
+                            "token_wait_ms": 0,
+                            "token2wav_ms": final_token2wav_ms,
+                            "hop_len": final_hop_len,
+                            "token_offset": final_token_offset,
+                            "is_final": True,
+                            "tts_llm_done_ms": llm_done_state["at_ms"],
+                            "tts_final_decode_enter_ms": final_decode_enter_ms,
+                        },
+                    }
                 finally:
                     with self.lock:
                         self.tts_speech_token_dict.pop(this_uuid, None)
@@ -745,12 +941,12 @@ class TTSService:
         frontend: object,
         prompt_wav: str,
         reference_text: str | None,
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], PromptFeatureCacheSnapshot]:
         cache_key = (str(Path(prompt_wav).resolve()), (reference_text or "").strip())
         cached = self._prompt_feature_cache.get(cache_key)
         if cached is not None:
             logger.info("tts_prompt_cache prompt_cache_hit=1 prompt_cache_build_ms=0.0")
-            return cached
+            return cached, PromptFeatureCacheSnapshot(hit=True, build_ms=0.0)
 
         started_at = perf_counter()
         cached = {
@@ -761,21 +957,21 @@ class TTSService:
         build_ms = round((perf_counter() - started_at) * 1000, 3)
         self._prompt_feature_cache[cache_key] = cached
         logger.info("tts_prompt_cache prompt_cache_hit=0 prompt_cache_build_ms=%s", build_ms)
-        return cached
+        return cached, PromptFeatureCacheSnapshot(hit=False, build_ms=build_ms)
 
     def _bind_prompt_feature_cache(
         self,
         frontend: object,
         prompt_wav: str,
         reference_text: str | None,
-    ):
+    ) -> tuple[Callable[[], None], PromptFeatureCacheSnapshot | None]:
         if not all(
             hasattr(frontend, attr)
             for attr in ("_extract_speech_feat", "_extract_speech_token", "_extract_spk_embedding")
         ):
-            return lambda: None
+            return (lambda: None), None
 
-        cached = self._get_cached_prompt_features(frontend, prompt_wav, reference_text)
+        cached, cache_snapshot = self._get_cached_prompt_features(frontend, prompt_wav, reference_text)
         resolved_prompt = str(Path(prompt_wav).resolve())
         original_feat = frontend._extract_speech_feat
         original_token = frontend._extract_speech_token
@@ -808,7 +1004,19 @@ class TTSService:
             frontend._extract_speech_token = original_token
             frontend._extract_spk_embedding = original_embedding
 
-        return restore
+        return restore, cache_snapshot
+
+    def _attach_prompt_cache_trace(
+        self,
+        result: object,
+        cache_snapshot: PromptFeatureCacheSnapshot | None,
+    ) -> object:
+        if isinstance(result, dict):
+            result["_ai_chat_prompt_cache_hit"] = cache_snapshot.hit if cache_snapshot is not None else None
+            result["_ai_chat_prompt_cache_build_ms"] = (
+                cache_snapshot.build_ms if cache_snapshot is not None else None
+            )
+        return result
 
     def _extract_cosyvoice_audio_result(
         self,
@@ -849,6 +1057,11 @@ class TTSService:
         if extracted is None:
             return None, offset_ms
 
+        trace_meta = result.get("_ai_chat_trace")
+        if not isinstance(trace_meta, dict):
+            trace_meta = {}
+        prompt_cache_hit = result.get("_ai_chat_prompt_cache_hit")
+        prompt_cache_build_ms = result.get("_ai_chat_prompt_cache_build_ms")
         audio_payload, sample_rate = extracted
         pcm, _, _ = self._coerce_cosyvoice_pcm_payload(audio_payload, sample_rate)
         # Only the first chunk carries model warm-up padding worth trimming.
@@ -875,8 +1088,24 @@ class TTSService:
             phonemes=phonemes,
             offset_ms=offset_ms,
             sample_rate=sample_rate,
-            is_final=False,
+            is_final=bool(trace_meta.get("is_final", False)),
             model_chunk_ready_ms=int((perf_counter() - stream_started_at) * 1000),
+            prompt_cache_hit=prompt_cache_hit if isinstance(prompt_cache_hit, bool) else None,
+            prompt_cache_build_ms=(
+                float(prompt_cache_build_ms) if isinstance(prompt_cache_build_ms, (int, float)) else None
+            ),
+            token_wait_ms=int(trace_meta.get("token_wait_ms", 0)),
+            token2wav_ms=int(trace_meta.get("token2wav_ms", 0)),
+            hop_len=int(trace_meta.get("hop_len", 0)),
+            token_offset=int(trace_meta.get("token_offset", 0)),
+            tts_llm_done_ms=(
+                int(trace_meta["tts_llm_done_ms"]) if "tts_llm_done_ms" in trace_meta else None
+            ),
+            tts_final_decode_enter_ms=(
+                int(trace_meta["tts_final_decode_enter_ms"])
+                if "tts_final_decode_enter_ms" in trace_meta
+                else None
+            ),
         )
         next_offset_ms = offset_ms + int(round(len(trimmed_pcm) * 1000 / max(sample_rate, 1)))
         logger.info(
@@ -938,7 +1167,7 @@ class TTSService:
                 yield text
 
         def worker() -> None:
-            restore = self._bind_prompt_feature_cache(
+            restore, prompt_cache_snapshot = self._bind_prompt_feature_cache(
                 getattr(cosyvoice, "frontend", object()),
                 prompt_wav,
                 reference_text,
@@ -954,6 +1183,7 @@ class TTSService:
                     stream=True,
                     speed=float(speed or 1.0),
                 ):
+                    result = self._attach_prompt_cache_trace(result, prompt_cache_snapshot)
                     if first_result_pending["value"]:
                         payload = (first_segment[0], first_segment[1], result)
                         first_result_pending["value"] = False
@@ -1017,7 +1247,7 @@ class TTSService:
         loop = asyncio.get_running_loop()
 
         def worker() -> None:
-            restore = self._bind_prompt_feature_cache(
+            restore, prompt_cache_snapshot = self._bind_prompt_feature_cache(
                 getattr(cosyvoice, "frontend", object()),
                 prompt_wav,
                 reference_text,
@@ -1030,6 +1260,7 @@ class TTSService:
                     stream=True,
                     speed=float(speed or 1.0),
                 ):
+                    result = self._attach_prompt_cache_trace(result, prompt_cache_snapshot)
                     loop.call_soon_threadsafe(queue.put_nowait, ("data", result))
                 loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
             except Exception as exc:  # pragma: no cover - runtime dependency
@@ -1135,50 +1366,17 @@ class TTSService:
         tts_emotion_enabled: bool = True,
     ) -> AsyncIterator[StreamingTTSChunk]:
         del voice_id
-
-        if self.settings.tts_engine != "cosyvoice":
-            async for seq, segment in self._iter_clean_reply_segments(segments):
-                async for chunk in self.stream_synthesize_segment(
-                    segment,
-                    seq=seq,
-                    emotion=emotion,
-                    reference_audio_path=reference_audio_path,
-                    reference_text=reference_text,
-                    speed=speed,
-                    tts_emotion_enabled=tts_emotion_enabled,
-                ):
-                    yield chunk
-            return
-
-        reply_started_at = perf_counter()
-        last_chunk: StreamingTTSChunk | None = None
-        offset_ms = 0
-        chunk_index = 0
-        async for seq, text, result in self._iter_cosyvoice_reply_results_async(
-            segments,
-            emotion=emotion,
-            reference_audio_path=reference_audio_path,
-            reference_text=reference_text,
-            speed=speed,
-            emotion_enabled=tts_emotion_enabled,
-        ):
-            current_chunk, offset_ms = self._build_streaming_chunk_from_result(
+        async for seq, segment in self._iter_clean_reply_segments(segments):
+            async for chunk in self.stream_synthesize_segment(
+                segment,
                 seq=seq,
-                chunk_index=chunk_index,
-                text=text,
-                result=result,
-                offset_ms=offset_ms,
-                stream_started_at=reply_started_at,
-            )
-            if current_chunk is None:
-                continue
-
-            chunk_index += 1
-            last_chunk = current_chunk
-            yield current_chunk
-
-        if last_chunk is not None:
-            last_chunk.is_final = True
+                emotion=emotion,
+                reference_audio_path=reference_audio_path,
+                reference_text=reference_text,
+                speed=speed,
+                tts_emotion_enabled=tts_emotion_enabled,
+            ):
+                yield chunk
 
     async def stream_synthesize_reply(
         self,
@@ -1277,7 +1475,7 @@ class TTSService:
         cosyvoice = self._load_cosyvoice_model()
         prompt_wav = self._resolve_reference_audio_path(reference_audio_path)
         instruct_text = self._build_cosyvoice_instruction(emotion, emotion_enabled=emotion_enabled)
-        restore = self._bind_prompt_feature_cache(
+        restore, _ = self._bind_prompt_feature_cache(
             getattr(cosyvoice, 'frontend', object()),
             prompt_wav,
             reference_text,

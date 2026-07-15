@@ -15,7 +15,7 @@ from app.db.session import init_db, shutdown_db
 from app.services.asr import get_asr_service
 from app.services.avatar_trace import get_avatar_trace_service
 from app.services.reports import get_report_service
-from app.services.tts import get_tts_service
+from app.services.tts import TTSRuntimeValidationError, get_tts_service
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -34,6 +34,12 @@ async def lifespan(_: FastAPI):
         await trace_service.start()
         await report_service.start()
         logger.info("Database initialization finished.")
+    except TTSRuntimeValidationError:
+        await report_service.stop()
+        await trace_service.stop()
+        await shutdown_db()
+        logger.exception("Backend startup failed due to invalid TTS runtime configuration.")
+        raise
     except Exception:  # pragma: no cover - startup should remain resilient
         logger.exception("Backend startup finished with degraded database state.")
     yield

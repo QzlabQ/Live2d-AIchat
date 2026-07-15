@@ -21,18 +21,15 @@ class FakeTraceService:
 
 
 class TTSSegmenterTestCase(unittest.TestCase):
-    def test_prefers_soft_boundary_even_when_strong_boundary_exists_later(self) -> None:
+    def test_waits_for_strong_boundary_when_it_is_within_hard_limit(self) -> None:
         segmenter = TTSSegmenter(soft_min_chars=12, soft_max_chars=20, hard_max_chars=28)
-        text = (
-            "第一段先介绍夜游开放时间，接着补充灯光亮起后的路线建议，"
-            "最后再说明游客拍照和排队的注意事项。"
-        )
+        text = "先介绍夜游开放时间，再补充灯光路线。最后说明游客拍照注意事项。"
 
         segments = segmenter.feed(text) + segmenter.flush()
 
         self.assertGreaterEqual(len(segments), 2)
-        self.assertTrue(segments[0].endswith("，"))
-        self.assertLessEqual(len(segments[0]), 20)
+        self.assertTrue(segments[0].endswith("。"))
+        self.assertIn("灯光路线。", segments[0])
 
     def test_does_not_hard_split_long_sentence_every_24_chars(self) -> None:
         segmenter = TTSSegmenter()
@@ -56,6 +53,41 @@ class TTSSegmenterTestCase(unittest.TestCase):
         self.assertGreaterEqual(len(segments), 2)
         self.assertTrue(segments[0].endswith("，"))
         self.assertLessEqual(len(segments[0]), 25)
+
+    def test_v100_segmenter_merges_short_sentence_into_later_strong_boundary(self) -> None:
+        segmenter = TTSSegmenter(soft_min_chars=24, soft_max_chars=56, hard_max_chars=96)
+        first = "如果你是第一次来，建议优先走核心景点主线。"
+        second = "路线规划：南门入园→佛足坛→九龙灌浴观赏表演→菩提大道欣赏太湖风光→灵山大佛登顶俯瞰全景→曼飞龙塔园林景观→灵山。"
+
+        segments = segmenter.feed(first)
+        segments.extend(segmenter.feed(second))
+        segments.extend(segmenter.flush())
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0], first + second)
+
+    def test_v100_segment_thresholds_reduce_segment_count_for_long_reply(self) -> None:
+        sentence_pieces = [
+            "如果你是第一次来，建议优先走核心景点主线。",
+            "路线规划：南门入园→佛足坛→九龙灌浴观赏表演→菩提大道欣赏太湖风光→灵山大佛登顶俯瞰全景→曼飞龙塔园林景观→灵山。",
+            "精舍禅意园林→梵宫广场→出口。",
+            "如果你偏亲子、夜游或半日游，我可以再帮你细化路线。",
+        ]
+
+        default_segments = TTSSegmenter(soft_min_chars=12, soft_max_chars=20, hard_max_chars=28)
+        v100_segments = TTSSegmenter(soft_min_chars=24, soft_max_chars=56, hard_max_chars=96)
+
+        baseline: list[str] = []
+        optimized: list[str] = []
+        for piece in sentence_pieces:
+            baseline.extend(default_segments.feed(piece))
+            optimized.extend(v100_segments.feed(piece))
+        baseline.extend(default_segments.flush())
+        optimized.extend(v100_segments.flush())
+
+        self.assertEqual(len(baseline), 5)
+        self.assertEqual(len(optimized), 2)
+        self.assertLess(len(optimized), len(baseline))
 
 
 class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
@@ -124,6 +156,9 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
 
         class FakeTTSService:
             settings = SimpleNamespace(tts_engine="cosyvoice")
+
+            def get_runtime_trace_snapshot(self) -> dict[str, object]:
+                return {"tts_synthesis_strategy": "per_segment"}
 
             async def stream_synthesize_segment(self, *args, **kwargs):
                 yield StreamingTTSChunk(
@@ -218,6 +253,8 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace_payload["chat_mode"], "rag")
         self.assertEqual(trace_payload["tts_engine"], "cosyvoice")
         self.assertTrue(trace_payload["streaming"])
+        self.assertEqual(trace_payload["tts_synthesis_strategy"], "per_segment")
+        self.assertEqual(trace_payload["tts_vendor_session_count"], 1)
         self.assertEqual(trace_payload["segment_count"], 1)
         self.assertEqual(trace_payload["audio_chunk_count"], 1)
         self.assertIn("llm_stream_start_ms", trace_payload["metrics"])
@@ -240,7 +277,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("avatar_phase_cooldown_ms", trace_payload["metrics"])
         self.assertIn("avatar_phase_idle_ms", trace_payload["metrics"])
 
-    async def test_streaming_capability_prefers_reply_scoped_tts_session(self) -> None:
+    async def test_streaming_capability_prefers_reply_streaming_api_with_per_segment_tts(self) -> None:
         class FakeWebSocket:
             def __init__(self) -> None:
                 self.messages: list[dict[str, object]] = []
@@ -280,16 +317,19 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.segments: list[tuple[int, str]] = []
 
+            def get_runtime_trace_snapshot(self) -> dict[str, object]:
+                return {"tts_synthesis_strategy": "per_segment"}
+
             async def stream_synthesize_reply(self, segments, **kwargs):
                 async for seq, text in segments:
                     self.segments.append((seq, text))
                     yield StreamingTTSChunk(
                         seq=seq,
-                        chunk_index=len(self.segments) - 1,
+                        chunk_index=0,
                         text=text,
                         audio_bytes=b"\x01\x02",
                         phonemes=[],
-                        offset_ms=(len(self.segments) - 1) * 20,
+                        offset_ms=0,
                         sample_rate=24000,
                         channels=1,
                         encoding="pcm16le",
@@ -297,7 +337,7 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
                     )
 
             async def stream_synthesize_segment(self, *args, **kwargs):
-                raise AssertionError("reply-scoped streaming should be preferred")
+                raise AssertionError("reply streaming API should be preferred")
 
         websocket = FakeWebSocket()
         trace_service = FakeTraceService()
@@ -339,9 +379,11 @@ class StreamAssistantReplyTestCase(unittest.IsolatedAsyncioTestCase):
         audio_chunks = [item for item in websocket.messages if item["type"] == "tts_audio_chunk"]
         self.assertEqual(tts_service.segments, [(0, "Hello"), (1, "there.")])
         self.assertEqual([item["segment_id"] for item in audio_chunks], [0, 1])
-        self.assertEqual([item["chunk_index"] for item in audio_chunks], [0, 1])
+        self.assertEqual([item["chunk_index"] for item in audio_chunks], [0, 0])
         self.assertIn("audio_done", [item["type"] for item in websocket.messages])
         self.assertEqual(trace_service.enqueued_payloads[0]["segment_count"], 2)
+        self.assertEqual(trace_service.enqueued_payloads[0]["tts_synthesis_strategy"], "per_segment")
+        self.assertEqual(trace_service.enqueued_payloads[0]["tts_vendor_session_count"], 2)
 
     async def test_streaming_without_audio_falls_back_to_cooldown_and_idle(self) -> None:
         class FakeWebSocket:

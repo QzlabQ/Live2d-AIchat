@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import HTTPException, status
@@ -17,6 +17,9 @@ from app.services.rag import is_out_of_domain_question, normalize_question
 VALID_KNOWLEDGE_GAP_STATUSES = {"pending", "draft", "imported", "ignored"}
 MANUAL_KNOWLEDGE_GAP_STATUSES = {"pending", "draft", "ignored"}
 MAX_SAMPLE_QUESTIONS = 6
+
+
+UTC = timezone.utc
 
 
 def utc_now() -> datetime:

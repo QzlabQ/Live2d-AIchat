@@ -687,29 +687,33 @@ async function handleStreamingAudio(payload: TtsAudioChunkEvent) {
     const scheduledLeadMs = streamPlaybackStarted
       ? getScheduledLeadMs(context.currentTime, streamNextStartTime)
       : 0
-    if (streamPlaybackStarted && shouldResetBufferedPlayback(scheduledLeadMs)) {
-      streamPlaybackStarted = false
-      streamNextStartTime = 0
-      playbackTelemetry.value.underrunCount += 1
-    }
-
     pendingStreamAudio.push({
       payload,
       samples,
       durationMs: (samples.length / payload.sample_rate) * 1000,
     })
     updateStreamPlaybackTelemetry(context)
+    const bufferedPlaybackState = {
+      bufferedAudioMs: playbackTelemetry.value.bufferedAudioMs,
+      pendingChunkCount: pendingStreamAudio.length,
+      isFinalChunkBuffered: payload.is_final,
+    }
+    if (
+      streamPlaybackStarted &&
+      shouldResetBufferedPlayback(
+        bufferedPlaybackState,
+        scheduledLeadMs,
+        DEFAULT_STREAM_AUDIO_POLICY,
+      )
+    ) {
+      streamPlaybackStarted = false
+      streamNextStartTime = 0
+      playbackTelemetry.value.underrunCount += 1
+    }
 
     if (
       !streamPlaybackStarted &&
-      !shouldStartBufferedPlayback(
-        {
-          bufferedAudioMs: playbackTelemetry.value.bufferedAudioMs,
-          pendingChunkCount: pendingStreamAudio.length,
-          isFinalChunkBuffered: payload.is_final,
-        },
-        DEFAULT_STREAM_AUDIO_POLICY,
-      )
+      !shouldStartBufferedPlayback(bufferedPlaybackState, DEFAULT_STREAM_AUDIO_POLICY)
     ) {
       return
     }

@@ -57,8 +57,27 @@ export function shouldStartBufferedPlayback(
   return state.isFinalChunkBuffered;
 }
 
-export function shouldResetBufferedPlayback(scheduledLeadMs: number) {
-  return scheduledLeadMs <= 0;
+export function shouldResetBufferedPlayback(
+  state: BufferedPlaybackState,
+  scheduledLeadMs: number,
+  policy: StreamAudioPolicy = DEFAULT_STREAM_AUDIO_POLICY,
+) {
+  if (scheduledLeadMs > 0) {
+    return false;
+  }
+
+  if (state.pendingChunkCount <= 0) {
+    return true;
+  }
+
+  if (state.isFinalChunkBuffered) {
+    return false;
+  }
+
+  return (
+    state.bufferedAudioMs < policy.minScheduledLeadMs &&
+    state.pendingChunkCount < policy.initialChunkCount
+  );
 }
 
 export function getScheduledLeadMs(currentTime: number, nextStartTime: number) {

@@ -38,6 +38,12 @@ conda env create -f environment.ai-chat-gpu.yml
 conda activate ai-chat-gpu
 python -m pip install --upgrade pip
 python -m pip install -r requirements.runtime.txt --no-build-isolation
+python -m pip uninstall -y onnxruntime onnxruntime-gpu
+python -m pip install onnxruntime-gpu==1.18.0 --no-build-isolation
+python - <<'PY'
+import onnxruntime as ort
+print(ort.get_available_providers())
+PY
 Copy-Item .env.example .env
 ```
 
@@ -48,7 +54,15 @@ cd backend
 conda activate ai-chat-gpu
 conda env update -f environment.ai-chat-gpu.yml --prune
 python -m pip install -r requirements.runtime.txt --no-build-isolation
+python -m pip uninstall -y onnxruntime onnxruntime-gpu
+python -m pip install onnxruntime-gpu==1.18.0 --no-build-isolation
+python - <<'PY'
+import onnxruntime as ort
+print(ort.get_available_providers())
+PY
 ```
+
+如果输出里没有 `CUDAExecutionProvider`，不要继续启动 CosyVoice GPU。
 
 ## 当前经过验证的基础版本
 
@@ -64,6 +78,8 @@ python -m pip install -r requirements.runtime.txt --no-build-isolation
 - `environment.ai-chat-gpu.yml` 固定的是基础二进制环境
 - 实际 `pip` 安装阶段仍会补齐项目运行依赖
 - 项目当前真实可运行环境来自 `conda + pip` 混合方案，不是纯 `pip venv`
+- `chromadb` 和 `faster-whisper` 的依赖链会重新装回 CPU 版 `onnxruntime`
+- 只要你重新安装过知识库 / ASR 依赖，就要再次执行一次 provider 校验
 
 ## 当前功能所需本地资源
 

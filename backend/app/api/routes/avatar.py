@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -21,10 +22,27 @@ from app.schemas.avatar import (
 from app.services.admin_auth import require_admin_auth
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
-REPO_ROOT = BACKEND_ROOT.parent
-LIVE2D_ROOT = REPO_ROOT / "frontend" / "public" / "live2d"
+APP_ROOT = BACKEND_ROOT.parent
+PROJECT_ROOT = APP_ROOT.parent
+LIVE2D_ROOT = APP_ROOT / "frontend" / "public" / "live2d"
 
 router = APIRouter(prefix="/admin/avatar", dependencies=[Depends(require_admin_auth)])
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _build_allowed_reference_audio_roots() -> list[Path]:
+    return [
+        Path(os.path.abspath(BACKEND_ROOT)),
+        Path(os.path.abspath(PROJECT_ROOT / "vendor")),
+        Path(os.path.abspath(PROJECT_ROOT / "data" / "uploads")),
+    ]
 
 
 def build_avatar_select(*, profile_id: int | None = None) -> Select[tuple[AvatarConfig]]:
@@ -57,19 +75,24 @@ def validate_reference_audio_path(value: str) -> str:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = BACKEND_ROOT / candidate
-    resolved = candidate.resolve()
-    root = BACKEND_ROOT.resolve()
-    if resolved != root and root not in resolved.parents:
+
+    normalized_candidate = Path(os.path.abspath(candidate))
+    resolved = normalized_candidate.resolve()
+    allowed_roots = _build_allowed_reference_audio_roots()
+    if not any(
+        _is_within_root(normalized_candidate, root) or _is_within_root(resolved, root.resolve())
+        for root in allowed_roots
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="TTS reference audio must be inside the backend workspace.",
+            detail="TTS reference audio must be inside the backend workspace or approved shared storage.",
         )
     if not resolved.exists() or not resolved.is_file():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="TTS reference audio file does not exist.",
         )
-    return str(resolved)
+    return str(normalized_candidate)
 
 
 def discover_live2d_models() -> list[Live2DModelOption]:
@@ -78,7 +101,7 @@ def discover_live2d_models() -> list[Live2DModelOption]:
 
     options: list[Live2DModelOption] = []
     for model_path in sorted(LIVE2D_ROOT.rglob("*.model3.json")):
-        web_path = "/" + str(model_path.relative_to(REPO_ROOT / "frontend" / "public")).replace("\\", "/")
+        web_path = "/" + str(model_path.relative_to(APP_ROOT / "frontend" / "public")).replace("\\", "/")
         options.append(
             Live2DModelOption(
                 path=web_path,

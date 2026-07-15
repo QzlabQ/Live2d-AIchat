@@ -5,12 +5,14 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.core.config import Settings
 from app.services.tts import (
     RemoteTTSProvider,
     StreamingTTSChunk,
     TTSService,
+    TTSRuntimeValidationError,
     resolve_stream_hop_limit,
     resolve_stream_profile,
 )
@@ -101,6 +103,7 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         original = os.environ.get('COSYVOICE_ONNX_PROVIDER')
         try:
+            service._inspect_cosyvoice_runtime_environment = lambda provider: "cpu"
             service._configure_cosyvoice_runtime_environment()
             self.assertEqual(os.environ.get('COSYVOICE_ONNX_PROVIDER'), 'cpu')
         finally:
@@ -108,6 +111,24 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
                 os.environ.pop('COSYVOICE_ONNX_PROVIDER', None)
             else:
                 os.environ['COSYVOICE_ONNX_PROVIDER'] = original
+
+    def test_cuda_provider_validation_fails_without_cuda_execution_provider(self) -> None:
+        service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_onnx_provider='cuda'))
+        fake_torch = SimpleNamespace(
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                get_device_name=lambda _index: 'Tesla V100-PCIE-32GB',
+            )
+        )
+        fake_ort = SimpleNamespace(get_available_providers=lambda: ['CPUExecutionProvider'])
+
+        with patch.dict('sys.modules', {'torch': fake_torch, 'onnxruntime': fake_ort}):
+            with self.assertRaises(TTSRuntimeValidationError):
+                service._inspect_cosyvoice_runtime_environment('cuda')
+
+        snapshot = service.get_runtime_trace_snapshot()
+        self.assertEqual(snapshot['requested_onnx_provider'], 'cuda')
+        self.assertEqual(snapshot['available_onnx_providers'], ['CPUExecutionProvider'])
 
     def test_load_cosyvoice_model_passes_runtime_flags_to_factory(self) -> None:
         calls: list[dict[str, object]] = []
@@ -128,10 +149,73 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
             )
             service._import_cosyvoice_module = lambda: SimpleNamespace(CosyVoice2=fake_factory)
             service._resolve_cosyvoice_device = lambda: "cpu"
+            service._configure_cosyvoice_runtime_environment = lambda: None
 
             service._load_cosyvoice_model()
         self.assertEqual(calls[0]['model_path'], str(Path(temp_dir)))
         self.assertTrue(calls[0]['fp16'])
+        self.assertFalse(calls[0].get('load_trt', False))
+
+    def test_load_cosyvoice_model_passes_trt_flags_to_factory_when_enabled(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_factory(model_path: str, **kwargs):
+            calls.append({'model_path': model_path, **kwargs})
+            return object()
+
+        with TemporaryDirectory() as temp_dir:
+            service = TTSService(
+                Settings(
+                    tts_engine='cosyvoice',
+                    tts_cosyvoice_model_path=temp_dir,
+                    tts_cosyvoice_device='cpu',
+                    tts_cosyvoice_fp16=True,
+                    tts_cosyvoice_load_jit=False,
+                    tts_cosyvoice_load_trt=True,
+                    tts_cosyvoice_trt_concurrent=1,
+                    tts_segment_soft_min_chars=22,
+                    tts_segment_soft_max_chars=40,
+                    tts_segment_hard_max_chars=64,
+                )
+            )
+            service._import_cosyvoice_module = lambda: SimpleNamespace(CosyVoice2=fake_factory)
+            service._resolve_cosyvoice_device = lambda: "cpu"
+            service._configure_cosyvoice_runtime_environment = lambda: None
+
+            service._load_cosyvoice_model()
+
+        self.assertEqual(calls[0]['model_path'], str(Path(temp_dir)))
+        self.assertTrue(calls[0]['fp16'])
+        self.assertTrue(calls[0]['load_trt'])
+        self.assertEqual(calls[0]['trt_concurrent'], 1)
+        snapshot = service.get_runtime_trace_snapshot()
+        self.assertTrue(snapshot['tts_cosyvoice_load_trt'])
+        self.assertEqual(snapshot['tts_cosyvoice_trt_concurrent'], 1)
+        self.assertTrue(snapshot['tts_trt_engine_expected'])
+        self.assertTrue(snapshot['tts_trt_engine_loaded'])
+        self.assertEqual(snapshot['tts_segment_soft_min_chars'], 22)
+        self.assertEqual(snapshot['tts_segment_soft_max_chars'], 40)
+        self.assertEqual(snapshot['tts_segment_hard_max_chars'], 64)
+
+    def test_load_cosyvoice_model_fails_fast_when_trt_requested_but_runtime_load_fails(self) -> None:
+        def fake_factory(model_path: str, **kwargs):
+            raise RuntimeError("TensorRT runtime unavailable")
+
+        with TemporaryDirectory() as temp_dir:
+            service = TTSService(
+                Settings(
+                    tts_engine='cosyvoice',
+                    tts_cosyvoice_model_path=temp_dir,
+                    tts_cosyvoice_device='cpu',
+                    tts_cosyvoice_load_trt=True,
+                )
+            )
+            service._import_cosyvoice_module = lambda: SimpleNamespace(CosyVoice2=fake_factory)
+            service._resolve_cosyvoice_device = lambda: "cpu"
+            service._configure_cosyvoice_runtime_environment = lambda: None
+
+            with self.assertRaises(TTSRuntimeValidationError):
+                service._load_cosyvoice_model()
 
     def test_prompt_feature_cache_reuses_reference_audio_features(self) -> None:
         calls = {'feat': 0, 'token': 0, 'embedding': 0}
@@ -155,10 +239,18 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
             service = TTSService(Settings(tts_engine='cosyvoice'))
             frontend = FakeFrontend()
 
-            first = service._get_cached_prompt_features(frontend, str(prompt_wav), 'reference text')
-            second = service._get_cached_prompt_features(frontend, str(prompt_wav), 'reference text')
+            first, first_snapshot = service._get_cached_prompt_features(
+                frontend, str(prompt_wav), 'reference text'
+            )
+            second, second_snapshot = service._get_cached_prompt_features(
+                frontend, str(prompt_wav), 'reference text'
+            )
 
         self.assertEqual(first, second)
+        self.assertFalse(first_snapshot.hit)
+        self.assertTrue(second_snapshot.hit)
+        self.assertGreaterEqual(first_snapshot.build_ms, 0.0)
+        self.assertEqual(second_snapshot.build_ms, 0.0)
         self.assertEqual(calls, {'feat': 1, 'token': 1, 'embedding': 1})
 
     def test_cosyvoice2_synthesis_uses_instruct2_signature(self) -> None:
@@ -324,24 +416,29 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(remaining), 1)
         self.assertTrue(remaining[0].is_final)
 
-    async def test_cosyvoice_reply_streaming_reuses_single_vendor_session(self) -> None:
+    async def test_cosyvoice_reply_streaming_synthesizes_each_segment_independently(self) -> None:
         class FakeCosyVoiceModel:
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
 
-            def inference_instruct2_reply(self, text_iterator, instruct_text, prompt_wav, stream=False, speed=1.0):
-                received = list(text_iterator)
+            def inference_instruct2_reply(self, *args, **kwargs):
+                raise AssertionError("reply-scoped vendor session should not be used")
+
+            def inference_instruct2(self, tts_text, instruct_text, prompt_wav, stream=False, speed=1.0):
                 self.calls.append(
                     {
-                        'texts': received,
+                        'tts_text': tts_text,
                         'instruct_text': instruct_text,
                         'prompt_wav': prompt_wav,
                         'stream': stream,
                         'speed': speed,
                     }
                 )
-                yield {'tts_speech': [0.0] * 2400 + [0.3] * 2400, 'sample_rate': 24000}
-                yield {'tts_speech': [0.0] * 800 + [0.2] * 2400 + [0.0] * 800, 'sample_rate': 24000}
+                yield {
+                    'tts_speech': [0.0] * 2400 + [0.3] * 2400,
+                    'sample_rate': 24000,
+                    '_ai_chat_trace': {'token_offset': 0},
+                }
 
         async def segment_stream():
             yield 0, 'welcome to the'
@@ -365,25 +462,34 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
                 )
             ]
 
-        self.assertEqual(len(model.calls), 1)
-        self.assertEqual(model.calls[0]['texts'], ['welcome to the', 'botanical garden'])
-        self.assertTrue(model.calls[0]['stream'])
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual([call['tts_text'] for call in model.calls], ['welcome to the', 'botanical garden'])
+        self.assertTrue(all(call['stream'] for call in model.calls))
         self.assertEqual(len(chunks), 2)
-        self.assertEqual([item.chunk_index for item in chunks], [0, 1])
+        self.assertEqual([item.chunk_index for item in chunks], [0, 0])
         self.assertEqual([item.seq for item in chunks], [0, 1])
+        self.assertEqual([item.token_offset for item in chunks], [0, 0])
         self.assertTrue(chunks[-1].is_final)
 
     async def test_cosyvoice_reply_streaming_emits_first_chunk_before_reply_completion(self) -> None:
         release_second_segment = asyncio.Event()
 
         class FakeCosyVoiceModel:
-            def inference_instruct2_reply(self, text_iterator, instruct_text, prompt_wav, stream=False, speed=1.0):
-                first = next(text_iterator)
-                yield {'tts_speech': [0.3] * 2400, 'sample_rate': 24000}
-                assert first == 'welcome to the'
-                second = next(text_iterator)
-                assert second == 'botanical garden'
-                yield {'tts_speech': [0.2] * 2400, 'sample_rate': 24000}
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def inference_instruct2_reply(self, *args, **kwargs):
+                raise AssertionError("reply-scoped vendor session should not be used")
+
+            def inference_instruct2(self, tts_text, instruct_text, prompt_wav, stream=False, speed=1.0):
+                self.calls.append(tts_text)
+                if tts_text == 'welcome to the':
+                    yield {'tts_speech': [0.3] * 2400, 'sample_rate': 24000}
+                    return
+                if tts_text == 'botanical garden':
+                    yield {'tts_speech': [0.2] * 2400, 'sample_rate': 24000}
+                    return
+                raise AssertionError(f'unexpected text: {tts_text}')
 
         async def segment_stream():
             yield 0, 'welcome to the'
@@ -410,10 +516,63 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.seq, 0)
         self.assertEqual(first.chunk_index, 0)
-        self.assertFalse(first.is_final)
+        self.assertTrue(first.is_final)
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0].seq, 1)
         self.assertTrue(remaining[0].is_final)
+
+    async def test_cosyvoice_reply_streaming_reuses_prompt_cache_across_segments(self) -> None:
+        class FakeFrontend:
+            def __init__(self) -> None:
+                self.calls = {'feat': 0, 'token': 0, 'embedding': 0}
+
+            def _extract_speech_feat(self, prompt_wav):
+                self.calls['feat'] += 1
+                return f'feat:{prompt_wav}'
+
+            def _extract_speech_token(self, prompt_wav):
+                self.calls['token'] += 1
+                return f'token:{prompt_wav}'
+
+            def _extract_spk_embedding(self, prompt_wav):
+                self.calls['embedding'] += 1
+                return f'embedding:{prompt_wav}'
+
+        class FakeCosyVoiceModel:
+            def __init__(self) -> None:
+                self.frontend = FakeFrontend()
+
+            def inference_instruct2_reply(self, *args, **kwargs):
+                raise AssertionError("reply-scoped vendor session should not be used")
+
+            def inference_instruct2(self, tts_text, instruct_text, prompt_wav, stream=False, speed=1.0):
+                yield {'tts_speech': [0.1] * 2400, 'sample_rate': 24000}
+
+        async def segment_stream():
+            yield 0, 'first stop'
+            yield 1, 'second stop'
+
+        with TemporaryDirectory() as temp_dir:
+            prompt_wav = Path(temp_dir) / 'prompt.wav'
+            prompt_wav.write_bytes(b'fake wav')
+
+            service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
+            model = FakeCosyVoiceModel()
+            service._load_cosyvoice_model = lambda: model
+
+            chunks = [
+                item
+                async for item in service.stream_synthesize_reply(
+                    segment_stream(),
+                    emotion='happy',
+                    reference_audio_path=str(prompt_wav),
+                    reference_text='prompt text',
+                    speed=1.0,
+                )
+            ]
+
+        self.assertEqual([item.prompt_cache_hit for item in chunks], [False, True])
+        self.assertEqual(model.frontend.calls, {'feat': 1, 'token': 1, 'embedding': 1})
 
     async def test_remote_tts_provider_streams_common_chunk_shape(self) -> None:
         class FakeRemoteTTSProvider(RemoteTTSProvider):

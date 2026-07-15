@@ -184,6 +184,9 @@ async def stream_assistant_reply(
         chat_mode=str(getattr(getattr(chat_service, "settings", None), "chat_mode", "unknown")),
         tts_engine=str(getattr(getattr(tts_service, "settings", None), "tts_engine", "unknown")),
     )
+    runtime_snapshot_getter = getattr(tts_service, "get_runtime_trace_snapshot", None)
+    if callable(runtime_snapshot_getter):
+        trace.set_runtime_snapshot(runtime_snapshot_getter())
     if initial_metrics:
         for name, at_ms in initial_metrics.items():
             trace.mark(name, at_ms)
@@ -298,6 +301,11 @@ async def stream_assistant_reply(
             await send_json({"type": "text_done", "reply_id": reply_id})
 
     async def emit_streaming_tts_chunk(tts_chunk) -> None:
+        if trace.prompt_cache_hit is None or trace.prompt_cache_build_ms is None:
+            trace.set_prompt_cache_snapshot(
+                hit=getattr(tts_chunk, "prompt_cache_hit", None),
+                build_ms=getattr(tts_chunk, "prompt_cache_build_ms", None),
+            )
         if tts_chunk.audio_bytes:
             mark_metric("tts_first_audio_chunk_ms")
             chunk_sent_at_ms = elapsed_ms()
@@ -330,6 +338,13 @@ async def stream_assistant_reply(
                 audio_duration_ms=audio_duration_ms,
                 model_ready_ms=tts_chunk.model_chunk_ready_ms,
                 send_lag_ms=send_lag_ms,
+                token_wait_ms=getattr(tts_chunk, "token_wait_ms", 0),
+                token2wav_ms=getattr(tts_chunk, "token2wav_ms", 0),
+                hop_len=getattr(tts_chunk, "hop_len", 0),
+                token_offset=getattr(tts_chunk, "token_offset", 0),
+                is_final=getattr(tts_chunk, "is_final", False),
+                llm_done_ms=getattr(tts_chunk, "tts_llm_done_ms", None),
+                final_decode_enter_ms=getattr(tts_chunk, "tts_final_decode_enter_ms", None),
             )
             logger.info(
                 "tts_ws_chunk seq=%s idx=%s model_chunk_ready_ms=%s ws_chunk_sent_ms=%s chunk_send_lag_ms=%s",

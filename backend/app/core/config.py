@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     tts_cosyvoice_sample_rate: int = 24000
     tts_cosyvoice_fp16: bool = True
     tts_cosyvoice_load_jit: bool = False
+    tts_cosyvoice_load_trt: bool = False
+    tts_cosyvoice_trt_concurrent: int = 1
     tts_provider: str = "local"
     tts_remote_url: str = ""
     tts_remote_protocol: str = "http_stream"
@@ -175,6 +177,7 @@ class Settings(BaseSettings):
         "rag_generation_max_tokens",
         "rag_reranker_batch_size",
         "tts_cosyvoice_sample_rate",
+        "tts_cosyvoice_trt_concurrent",
         "tts_segment_soft_min_chars",
         "tts_segment_soft_max_chars",
         "tts_segment_hard_max_chars",
