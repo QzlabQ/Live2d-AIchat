@@ -345,6 +345,11 @@ async def stream_assistant_reply(
                 is_final=getattr(tts_chunk, "is_final", False),
                 llm_done_ms=getattr(tts_chunk, "tts_llm_done_ms", None),
                 final_decode_enter_ms=getattr(tts_chunk, "tts_final_decode_enter_ms", None),
+                prefetch_enabled=getattr(tts_chunk, "tts_prefetch_enabled", None),
+                prefetch_started_count_delta=getattr(
+                    tts_chunk, "tts_prefetch_started_count_delta", 0
+                ),
+                prefetch_hit_count_delta=getattr(tts_chunk, "tts_prefetch_hit_count_delta", 0),
             )
             logger.info(
                 "tts_ws_chunk seq=%s idx=%s model_chunk_ready_ms=%s ws_chunk_sent_ms=%s chunk_send_lag_ms=%s",

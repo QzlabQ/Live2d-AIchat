@@ -130,6 +130,7 @@ class ReplyTraceTestCase(unittest.TestCase):
                 "tts_segment_soft_max_chars": 40,
                 "tts_segment_hard_max_chars": 64,
                 "tts_synthesis_strategy": "per_segment",
+                "tts_prefetch_enabled": True,
             }
         )
         trace.set_prompt_cache_snapshot(hit=True, build_ms=18.5)
@@ -151,9 +152,39 @@ class ReplyTraceTestCase(unittest.TestCase):
         self.assertEqual(payload["tts_segment_soft_max_chars"], 40)
         self.assertEqual(payload["tts_segment_hard_max_chars"], 64)
         self.assertEqual(payload["tts_synthesis_strategy"], "per_segment")
+        self.assertTrue(payload["tts_prefetch_enabled"])
+        self.assertEqual(payload["tts_prefetch_started_count"], 0)
+        self.assertEqual(payload["tts_prefetch_hit_count"], 0)
         self.assertEqual(payload["tts_vendor_session_count"], 0)
         self.assertTrue(payload["prompt_cache_hit"])
         self.assertEqual(payload["prompt_cache_build_ms"], 18.5)
+
+    def test_observe_tts_chunk_accumulates_prefetch_counts(self) -> None:
+        trace = ReplyTrace(
+            reply_id="reply-5",
+            session_id="session-5",
+            streaming=True,
+            chat_mode="rag",
+            tts_engine="cosyvoice",
+        )
+
+        trace.observe_tts_chunk(
+            seq=1,
+            chunk_index=0,
+            sent_at_ms=100,
+            audio_duration_ms=800,
+            model_ready_ms=320,
+            send_lag_ms=6,
+            prefetch_enabled=True,
+            prefetch_started_count_delta=1,
+            prefetch_hit_count_delta=1,
+        )
+
+        payload = trace.to_payload()
+
+        self.assertTrue(payload["tts_prefetch_enabled"])
+        self.assertEqual(payload["tts_prefetch_started_count"], 1)
+        self.assertEqual(payload["tts_prefetch_hit_count"], 1)
 
 
 class TraceLoggerWorkerTestCase(unittest.IsolatedAsyncioTestCase):

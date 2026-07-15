@@ -76,6 +76,10 @@ class StreamingTTSChunk:
     token_offset: int = 0
     tts_llm_done_ms: int | None = None
     tts_final_decode_enter_ms: int | None = None
+    tts_prefetch_enabled: bool | None = None
+    tts_prefetch_hit: bool = False
+    tts_prefetch_started_count_delta: int = 0
+    tts_prefetch_hit_count_delta: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +88,28 @@ class TTSStreamProfile:
     initial_token_hop_len: int
     growth_factor: float
     max_hop_multiplier: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplySegmentRequest:
+    seq: int
+    text: str
+    reply_segment_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CosyVoiceStreamEvent:
+    kind: str
+    result: dict[str, object] | None = None
+    llm_done_ms: int | None = None
+    error: BaseException | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SegmentSessionEvent:
+    kind: str
+    chunk: StreamingTTSChunk | None = None
+    llm_done_ms: int | None = None
 
 
 STREAM_PROFILES: dict[str, TTSStreamProfile] = {
@@ -154,6 +180,95 @@ class TTSRuntimeValidationError(RuntimeError):
 class PromptFeatureCacheSnapshot:
     hit: bool
     build_ms: float
+
+
+class _LocalSegmentStreamSession:
+    def __init__(
+        self,
+        service: "TTSService",
+        request: _ReplySegmentRequest,
+        *,
+        emotion: str | None,
+        reference_audio_path: str | None,
+        reference_text: str | None,
+        speed: float | None,
+        tts_emotion_enabled: bool,
+    ) -> None:
+        self.service = service
+        self.request = request
+        self.has_emitted_audio = False
+        self.started_from_prefetch = False
+        self._last_chunk: StreamingTTSChunk | None = None
+        self._offset_ms = 0
+        self._chunk_index = 0
+        self._prefetch_started_count_pending = 0
+        self._prefetch_hit_pending = False
+        self._events = service._iter_cosyvoice_results_async(
+            request.text,
+            reply_segment_index=request.reply_segment_index,
+            emotion=emotion,
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text,
+            speed=speed,
+            emotion_enabled=tts_emotion_enabled,
+        ).__aiter__()
+        self._segment_started_at = perf_counter()
+
+    def add_prefetch_started_count(self, count: int) -> None:
+        self._prefetch_started_count_pending += max(int(count), 0)
+
+    def mark_prefetch_hit(self) -> None:
+        self._prefetch_hit_pending = True
+
+    async def next_event(self) -> _SegmentSessionEvent:
+        while True:
+            try:
+                event = await anext(self._events)
+            except StopAsyncIteration:
+                if self._last_chunk is not None:
+                    self._last_chunk.is_final = True
+                return _SegmentSessionEvent(kind="done")
+
+            if event.kind == "llm_done":
+                return _SegmentSessionEvent(kind="llm_done", llm_done_ms=event.llm_done_ms)
+
+            if event.kind == "error":
+                if event.error is not None:
+                    raise event.error
+                raise RuntimeError("CosyVoice streaming session failed without an error payload.")
+
+            if event.kind == "done":
+                if self._last_chunk is not None:
+                    self._last_chunk.is_final = True
+                return _SegmentSessionEvent(kind="done")
+
+            result = event.result
+            if not isinstance(result, dict):
+                raise RuntimeError("CosyVoice returned an unexpected result format.")
+
+            current_chunk, self._offset_ms = self.service._build_streaming_chunk_from_result(
+                seq=self.request.seq,
+                chunk_index=self._chunk_index,
+                text=self.request.text,
+                result=result,
+                offset_ms=self._offset_ms,
+                stream_started_at=self._segment_started_at,
+            )
+            if current_chunk is None:
+                continue
+
+            self._chunk_index += 1
+            self.has_emitted_audio = True
+            current_chunk.tts_prefetch_enabled = True
+            if self._prefetch_started_count_pending:
+                current_chunk.tts_prefetch_started_count_delta += self._prefetch_started_count_pending
+                self._prefetch_started_count_pending = 0
+            if self._prefetch_hit_pending:
+                current_chunk.tts_prefetch_hit = True
+                current_chunk.tts_prefetch_hit_count_delta += 1
+                self._prefetch_hit_pending = False
+            self._last_chunk = current_chunk
+            return _SegmentSessionEvent(kind="chunk", chunk=current_chunk)
 
 
 class LocalCosyVoiceProvider:
@@ -236,6 +351,9 @@ class TTSService:
             "tts_segment_soft_max_chars": self.settings.tts_segment_soft_max_chars,
             "tts_segment_hard_max_chars": self.settings.tts_segment_hard_max_chars,
             "tts_synthesis_strategy": self._resolve_tts_synthesis_strategy(),
+            "tts_prefetch_enabled": (
+                self.settings.tts_provider != "remote" and self.settings.tts_engine == "cosyvoice"
+            ),
         }
         self._local_provider = LocalCosyVoiceProvider(self)
         self._remote_provider = RemoteTTSProvider(settings)
@@ -284,6 +402,9 @@ class TTSService:
             "tts_segment_soft_max_chars": self.settings.tts_segment_soft_max_chars,
             "tts_segment_hard_max_chars": self.settings.tts_segment_hard_max_chars,
             "tts_synthesis_strategy": self._resolve_tts_synthesis_strategy(),
+            "tts_prefetch_enabled": (
+                self.settings.tts_provider != "remote" and self.settings.tts_engine == "cosyvoice"
+            ),
         }
         snapshot.update(self._runtime_trace_snapshot)
         snapshot.update(overrides)
@@ -596,6 +717,7 @@ class TTSService:
                     token_offset = 0
                     total_token_wait_ms = 0
                     total_token2wav_ms = 0
+                    llm_done_signal_emitted = False
                     reply_segment_index = max(int(getattr(self, "_ai_chat_reply_segment_index", 0)), 0)
                     base_token_hop_len = int(getattr(self, "token_hop_len", profile.initial_token_hop_len))
                     configured_max_hop_len = int(getattr(self, "token_max_hop_len", base_token_hop_len))
@@ -656,15 +778,19 @@ class TTSService:
                         token_offset += this_token_hop_len
                         next_hop = int(round(token_hop_len * stream_scale_factor))
                         token_hop_len = min(token_max_hop_len, max(base_token_hop_len, next_hop))
+                        trace_payload = {
+                            "token_wait_ms": token_wait_ms,
+                            "token2wav_ms": token2wav_ms,
+                            "hop_len": this_token_hop_len,
+                            "token_offset": chunk_token_offset,
+                            "is_final": False,
+                        }
+                        if self.llm_end_dict[this_uuid] is True and not llm_done_signal_emitted:
+                            trace_payload["tts_llm_done"] = True
+                            llm_done_signal_emitted = True
                         yield {
                             "tts_speech": this_tts_speech.cpu(),
-                            "_ai_chat_trace": {
-                                "token_wait_ms": token_wait_ms,
-                                "token2wav_ms": token2wav_ms,
-                                "hop_len": this_token_hop_len,
-                                "token_offset": chunk_token_offset,
-                                "is_final": False,
-                            },
+                            "_ai_chat_trace": trace_payload,
                         }
                     producer.join()
                     mark_llm_done()
@@ -692,6 +818,7 @@ class TTSService:
                             "hop_len": final_hop_len,
                             "token_offset": final_token_offset,
                             "is_final": True,
+                            "tts_llm_done": not llm_done_signal_emitted,
                             "tts_llm_done_ms": llm_done_state["at_ms"],
                             "tts_final_decode_enter_ms": final_decode_enter_ms,
                         },
@@ -1266,7 +1393,7 @@ class TTSService:
         reference_text: str | None,
         speed: float | None,
         emotion_enabled: bool,
-    ):
+    ) -> AsyncIterator[_CosyVoiceStreamEvent]:
         cosyvoice = self._load_cosyvoice_model()
         prompt_wav = self._resolve_reference_audio_path(reference_audio_path)
         instruct_text = self._build_cosyvoice_instruction(emotion, emotion_enabled=emotion_enabled)
@@ -1286,6 +1413,7 @@ class TTSService:
                 prompt_wav,
                 reference_text,
             )
+            llm_done_emitted = False
             try:
                 for result in cosyvoice.inference_instruct2(
                     cleaned_text,
@@ -1295,6 +1423,15 @@ class TTSService:
                     speed=float(speed or 1.0),
                 ):
                     result = self._attach_prompt_cache_trace(result, prompt_cache_snapshot)
+                    trace_meta = result.get("_ai_chat_trace")
+                    if not isinstance(trace_meta, dict):
+                        trace_meta = {}
+                    if not llm_done_emitted and (
+                        bool(trace_meta.get("tts_llm_done")) or "tts_llm_done_ms" in trace_meta
+                    ):
+                        llm_done_emitted = True
+                        llm_done_ms = trace_meta.get("tts_llm_done_ms")
+                        loop.call_soon_threadsafe(queue.put_nowait, ("llm_done", llm_done_ms))
                     loop.call_soon_threadsafe(queue.put_nowait, ("data", result))
                 loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
             except Exception as exc:  # pragma: no cover - runtime dependency
@@ -1314,13 +1451,44 @@ class TTSService:
             while True:
                 event_type, payload = await queue.get()
                 if event_type == "data":
-                    yield payload
+                    if not isinstance(payload, dict):
+                        raise RuntimeError("CosyVoice returned an unexpected result format.")
+                    yield _CosyVoiceStreamEvent(kind="data", result=payload)
+                    continue
+                if event_type == "llm_done":
+                    yield _CosyVoiceStreamEvent(
+                        kind="llm_done",
+                        llm_done_ms=int(payload) if isinstance(payload, (int, float)) else None,
+                    )
                     continue
                 if event_type == "error":
-                    raise payload  # type: ignore[misc]
+                    error = payload if isinstance(payload, BaseException) else RuntimeError(str(payload))
+                    yield _CosyVoiceStreamEvent(kind="error", error=error)
+                    break
+                yield _CosyVoiceStreamEvent(kind="done")
                 break
         finally:
             thread.join(timeout=0.2)
+
+    def _create_local_segment_stream_session(
+        self,
+        request: _ReplySegmentRequest,
+        *,
+        emotion: str | None,
+        reference_audio_path: str | None,
+        reference_text: str | None,
+        speed: float | None,
+        tts_emotion_enabled: bool,
+    ) -> _LocalSegmentStreamSession:
+        return _LocalSegmentStreamSession(
+            self,
+            request,
+            emotion=emotion,
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text,
+            speed=speed,
+            tts_emotion_enabled=tts_emotion_enabled,
+        )
 
     async def stream_synthesize_segment(
         self,
@@ -1361,39 +1529,27 @@ class TTSService:
                 )
             return
 
-        segment_started_at = perf_counter()
-        last_chunk: StreamingTTSChunk | None = None
-        offset_ms = 0
-        chunk_index = 0
-        async for result in self._iter_cosyvoice_results_async(
-            cleaned_text,
-            reply_segment_index=reply_segment_index,
+        session = self._create_local_segment_stream_session(
+            _ReplySegmentRequest(
+                seq=seq,
+                text=cleaned_text,
+                reply_segment_index=reply_segment_index,
+            ),
             emotion=emotion,
             reference_audio_path=reference_audio_path,
             reference_text=reference_text,
             speed=speed,
-            emotion_enabled=tts_emotion_enabled,
-        ):
-            if not isinstance(result, dict):
-                raise RuntimeError("CosyVoice returned an unexpected result format.")
-
-            current_chunk, offset_ms = self._build_streaming_chunk_from_result(
-                seq=seq,
-                chunk_index=chunk_index,
-                text=cleaned_text,
-                result=result,
-                offset_ms=offset_ms,
-                stream_started_at=segment_started_at,
-            )
-            if current_chunk is None:
+            tts_emotion_enabled=tts_emotion_enabled,
+        )
+        while True:
+            event = await session.next_event()
+            if event.kind == "llm_done":
                 continue
-
-            chunk_index += 1
-            last_chunk = current_chunk
-            yield current_chunk
-
-        if last_chunk is not None:
-            last_chunk.is_final = True
+            if event.kind == "done":
+                break
+            if event.chunk is None:
+                raise RuntimeError("Local segment session returned a chunk event without audio data.")
+            yield event.chunk
 
     async def _stream_synthesize_reply_local(
         self,
@@ -1407,20 +1563,119 @@ class TTSService:
         tts_emotion_enabled: bool = True,
     ) -> AsyncIterator[StreamingTTSChunk]:
         del voice_id
-        reply_segment_index = 0
-        async for seq, segment in self._iter_clean_reply_segments(segments):
-            async for chunk in self.stream_synthesize_segment(
-                segment,
+        cleaned_segments = self._iter_clean_reply_segments(segments).__aiter__()
+        next_reply_segment_index = 0
+
+        async def fetch_next_request() -> _ReplySegmentRequest | None:
+            nonlocal next_reply_segment_index
+            try:
+                seq, text = await anext(cleaned_segments)
+            except StopAsyncIteration:
+                return None
+            request = _ReplySegmentRequest(
                 seq=seq,
-                emotion=emotion,
-                reference_audio_path=reference_audio_path,
-                reference_text=reference_text,
-                speed=speed,
-                tts_emotion_enabled=tts_emotion_enabled,
-                reply_segment_index=reply_segment_index,
-            ):
-                yield chunk
-            reply_segment_index += 1
+                text=text,
+                reply_segment_index=next_reply_segment_index,
+            )
+            next_reply_segment_index += 1
+            return request
+
+        async def schedule_next_request() -> asyncio.Task[_ReplySegmentRequest | None]:
+            task = asyncio.create_task(fetch_next_request())
+            await asyncio.sleep(0)
+            return task
+
+        active_request = await fetch_next_request()
+        if active_request is None:
+            return
+
+        active_session = self._create_local_segment_stream_session(
+            active_request,
+            emotion=emotion,
+            reference_audio_path=reference_audio_path,
+            reference_text=reference_text,
+            speed=speed,
+            tts_emotion_enabled=tts_emotion_enabled,
+        )
+        next_request_task: asyncio.Task[_ReplySegmentRequest | None] | None = await schedule_next_request()
+        lookahead_session: object | None = None
+
+        try:
+            while True:
+                try:
+                    event = await active_session.next_event()
+                except Exception:
+                    if (
+                        getattr(active_session, "started_from_prefetch", False)
+                        and not getattr(active_session, "has_emitted_audio", False)
+                    ):
+                        retry_session = self._create_local_segment_stream_session(
+                            active_session.request,
+                            emotion=emotion,
+                            reference_audio_path=reference_audio_path,
+                            reference_text=reference_text,
+                            speed=speed,
+                            tts_emotion_enabled=tts_emotion_enabled,
+                        )
+                        retry_session.add_prefetch_started_count(1)
+                        active_session = retry_session
+                        next_request_task = await schedule_next_request()
+                        lookahead_session = None
+                        continue
+                    raise
+
+                if event.kind == "llm_done":
+                    if lookahead_session is None and next_request_task is not None and next_request_task.done():
+                        next_request = next_request_task.result()
+                        next_request_task = None
+                        if next_request is not None:
+                            lookahead_session = self._create_local_segment_stream_session(
+                                next_request,
+                                emotion=emotion,
+                                reference_audio_path=reference_audio_path,
+                                reference_text=reference_text,
+                                speed=speed,
+                                tts_emotion_enabled=tts_emotion_enabled,
+                            )
+                            lookahead_session.add_prefetch_started_count(1)
+                            setattr(lookahead_session, "started_from_prefetch", True)
+                    continue
+
+                if event.kind == "chunk":
+                    if event.chunk is None:
+                        raise RuntimeError("Segment coordinator received a chunk event without audio data.")
+                    yield event.chunk
+                    continue
+
+                if lookahead_session is not None:
+                    active_session = lookahead_session
+                    active_session.mark_prefetch_hit()
+                    lookahead_session = None
+                    next_request_task = await schedule_next_request()
+                    continue
+
+                if next_request_task is None:
+                    break
+
+                next_request = await next_request_task
+                next_request_task = None
+                if next_request is None:
+                    break
+
+                active_session = self._create_local_segment_stream_session(
+                    next_request,
+                    emotion=emotion,
+                    reference_audio_path=reference_audio_path,
+                    reference_text=reference_text,
+                    speed=speed,
+                    tts_emotion_enabled=tts_emotion_enabled,
+                )
+                next_request_task = await schedule_next_request()
+        finally:
+            if next_request_task is not None and not next_request_task.done():
+                next_request_task.cancel()
+            if next_request_task is not None:
+                await asyncio.gather(next_request_task, return_exceptions=True)
 
     async def stream_synthesize_reply(
         self,

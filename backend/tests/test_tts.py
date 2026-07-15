@@ -614,27 +614,43 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         captured_segment_indexes: list[tuple[int, int]] = []
         service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
 
-        async def fake_stream_synthesize_segment(
-            text,
-            *,
-            seq,
-            reply_segment_index=0,
-            **kwargs,
-        ):
-            del text, kwargs
-            captured_segment_indexes.append((seq, reply_segment_index))
-            yield StreamingTTSChunk(
-                seq=seq,
-                chunk_index=0,
-                text='segment',
-                audio_bytes=b'\x01\x02',
-                phonemes=[],
-                offset_ms=0,
-                sample_rate=24000,
-                is_final=True,
-            )
+        class FakeSession:
+            def __init__(self, request) -> None:
+                self.request = request
+                self.has_emitted_audio = False
+                self._returned = False
 
-        service.stream_synthesize_segment = fake_stream_synthesize_segment  # type: ignore[method-assign]
+            def add_prefetch_started_count(self, count: int) -> None:
+                del count
+
+            def mark_prefetch_hit(self) -> None:
+                return None
+
+            async def next_event(self):
+                if self._returned:
+                    return SimpleNamespace(kind='done')
+                self._returned = True
+                self.has_emitted_audio = True
+                return SimpleNamespace(
+                    kind='chunk',
+                    chunk=StreamingTTSChunk(
+                        seq=self.request.seq,
+                        chunk_index=0,
+                        text='segment',
+                        audio_bytes=b'\x01\x02',
+                        phonemes=[],
+                        offset_ms=0,
+                        sample_rate=24000,
+                        is_final=True,
+                    ),
+                )
+
+        def fake_create_session(request, **kwargs):
+            del kwargs
+            captured_segment_indexes.append((request.seq, request.reply_segment_index))
+            return FakeSession(request)
+
+        service._create_local_segment_stream_session = fake_create_session  # type: ignore[attr-defined]
 
         async def segment_stream():
             yield 0, 'first stop'
@@ -645,6 +661,286 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured_segment_indexes, [(0, 0), (1, 1), (2, 2)])
         self.assertEqual([item.seq for item in chunks], [0, 1, 2])
+
+    async def test_local_reply_streaming_prefetches_only_one_followup_after_llm_done(self) -> None:
+        service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
+        event_log: list[str] = []
+
+        def make_chunk(seq: int, text: str, *, is_final: bool = True) -> StreamingTTSChunk:
+            return StreamingTTSChunk(
+                seq=seq,
+                chunk_index=0,
+                text=text,
+                audio_bytes=b'\x01\x02',
+                phonemes=[],
+                offset_ms=0,
+                sample_rate=24000,
+                is_final=is_final,
+                tts_prefetch_enabled=True,
+            )
+
+        class FakeSession:
+            def __init__(self, request, events) -> None:
+                self.request = request
+                self._events = list(events)
+                self.has_emitted_audio = False
+                self._prefetch_started_count = 0
+                self._prefetch_hit = False
+
+            def add_prefetch_started_count(self, count: int) -> None:
+                self._prefetch_started_count += count
+
+            def mark_prefetch_hit(self) -> None:
+                self._prefetch_hit = True
+
+            async def next_event(self):
+                if not self._events:
+                    return SimpleNamespace(kind='done')
+                event = self._events.pop(0)
+                event_log.append(f'event:{self.request.text}:{event.kind}')
+                if event.kind == 'chunk':
+                    self.has_emitted_audio = True
+                    event.chunk.tts_prefetch_started_count_delta = self._prefetch_started_count
+                    event.chunk.tts_prefetch_hit = self._prefetch_hit
+                    event.chunk.tts_prefetch_hit_count_delta = 1 if self._prefetch_hit else 0
+                    self._prefetch_started_count = 0
+                    self._prefetch_hit = False
+                return event
+
+        session_events = {
+            'first': [
+                SimpleNamespace(kind='chunk', chunk=make_chunk(0, 'first', is_final=False)),
+                SimpleNamespace(kind='llm_done'),
+                SimpleNamespace(kind='chunk', chunk=make_chunk(0, 'first')),
+                SimpleNamespace(kind='done'),
+            ],
+            'second': [
+                SimpleNamespace(kind='chunk', chunk=make_chunk(1, 'second')),
+                SimpleNamespace(kind='llm_done'),
+                SimpleNamespace(kind='done'),
+            ],
+            'third': [
+                SimpleNamespace(kind='chunk', chunk=make_chunk(2, 'third')),
+                SimpleNamespace(kind='done'),
+            ],
+        }
+
+        def fake_create_session(request, **kwargs):
+            del kwargs
+            event_log.append(f'start:{request.text}:{request.reply_segment_index}')
+            return FakeSession(request, session_events[request.text])
+
+        service._create_local_segment_stream_session = fake_create_session  # type: ignore[attr-defined]
+
+        async def segment_stream():
+            yield 0, 'first'
+            yield 1, 'second'
+            yield 2, 'third'
+
+        chunks = [item async for item in service.stream_synthesize_reply(segment_stream())]
+
+        self.assertEqual([item.seq for item in chunks], [0, 0, 1, 2])
+        self.assertEqual([item.tts_prefetch_hit for item in chunks], [False, False, True, True])
+        self.assertEqual([item.tts_prefetch_hit_count_delta for item in chunks], [0, 0, 1, 1])
+        self.assertEqual(
+            event_log,
+            [
+                'start:first:0',
+                'event:first:chunk',
+                'event:first:llm_done',
+                'start:second:1',
+                'event:first:chunk',
+                'event:first:done',
+                'event:second:chunk',
+                'event:second:llm_done',
+                'start:third:2',
+                'event:second:done',
+                'event:third:chunk',
+                'event:third:done',
+            ],
+        )
+
+    async def test_local_reply_streaming_falls_back_to_serial_when_next_segment_is_not_cached(self) -> None:
+        service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
+        release_second_segment = asyncio.Event()
+        event_log: list[str] = []
+
+        def make_chunk(seq: int, text: str) -> StreamingTTSChunk:
+            return StreamingTTSChunk(
+                seq=seq,
+                chunk_index=0,
+                text=text,
+                audio_bytes=b'\x01\x02',
+                phonemes=[],
+                offset_ms=0,
+                sample_rate=24000,
+                is_final=True,
+                tts_prefetch_enabled=True,
+            )
+
+        class FakeSession:
+            def __init__(self, request, events) -> None:
+                self.request = request
+                self._events = list(events)
+                self.has_emitted_audio = False
+
+            def add_prefetch_started_count(self, count: int) -> None:
+                del count
+
+            def mark_prefetch_hit(self) -> None:
+                raise AssertionError('serial fallback should not mark a prefetch hit')
+
+            async def next_event(self):
+                if not self._events:
+                    return SimpleNamespace(kind='done')
+                event = self._events.pop(0)
+                event_log.append(f'event:{self.request.text}:{event.kind}')
+                if self.request.text == 'first' and event.kind == 'llm_done':
+                    asyncio.get_running_loop().call_soon(release_second_segment.set)
+                if event.kind == 'chunk':
+                    self.has_emitted_audio = True
+                return event
+
+        session_events = {
+            'first': [
+                SimpleNamespace(kind='llm_done'),
+                SimpleNamespace(kind='chunk', chunk=make_chunk(0, 'first')),
+                SimpleNamespace(kind='done'),
+            ],
+            'second': [
+                SimpleNamespace(kind='chunk', chunk=make_chunk(1, 'second')),
+                SimpleNamespace(kind='done'),
+            ],
+        }
+
+        def fake_create_session(request, **kwargs):
+            del kwargs
+            event_log.append(f'start:{request.text}:{request.reply_segment_index}')
+            return FakeSession(request, session_events[request.text])
+
+        service._create_local_segment_stream_session = fake_create_session  # type: ignore[attr-defined]
+
+        async def segment_stream():
+            yield 0, 'first'
+            await release_second_segment.wait()
+            yield 1, 'second'
+
+        chunks = [item async for item in service.stream_synthesize_reply(segment_stream())]
+
+        self.assertEqual([item.seq for item in chunks], [0, 1])
+        self.assertEqual([item.tts_prefetch_hit for item in chunks], [False, False])
+        self.assertEqual(
+            event_log,
+            [
+                'start:first:0',
+                'event:first:llm_done',
+                'event:first:chunk',
+                'event:first:done',
+                'start:second:1',
+                'event:second:chunk',
+                'event:second:done',
+            ],
+        )
+
+    async def test_local_reply_streaming_retries_prefetched_segment_serially_when_prefetch_fails(self) -> None:
+        service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
+        event_log: list[str] = []
+        start_attempts: dict[str, int] = {'second': 0}
+
+        def make_chunk(seq: int, text: str) -> StreamingTTSChunk:
+            return StreamingTTSChunk(
+                seq=seq,
+                chunk_index=0,
+                text=text,
+                audio_bytes=b'\x01\x02',
+                phonemes=[],
+                offset_ms=0,
+                sample_rate=24000,
+                is_final=True,
+                tts_prefetch_enabled=True,
+            )
+
+        class FakeSession:
+            def __init__(self, request, events) -> None:
+                self.request = request
+                self._events = list(events)
+                self.has_emitted_audio = False
+                self._prefetch_started_count = 0
+                self._prefetch_hit = False
+
+            def add_prefetch_started_count(self, count: int) -> None:
+                self._prefetch_started_count += count
+
+            def mark_prefetch_hit(self) -> None:
+                self._prefetch_hit = True
+
+            async def next_event(self):
+                if not self._events:
+                    return SimpleNamespace(kind='done')
+                event = self._events.pop(0)
+                if isinstance(event, Exception):
+                    event_log.append(f'event:{self.request.text}:error')
+                    raise event
+                event_log.append(f'event:{self.request.text}:{event.kind}')
+                if event.kind == 'chunk':
+                    self.has_emitted_audio = True
+                    event.chunk.tts_prefetch_started_count_delta = self._prefetch_started_count
+                    event.chunk.tts_prefetch_hit = self._prefetch_hit
+                    event.chunk.tts_prefetch_hit_count_delta = 1 if self._prefetch_hit else 0
+                    self._prefetch_started_count = 0
+                    self._prefetch_hit = False
+                return event
+
+        def fake_create_session(request, **kwargs):
+            del kwargs
+            event_log.append(f'start:{request.text}:{request.reply_segment_index}')
+            if request.text == 'first':
+                return FakeSession(
+                    request,
+                    [
+                        SimpleNamespace(kind='llm_done'),
+                        SimpleNamespace(kind='chunk', chunk=make_chunk(0, 'first')),
+                        SimpleNamespace(kind='done'),
+                    ],
+                )
+            if request.text == 'second':
+                start_attempts['second'] += 1
+                if start_attempts['second'] == 1:
+                    return FakeSession(request, [RuntimeError('prefetch failed before first chunk')])
+                return FakeSession(
+                    request,
+                    [
+                        SimpleNamespace(kind='chunk', chunk=make_chunk(1, 'second')),
+                        SimpleNamespace(kind='done'),
+                    ],
+                )
+            raise AssertionError(f'unexpected request: {request.text}')
+
+        service._create_local_segment_stream_session = fake_create_session  # type: ignore[attr-defined]
+
+        async def segment_stream():
+            yield 0, 'first'
+            yield 1, 'second'
+
+        chunks = [item async for item in service.stream_synthesize_reply(segment_stream())]
+
+        self.assertEqual([item.seq for item in chunks], [0, 1])
+        self.assertEqual(chunks[1].tts_prefetch_started_count_delta, 1)
+        self.assertFalse(chunks[1].tts_prefetch_hit)
+        self.assertEqual(
+            event_log,
+            [
+                'start:first:0',
+                'event:first:llm_done',
+                'start:second:1',
+                'event:first:chunk',
+                'event:first:done',
+                'event:second:error',
+                'start:second:1',
+                'event:second:chunk',
+                'event:second:done',
+            ],
+        )
 
     async def test_remote_tts_provider_streams_common_chunk_shape(self) -> None:
         class FakeRemoteTTSProvider(RemoteTTSProvider):

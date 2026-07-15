@@ -38,6 +38,9 @@ class ReplyTrace:
     tts_segment_soft_min_chars: int | None = None
     tts_segment_soft_max_chars: int | None = None
     tts_segment_hard_max_chars: int | None = None
+    tts_prefetch_enabled: bool | None = None
+    tts_prefetch_started_count: int = 0
+    tts_prefetch_hit_count: int = 0
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     metrics: dict[str, int] = field(default_factory=dict)
     segment_count: int = 0
@@ -70,6 +73,7 @@ class ReplyTrace:
         self.tts_segment_soft_max_chars = snapshot.get("tts_segment_soft_max_chars")  # type: ignore[assignment]
         self.tts_segment_hard_max_chars = snapshot.get("tts_segment_hard_max_chars")  # type: ignore[assignment]
         self.tts_synthesis_strategy = snapshot.get("tts_synthesis_strategy")  # type: ignore[assignment]
+        self.tts_prefetch_enabled = snapshot.get("tts_prefetch_enabled")  # type: ignore[assignment]
 
     def set_prompt_cache_snapshot(self, *, hit: bool | None, build_ms: float | None) -> None:
         self.prompt_cache_hit = hit
@@ -101,6 +105,9 @@ class ReplyTrace:
         is_final: bool = False,
         llm_done_ms: int | None = None,
         final_decode_enter_ms: int | None = None,
+        prefetch_enabled: bool | None = None,
+        prefetch_started_count_delta: int = 0,
+        prefetch_hit_count_delta: int = 0,
     ) -> None:
         observed_at = int(sent_at_ms)
         gap_ms = 0
@@ -128,6 +135,10 @@ class ReplyTrace:
             self.metrics["tts_llm_done_ms"] = int(llm_done_ms)
         if final_decode_enter_ms is not None:
             self.metrics["tts_final_decode_enter_ms"] = int(final_decode_enter_ms)
+        if prefetch_enabled is not None:
+            self.tts_prefetch_enabled = bool(prefetch_enabled)
+        self.tts_prefetch_started_count += max(int(prefetch_started_count_delta), 0)
+        self.tts_prefetch_hit_count += max(int(prefetch_hit_count_delta), 0)
         self.tts_chunks.append(
             {
                 "seq": int(seq),
@@ -171,6 +182,9 @@ class ReplyTrace:
             "tts_segment_soft_min_chars": self.tts_segment_soft_min_chars,
             "tts_segment_soft_max_chars": self.tts_segment_soft_max_chars,
             "tts_segment_hard_max_chars": self.tts_segment_hard_max_chars,
+            "tts_prefetch_enabled": self.tts_prefetch_enabled,
+            "tts_prefetch_started_count": self.tts_prefetch_started_count,
+            "tts_prefetch_hit_count": self.tts_prefetch_hit_count,
             "segment_count": self.segment_count,
             "audio_chunk_count": self.audio_chunk_count,
             "max_chunk_gap_ms": self.max_chunk_gap_ms,
