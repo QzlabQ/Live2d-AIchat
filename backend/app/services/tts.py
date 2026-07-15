@@ -1682,6 +1682,34 @@ class TTSService:
                     if event.chunk is None:
                         raise RuntimeError("Segment coordinator received a chunk event without audio data.")
                     yield event.chunk
+                    # Early prime: trigger as soon as the first chunk of the
+                    # current segment is yielded and the next segment's text is
+                    # already available in the queue.  This maximises the overlap
+                    # window between the active segment's token2wav drain and the
+                    # next segment's AR LLM cold-start.  The llm_done branch below
+                    # is now a fallback for cases where the next segment text
+                    # arrives late (slow chat LLM) and wasn't ready at chunk time.
+                    if (
+                        lookahead_session is None
+                        and next_request_task is not None
+                        and next_request_task.done()
+                    ):
+                        next_request = next_request_task.result()
+                        next_request_task = None
+                        if next_request is not None:
+                            lookahead_session = self._create_local_segment_stream_session(
+                                next_request,
+                                emotion=emotion,
+                                reference_audio_path=reference_audio_path,
+                                reference_text=reference_text,
+                                speed=speed,
+                                tts_emotion_enabled=tts_emotion_enabled,
+                            )
+                            lookahead_session.add_prefetch_started_count(1)
+                            setattr(lookahead_session, "started_from_prefetch", True)
+                            lookahead_session._prime_task = asyncio.create_task(
+                                lookahead_session.prime()
+                            )
                     continue
 
                 if lookahead_session is not None:
