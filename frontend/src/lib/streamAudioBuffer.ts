@@ -27,14 +27,14 @@ export const STREAM_AUDIO_POLICIES: Record<StreamAudioPolicyProfile, StreamAudio
     scheduleLookaheadMs: 30,
   },
   stable: {
-    initialBufferMs: 1800,
-    initialChunkCount: 3,
-    minScheduledLeadMs: 1000,
+    initialBufferMs: 3000,
+    initialChunkCount: 2,
+    minScheduledLeadMs: 1500,
     scheduleLookaheadMs: 30,
   },
 };
 
-// Default to the stability-focused RTX 4060 profile; callers can opt into
+// Default to the most continuity-focused profile; callers can opt into
 // lower latency later without changing the playback decision helpers.
 export const DEFAULT_STREAM_AUDIO_POLICY: StreamAudioPolicy = STREAM_AUDIO_POLICIES.stable;
 

@@ -126,6 +126,26 @@ def resolve_stream_hop_limit(
     return min(configured_limit, profile_limit)
 
 
+def resolve_stream_initial_hop_len(
+    profile: TTSStreamProfile,
+    *,
+    base_token_hop_len: int,
+    configured_max_hop_len: int,
+    reply_segment_index: int,
+) -> int:
+    base_hop = max(int(base_token_hop_len), 1)
+    if int(reply_segment_index) <= 0:
+        return base_hop
+
+    warmed_hop = max(base_hop, int(round(base_hop * max(float(profile.growth_factor), 1.0))))
+    hop_limit = resolve_stream_hop_limit(
+        profile,
+        base_token_hop_len=base_hop,
+        configured_max_hop_len=configured_max_hop_len,
+    )
+    return min(hop_limit, warmed_hop)
+
+
 class TTSRuntimeValidationError(RuntimeError):
     """Raised when the configured TTS runtime is invalid for the active server."""
 
@@ -576,9 +596,15 @@ class TTSService:
                     token_offset = 0
                     total_token_wait_ms = 0
                     total_token2wav_ms = 0
+                    reply_segment_index = max(int(getattr(self, "_ai_chat_reply_segment_index", 0)), 0)
                     base_token_hop_len = int(getattr(self, "token_hop_len", profile.initial_token_hop_len))
-                    token_hop_len = base_token_hop_len
                     configured_max_hop_len = int(getattr(self, "token_max_hop_len", base_token_hop_len))
+                    token_hop_len = resolve_stream_initial_hop_len(
+                        profile,
+                        base_token_hop_len=base_token_hop_len,
+                        configured_max_hop_len=configured_max_hop_len,
+                        reply_segment_index=reply_segment_index,
+                    )
                     token_max_hop_len = resolve_stream_hop_limit(
                         profile,
                         base_token_hop_len=base_token_hop_len,
@@ -1234,6 +1260,7 @@ class TTSService:
         self,
         cleaned_text: str,
         *,
+        reply_segment_index: int = 0,
         emotion: str | None,
         reference_audio_path: str | None,
         reference_text: str | None,
@@ -1247,6 +1274,13 @@ class TTSService:
         loop = asyncio.get_running_loop()
 
         def worker() -> None:
+            model_runtime = getattr(cosyvoice, "model", None)
+            previous_segment_index = None
+            had_segment_index = False
+            if model_runtime is not None:
+                had_segment_index = hasattr(model_runtime, "_ai_chat_reply_segment_index")
+                previous_segment_index = getattr(model_runtime, "_ai_chat_reply_segment_index", None)
+                setattr(model_runtime, "_ai_chat_reply_segment_index", max(int(reply_segment_index), 0))
             restore, prompt_cache_snapshot = self._bind_prompt_feature_cache(
                 getattr(cosyvoice, "frontend", object()),
                 prompt_wav,
@@ -1267,6 +1301,11 @@ class TTSService:
                 loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
             finally:
                 restore()
+                if model_runtime is not None:
+                    if had_segment_index:
+                        setattr(model_runtime, "_ai_chat_reply_segment_index", previous_segment_index)
+                    elif hasattr(model_runtime, "_ai_chat_reply_segment_index"):
+                        delattr(model_runtime, "_ai_chat_reply_segment_index")
 
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
@@ -1293,6 +1332,7 @@ class TTSService:
         reference_text: str | None = None,
         speed: float | None = None,
         tts_emotion_enabled: bool = True,
+        reply_segment_index: int = 0,
     ):
         del voice_id
         cleaned_text = self._sanitize_synthesis_text(text)
@@ -1327,6 +1367,7 @@ class TTSService:
         chunk_index = 0
         async for result in self._iter_cosyvoice_results_async(
             cleaned_text,
+            reply_segment_index=reply_segment_index,
             emotion=emotion,
             reference_audio_path=reference_audio_path,
             reference_text=reference_text,
@@ -1366,6 +1407,7 @@ class TTSService:
         tts_emotion_enabled: bool = True,
     ) -> AsyncIterator[StreamingTTSChunk]:
         del voice_id
+        reply_segment_index = 0
         async for seq, segment in self._iter_clean_reply_segments(segments):
             async for chunk in self.stream_synthesize_segment(
                 segment,
@@ -1375,8 +1417,10 @@ class TTSService:
                 reference_text=reference_text,
                 speed=speed,
                 tts_emotion_enabled=tts_emotion_enabled,
+                reply_segment_index=reply_segment_index,
             ):
                 yield chunk
+            reply_segment_index += 1
 
     async def stream_synthesize_reply(
         self,

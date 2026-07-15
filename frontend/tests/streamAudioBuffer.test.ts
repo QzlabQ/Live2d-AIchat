@@ -9,9 +9,9 @@ import {
 describe('streamAudioBuffer', () => {
   it('uses the stable default stream audio policy', () => {
     expect(DEFAULT_STREAM_AUDIO_POLICY).toEqual({
-      initialBufferMs: 1800,
-      initialChunkCount: 3,
-      minScheduledLeadMs: 1000,
+      initialBufferMs: 3000,
+      initialChunkCount: 2,
+      minScheduledLeadMs: 1500,
       scheduleLookaheadMs: 30,
     })
   })
@@ -32,8 +32,8 @@ describe('streamAudioBuffer', () => {
   it('does not start early when the stable thresholds are not met', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
-        bufferedAudioMs: 1799,
-        pendingChunkCount: 2,
+        bufferedAudioMs: 2999,
+        pendingChunkCount: 1,
         isFinalChunkBuffered: false,
       },
       DEFAULT_STREAM_AUDIO_POLICY,
@@ -42,11 +42,11 @@ describe('streamAudioBuffer', () => {
     expect(shouldStart).toBe(false)
   })
 
-  it('starts buffered playback when three chunks are queued', () => {
+  it('starts buffered playback when two chunks are queued', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
         bufferedAudioMs: 240,
-        pendingChunkCount: 3,
+        pendingChunkCount: 2,
         isFinalChunkBuffered: false,
       },
       DEFAULT_STREAM_AUDIO_POLICY,
@@ -58,7 +58,7 @@ describe('streamAudioBuffer', () => {
   it('starts buffered playback when buffered audio exceeds the initial threshold', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
-        bufferedAudioMs: 1800,
+        bufferedAudioMs: 3000,
         pendingChunkCount: 1,
         isFinalChunkBuffered: false,
       },
@@ -81,7 +81,7 @@ describe('streamAudioBuffer', () => {
     expect(shouldStart).toBe(true)
   })
 
-  it('resets buffered playback when scheduled lead has already drained', () => {
+  it('resets buffered playback when lead is drained and the rebuffer target is not met', () => {
     expect(
       shouldResetBufferedPlayback(
         {
@@ -96,7 +96,7 @@ describe('streamAudioBuffer', () => {
     expect(
       shouldResetBufferedPlayback(
         {
-          bufferedAudioMs: 1200,
+          bufferedAudioMs: 1600,
           pendingChunkCount: 2,
           isFinalChunkBuffered: false,
         },
@@ -112,6 +112,20 @@ describe('streamAudioBuffer', () => {
           isFinalChunkBuffered: false,
         },
         120,
+        DEFAULT_STREAM_AUDIO_POLICY,
+      ),
+    ).toBe(false)
+  })
+
+  it('does not reset buffered playback for the final chunk even after lead drains', () => {
+    expect(
+      shouldResetBufferedPlayback(
+        {
+          bufferedAudioMs: 120,
+          pendingChunkCount: 1,
+          isFinalChunkBuffered: true,
+        },
+        0,
         DEFAULT_STREAM_AUDIO_POLICY,
       ),
     ).toBe(false)

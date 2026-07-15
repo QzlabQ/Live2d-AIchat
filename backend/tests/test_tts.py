@@ -14,6 +14,7 @@ from app.services.tts import (
     TTSService,
     TTSRuntimeValidationError,
     resolve_stream_hop_limit,
+    resolve_stream_initial_hop_len,
     resolve_stream_profile,
 )
 
@@ -72,6 +73,41 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         profile = resolve_stream_profile(Settings(tts_stream_profile="stable"))
 
         self.assertEqual(resolve_stream_hop_limit(profile, base_token_hop_len=25, configured_max_hop_len=25), 100)
+
+    def test_stable_stream_profile_warm_starts_followup_segments_one_growth_step_ahead(self) -> None:
+        profile = resolve_stream_profile(Settings(tts_stream_profile="stable"))
+
+        self.assertEqual(
+            resolve_stream_initial_hop_len(
+                profile,
+                base_token_hop_len=25,
+                configured_max_hop_len=25,
+                reply_segment_index=0,
+            ),
+            25,
+        )
+        self.assertEqual(
+            resolve_stream_initial_hop_len(
+                profile,
+                base_token_hop_len=25,
+                configured_max_hop_len=25,
+                reply_segment_index=1,
+            ),
+            50,
+        )
+
+    def test_low_latency_stream_profile_keeps_followup_segments_at_base_hop(self) -> None:
+        profile = resolve_stream_profile(Settings(tts_stream_profile="low_latency"))
+
+        self.assertEqual(
+            resolve_stream_initial_hop_len(
+                profile,
+                base_token_hop_len=25,
+                configured_max_hop_len=25,
+                reply_segment_index=3,
+            ),
+            25,
+        )
 
     def test_remote_provider_enables_reply_streaming_without_cosyvoice_engine(self) -> None:
         service = TTSService(
@@ -573,6 +609,42 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item.prompt_cache_hit for item in chunks], [False, True])
         self.assertEqual(model.frontend.calls, {'feat': 1, 'token': 1, 'embedding': 1})
+
+    async def test_local_reply_streaming_warm_starts_followup_segments(self) -> None:
+        captured_segment_indexes: list[tuple[int, int]] = []
+        service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_sample_rate=24000))
+
+        async def fake_stream_synthesize_segment(
+            text,
+            *,
+            seq,
+            reply_segment_index=0,
+            **kwargs,
+        ):
+            del text, kwargs
+            captured_segment_indexes.append((seq, reply_segment_index))
+            yield StreamingTTSChunk(
+                seq=seq,
+                chunk_index=0,
+                text='segment',
+                audio_bytes=b'\x01\x02',
+                phonemes=[],
+                offset_ms=0,
+                sample_rate=24000,
+                is_final=True,
+            )
+
+        service.stream_synthesize_segment = fake_stream_synthesize_segment  # type: ignore[method-assign]
+
+        async def segment_stream():
+            yield 0, 'first stop'
+            yield 1, 'second stop'
+            yield 2, 'third stop'
+
+        chunks = [item async for item in service.stream_synthesize_reply(segment_stream())]
+
+        self.assertEqual(captured_segment_indexes, [(0, 0), (1, 1), (2, 2)])
+        self.assertEqual([item.seq for item in chunks], [0, 1, 2])
 
     async def test_remote_tts_provider_streams_common_chunk_shape(self) -> None:
         class FakeRemoteTTSProvider(RemoteTTSProvider):
