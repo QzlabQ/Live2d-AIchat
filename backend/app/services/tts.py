@@ -213,6 +213,11 @@ class _LocalSegmentStreamSession:
             emotion_enabled=tts_emotion_enabled,
         ).__aiter__()
         self._segment_started_at = perf_counter()
+        # Prefetch buffering: prime() advances the generator to start the worker
+        # thread early, then stores the first event here so next_event() can
+        # consume it without re-driving the generator.
+        self._buffered_event: _CosyVoiceStreamEvent | None = None
+        self._prime_task: asyncio.Task[None] | None = None
 
     def add_prefetch_started_count(self, count: int) -> None:
         self._prefetch_started_count_pending += max(int(count), 0)
@@ -220,14 +225,39 @@ class _LocalSegmentStreamSession:
     def mark_prefetch_hit(self) -> None:
         self._prefetch_hit_pending = True
 
+    async def prime(self) -> None:
+        """Eagerly start the AR LLM worker thread for this segment.
+
+        Calling this via asyncio.create_task() when the *previous* segment's
+        own LLM finishes (llm_done event) overlaps the next segment's token
+        generation with the previous segment's remaining token2wav drain phase,
+        eliminating the cold-start gap at segment boundaries.
+
+        The first event produced by the generator is buffered and returned by
+        the next next_event() call so no events are lost.
+        """
+        try:
+            self._buffered_event = await anext(self._events)
+        except StopAsyncIteration:
+            pass
+
     async def next_event(self) -> _SegmentSessionEvent:
+        # If a prime() task is still in flight, wait for it before proceeding so
+        # that _buffered_event is populated and we never double-drive _events.
+        if self._prime_task is not None and not self._prime_task.done():
+            await self._prime_task
+
         while True:
-            try:
-                event = await anext(self._events)
-            except StopAsyncIteration:
-                if self._last_chunk is not None:
-                    self._last_chunk.is_final = True
-                return _SegmentSessionEvent(kind="done")
+            if self._buffered_event is not None:
+                event = self._buffered_event
+                self._buffered_event = None
+            else:
+                try:
+                    event = await anext(self._events)
+                except StopAsyncIteration:
+                    if self._last_chunk is not None:
+                        self._last_chunk.is_final = True
+                    return _SegmentSessionEvent(kind="done")
 
             if event.kind == "llm_done":
                 return _SegmentSessionEvent(kind="llm_done", llm_done_ms=event.llm_done_ms)
@@ -1639,6 +1669,13 @@ class TTSService:
                             )
                             lookahead_session.add_prefetch_started_count(1)
                             setattr(lookahead_session, "started_from_prefetch", True)
+                            # Eagerly start the next segment's AR LLM worker thread
+                            # so its tokens accumulate while the current segment
+                            # drains its remaining token2wav chunks.  By the time
+                            # this segment ends the next one's cold-start is hidden.
+                            lookahead_session._prime_task = asyncio.create_task(
+                                lookahead_session.prime()
+                            )
                     continue
 
                 if event.kind == "chunk":
