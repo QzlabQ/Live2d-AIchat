@@ -1,5 +1,7 @@
 import asyncio
+import importlib
 import os
+import sys
 import threading
 import unittest
 from pathlib import Path
@@ -134,6 +136,57 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(resolved, str(prompt_wav.resolve()))
 
+    def test_add_cosyvoice_python_paths_updates_pythonpath_for_child_processes(self) -> None:
+        original_pythonpath = os.environ.get("PYTHONPATH")
+        original_syspath = list(sys.path)
+
+        with TemporaryDirectory() as temp_dir:
+            code_dir = Path(temp_dir) / "CosyVoice"
+            matcha_dir = code_dir / "third_party" / "Matcha-TTS"
+            matcha_dir.mkdir(parents=True)
+            service = TTSService(Settings(tts_cosyvoice_code_path=str(code_dir)))
+
+            try:
+                os.environ.pop("PYTHONPATH", None)
+
+                service._add_cosyvoice_python_paths(code_dir)
+
+                pythonpath_entries = os.environ["PYTHONPATH"].split(os.pathsep)
+                self.assertEqual(pythonpath_entries[0], str(code_dir))
+                self.assertIn(str(matcha_dir), pythonpath_entries)
+                self.assertEqual(sys.path[0], str(matcha_dir))
+                self.assertIn(str(code_dir), sys.path)
+            finally:
+                sys.path[:] = original_syspath
+                if original_pythonpath is None:
+                    os.environ.pop("PYTHONPATH", None)
+                else:
+                    os.environ["PYTHONPATH"] = original_pythonpath
+
+    def test_configure_cosyvoice_vllm_plugin_environment_sets_plugin_name_and_code_path(self) -> None:
+        original_plugins = os.environ.get("VLLM_PLUGINS")
+        original_code_path = os.environ.get("AI_CHAT_COSYVOICE_CODE_PATH")
+
+        service = TTSService(Settings(tts_cosyvoice_load_vllm=True))
+
+        try:
+            os.environ["VLLM_PLUGINS"] = "existing_plugin"
+            os.environ.pop("AI_CHAT_COSYVOICE_CODE_PATH", None)
+
+            service._configure_cosyvoice_vllm_plugin_environment(Path("/tmp/cosyvoice"))
+
+            self.assertEqual(os.environ["AI_CHAT_COSYVOICE_CODE_PATH"], "/tmp/cosyvoice")
+            self.assertEqual(os.environ["VLLM_PLUGINS"], "existing_plugin,ai_chat_cosyvoice")
+        finally:
+            if original_plugins is None:
+                os.environ.pop("VLLM_PLUGINS", None)
+            else:
+                os.environ["VLLM_PLUGINS"] = original_plugins
+            if original_code_path is None:
+                os.environ.pop("AI_CHAT_COSYVOICE_CODE_PATH", None)
+            else:
+                os.environ["AI_CHAT_COSYVOICE_CODE_PATH"] = original_code_path
+
     def test_configures_cosyvoice_frontend_onnx_provider_environment(self) -> None:
         service = TTSService(Settings(tts_engine='cosyvoice', tts_cosyvoice_onnx_provider='cpu'))
 
@@ -233,6 +286,76 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot['tts_segment_soft_max_chars'], 40)
         self.assertEqual(snapshot['tts_segment_hard_max_chars'], 64)
 
+    def test_load_cosyvoice_model_passes_vllm_flags_to_factory_when_enabled(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_factory(model_path: str, **kwargs):
+            calls.append({'model_path': model_path, **kwargs})
+            return object()
+
+        with TemporaryDirectory() as temp_dir:
+            service = TTSService(
+                Settings(
+                    tts_engine='cosyvoice',
+                    tts_cosyvoice_model_path=temp_dir,
+                    tts_cosyvoice_device='cpu',
+                    tts_cosyvoice_fp16=True,
+                    tts_cosyvoice_load_jit=False,
+                    tts_cosyvoice_load_trt=True,
+                    tts_cosyvoice_load_vllm=True,
+                    tts_cosyvoice_vllm_model_path='./storage/models/CosyVoice2-0.5B/vllm',
+                    tts_cosyvoice_vllm_gpu_memory_utilization=0.25,
+                    tts_cosyvoice_vllm_dtype='fp16',
+                )
+            )
+            service._import_cosyvoice_module = lambda: SimpleNamespace(CosyVoice2=fake_factory)
+            service._resolve_cosyvoice_device = lambda: "cpu"
+            service._configure_cosyvoice_runtime_environment = lambda: None
+            service._register_cosyvoice_vllm_model_registry = lambda: None
+
+            service._load_cosyvoice_model()
+
+        self.assertEqual(calls[0]['model_path'], str(Path(temp_dir)))
+        self.assertTrue(calls[0]['load_trt'])
+        self.assertTrue(calls[0]['load_vllm'])
+        self.assertEqual(calls[0]['vllm_model_dir'], './storage/models/CosyVoice2-0.5B/vllm')
+        self.assertEqual(calls[0]['vllm_gpu_memory_utilization'], 0.25)
+        self.assertEqual(calls[0]['vllm_dtype'], 'fp16')
+        snapshot = service.get_runtime_trace_snapshot()
+        self.assertTrue(snapshot['tts_cosyvoice_load_vllm'])
+        self.assertTrue(snapshot['tts_vllm_engine_expected'])
+        self.assertTrue(snapshot['tts_vllm_engine_loaded'])
+        self.assertEqual(snapshot['tts_vllm_dtype'], 'fp16')
+
+    def test_load_cosyvoice_model_configures_vllm_plugin_environment_when_enabled(self) -> None:
+        plugin_calls: list[Path] = []
+
+        def fake_factory(model_path: str, **kwargs):
+            return object()
+
+        with TemporaryDirectory() as temp_dir, TemporaryDirectory() as code_dir:
+            service = TTSService(
+                Settings(
+                    tts_engine='cosyvoice',
+                    tts_cosyvoice_model_path=temp_dir,
+                    tts_cosyvoice_code_path=code_dir,
+                    tts_cosyvoice_device='cpu',
+                    tts_cosyvoice_fp16=True,
+                    tts_cosyvoice_load_jit=False,
+                    tts_cosyvoice_load_vllm=True,
+                    tts_cosyvoice_vllm_dtype='fp16',
+                )
+            )
+            service._import_cosyvoice_module = lambda: SimpleNamespace(CosyVoice2=fake_factory)
+            service._resolve_cosyvoice_device = lambda: "cpu"
+            service._configure_cosyvoice_runtime_environment = lambda: None
+            service._configure_cosyvoice_vllm_plugin_environment = lambda code_path: plugin_calls.append(code_path)
+            service._register_cosyvoice_vllm_model_registry = lambda: None
+
+            service._load_cosyvoice_model()
+
+        self.assertEqual(plugin_calls, [Path(code_dir)])
+
     def test_load_cosyvoice_model_fails_fast_when_trt_requested_but_runtime_load_fails(self) -> None:
         def fake_factory(model_path: str, **kwargs):
             raise RuntimeError("TensorRT runtime unavailable")
@@ -252,6 +375,89 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
             with self.assertRaises(TTSRuntimeValidationError):
                 service._load_cosyvoice_model()
+
+    def test_load_cosyvoice_model_fails_fast_when_vllm_requested_but_runtime_load_fails(self) -> None:
+        def fake_factory(model_path: str, **kwargs):
+            raise RuntimeError("vLLM runtime unavailable")
+
+        with TemporaryDirectory() as temp_dir:
+            service = TTSService(
+                Settings(
+                    tts_engine='cosyvoice',
+                    tts_cosyvoice_model_path=temp_dir,
+                    tts_cosyvoice_device='cpu',
+                    tts_cosyvoice_load_vllm=True,
+                    tts_cosyvoice_vllm_dtype='fp16',
+                )
+            )
+            service._import_cosyvoice_module = lambda: SimpleNamespace(CosyVoice2=fake_factory)
+            service._resolve_cosyvoice_device = lambda: "cpu"
+            service._configure_cosyvoice_runtime_environment = lambda: None
+
+            with self.assertRaises(TTSRuntimeValidationError):
+                service._load_cosyvoice_model()
+
+    def test_register_cosyvoice_vllm_model_registry_tolerates_duplicate_registration(self) -> None:
+        class FakeRegistry:
+            @staticmethod
+            def register_model(_name: str, _model_class: object) -> None:
+                raise RuntimeError("CosyVoice2ForCausalLM already registered")
+
+        fake_cosyvoice_module = SimpleNamespace(CosyVoice2ForCausalLM=object)
+        service = TTSService(Settings(tts_cosyvoice_load_vllm=True))
+        real_import_module = importlib.import_module
+
+        def fake_import_module(name: str, package: str | None = None):
+            if name == "cosyvoice.vllm.cosyvoice2":
+                return fake_cosyvoice_module
+            return real_import_module(name, package)
+
+        with patch.dict("sys.modules", {"vllm": SimpleNamespace(ModelRegistry=FakeRegistry)}):
+            with patch("app.services.tts.importlib.import_module", side_effect=fake_import_module):
+                service._register_cosyvoice_vllm_model_registry()
+
+    def test_register_cosyvoice_vllm_model_registry_uses_lazy_import_path(self) -> None:
+        calls: list[tuple[str, object]] = []
+
+        class FakeRegistry:
+            @staticmethod
+            def register_model(name: str, model_class: object) -> None:
+                calls.append((name, model_class))
+
+        fake_cosyvoice_module = SimpleNamespace(CosyVoice2ForCausalLM=object)
+        service = TTSService(Settings(tts_cosyvoice_load_vllm=True))
+        real_import_module = importlib.import_module
+
+        def fake_import_module(name: str, package: str | None = None):
+            if name == "cosyvoice.vllm.cosyvoice2":
+                return fake_cosyvoice_module
+            return real_import_module(name, package)
+
+        with patch.dict("sys.modules", {"vllm": SimpleNamespace(ModelRegistry=FakeRegistry)}):
+            with patch("app.services.tts.importlib.import_module", side_effect=fake_import_module):
+                service._register_cosyvoice_vllm_model_registry()
+
+        self.assertEqual(
+            calls,
+            [("CosyVoice2ForCausalLM", "cosyvoice.vllm.cosyvoice2:CosyVoice2ForCausalLM")],
+        )
+
+    def test_vllm_settings_accept_supported_dtype(self) -> None:
+        settings = Settings(
+            tts_cosyvoice_load_vllm=True,
+            tts_cosyvoice_vllm_model_path='./storage/models/CosyVoice2-0.5B/vllm',
+            tts_cosyvoice_vllm_gpu_memory_utilization=0.25,
+            tts_cosyvoice_vllm_dtype='bf16',
+        )
+
+        self.assertTrue(settings.tts_cosyvoice_load_vllm)
+        self.assertEqual(settings.tts_cosyvoice_vllm_model_path, './storage/models/CosyVoice2-0.5B/vllm')
+        self.assertEqual(settings.tts_cosyvoice_vllm_gpu_memory_utilization, 0.25)
+        self.assertEqual(settings.tts_cosyvoice_vllm_dtype, 'bf16')
+
+    def test_vllm_settings_reject_unsupported_dtype(self) -> None:
+        with self.assertRaises(ValueError):
+            Settings(tts_cosyvoice_vllm_dtype='fp32')
 
     def test_prompt_feature_cache_reuses_reference_audio_features(self) -> None:
         calls = {'feat': 0, 'token': 0, 'embedding': 0}

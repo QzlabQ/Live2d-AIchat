@@ -69,7 +69,11 @@ class Settings(BaseSettings):
     tts_cosyvoice_fp16: bool = True
     tts_cosyvoice_load_jit: bool = False
     tts_cosyvoice_load_trt: bool = False
+    tts_cosyvoice_load_vllm: bool = False
     tts_cosyvoice_trt_concurrent: int = 1
+    tts_cosyvoice_vllm_model_path: str = "./storage/models/CosyVoice2-0.5B/vllm"
+    tts_cosyvoice_vllm_gpu_memory_utilization: float = 0.2
+    tts_cosyvoice_vllm_dtype: str = "fp16"
     tts_provider: str = "local"
     tts_remote_url: str = ""
     tts_remote_protocol: str = "http_stream"
@@ -158,6 +162,14 @@ class Settings(BaseSettings):
             raise ValueError("TTS_STREAM_PROFILE must be stable, balanced, or low_latency.")
         return normalized
 
+    @field_validator("tts_cosyvoice_vllm_dtype", mode="before")
+    @classmethod
+    def normalize_tts_cosyvoice_vllm_dtype(cls, value: object) -> str:
+        normalized = str(value or "fp16").strip().lower()
+        if normalized not in {"fp16", "bf16"}:
+            raise ValueError("TTS_COSYVOICE_VLLM_DTYPE must be fp16 or bf16.")
+        return normalized
+
     @field_validator("rag_response_mode", mode="before")
     @classmethod
     def normalize_rag_response_mode(cls, value: object) -> str:
@@ -201,6 +213,13 @@ class Settings(BaseSettings):
     def ensure_non_negative_rag_numbers(cls, value: float) -> float:
         if value < 0:
             raise ValueError("RAG configuration values must be non-negative.")
+        return value
+
+    @field_validator("tts_cosyvoice_vllm_gpu_memory_utilization", mode="after")
+    @classmethod
+    def ensure_valid_vllm_gpu_memory_utilization(cls, value: float) -> float:
+        if value <= 0 or value > 1:
+            raise ValueError("TTS_COSYVOICE_VLLM_GPU_MEMORY_UTILIZATION must be within (0, 1].")
         return value
 
 

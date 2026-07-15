@@ -123,9 +123,13 @@ class ReplyTraceTestCase(unittest.TestCase):
                 "available_onnx_providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
                 "tts_stream_profile": "balanced",
                 "tts_cosyvoice_load_trt": True,
+                "tts_cosyvoice_load_vllm": True,
                 "tts_cosyvoice_trt_concurrent": 1,
                 "tts_trt_engine_expected": True,
                 "tts_trt_engine_loaded": True,
+                "tts_vllm_engine_expected": True,
+                "tts_vllm_engine_loaded": True,
+                "tts_vllm_dtype": "fp16",
                 "tts_segment_soft_min_chars": 22,
                 "tts_segment_soft_max_chars": 40,
                 "tts_segment_hard_max_chars": 64,
@@ -144,9 +148,13 @@ class ReplyTraceTestCase(unittest.TestCase):
         )
         self.assertEqual(payload["tts_stream_profile"], "balanced")
         self.assertTrue(payload["tts_cosyvoice_load_trt"])
+        self.assertTrue(payload["tts_cosyvoice_load_vllm"])
         self.assertEqual(payload["tts_cosyvoice_trt_concurrent"], 1)
         self.assertTrue(payload["tts_trt_engine_expected"])
         self.assertTrue(payload["tts_trt_engine_loaded"])
+        self.assertTrue(payload["tts_vllm_engine_expected"])
+        self.assertTrue(payload["tts_vllm_engine_loaded"])
+        self.assertEqual(payload["tts_vllm_dtype"], "fp16")
         self.assertEqual(payload["tts_segment_soft_min_chars"], 22)
         self.assertEqual(payload["tts_segment_soft_max_chars"], 40)
         self.assertEqual(payload["tts_segment_hard_max_chars"], 64)

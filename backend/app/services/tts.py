@@ -34,6 +34,8 @@ VISITOR_PEDAGOGY_RE = re.compile(
 GENERIC_TTS_OBJECTS = {"", "这段内容", "这句话", "一句话", "内容", "文本", "回答"}
 COSYVOICE_ALIGNMENT_KEYS = ("alignment", "alignments", "phonemes", "phoneme_alignment")
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+VLLM_COSYVOICE_PLUGIN_NAME = "ai_chat_cosyvoice"
+VLLM_COSYVOICE_CODE_PATH_ENV = "AI_CHAT_COSYVOICE_CODE_PATH"
 logger = logging.getLogger(__name__)
 
 MOUTH_POSES: dict[str, tuple[float, float]] = {
@@ -229,9 +231,13 @@ class TTSService:
             "torch_device_name": None,
             "tts_stream_profile": resolve_stream_profile(self.settings).name,
             "tts_cosyvoice_load_trt": self.settings.tts_cosyvoice_load_trt,
+            "tts_cosyvoice_load_vllm": self.settings.tts_cosyvoice_load_vllm,
             "tts_cosyvoice_trt_concurrent": self.settings.tts_cosyvoice_trt_concurrent,
             "tts_trt_engine_expected": self.settings.tts_cosyvoice_load_trt,
             "tts_trt_engine_loaded": False,
+            "tts_vllm_engine_expected": self.settings.tts_cosyvoice_load_vllm,
+            "tts_vllm_engine_loaded": False,
+            "tts_vllm_dtype": self.settings.tts_cosyvoice_vllm_dtype,
             "tts_segment_soft_min_chars": self.settings.tts_segment_soft_min_chars,
             "tts_segment_soft_max_chars": self.settings.tts_segment_soft_max_chars,
             "tts_segment_hard_max_chars": self.settings.tts_segment_hard_max_chars,
@@ -277,9 +283,13 @@ class TTSService:
             "torch_device_name": None,
             "tts_stream_profile": resolve_stream_profile(self.settings).name,
             "tts_cosyvoice_load_trt": self.settings.tts_cosyvoice_load_trt,
+            "tts_cosyvoice_load_vllm": self.settings.tts_cosyvoice_load_vllm,
             "tts_cosyvoice_trt_concurrent": self.settings.tts_cosyvoice_trt_concurrent,
             "tts_trt_engine_expected": self.settings.tts_cosyvoice_load_trt,
             "tts_trt_engine_loaded": False,
+            "tts_vllm_engine_expected": self.settings.tts_cosyvoice_load_vllm,
+            "tts_vllm_engine_loaded": False,
+            "tts_vllm_dtype": self.settings.tts_cosyvoice_vllm_dtype,
             "tts_segment_soft_min_chars": self.settings.tts_segment_soft_min_chars,
             "tts_segment_soft_max_chars": self.settings.tts_segment_soft_max_chars,
             "tts_segment_hard_max_chars": self.settings.tts_segment_hard_max_chars,
@@ -361,7 +371,8 @@ class TTSService:
     def _load_cosyvoice_model(self) -> object:
         if self._cosyvoice_model is not None:
             self._refresh_runtime_trace_snapshot(
-                tts_trt_engine_loaded=bool(self.settings.tts_cosyvoice_load_trt)
+                tts_trt_engine_loaded=bool(self.settings.tts_cosyvoice_load_trt),
+                tts_vllm_engine_loaded=bool(self.settings.tts_cosyvoice_load_vllm),
             )
             return self._cosyvoice_model
 
@@ -373,7 +384,13 @@ class TTSService:
 
         device = self._resolve_cosyvoice_device()
         self._configure_cosyvoice_runtime_environment()
+        if self.settings.tts_cosyvoice_load_vllm:
+            self._configure_cosyvoice_vllm_plugin_environment(
+                self._resolve_backend_path(self.settings.tts_cosyvoice_code_path)
+            )
         module = self._import_cosyvoice_module()
+        if self.settings.tts_cosyvoice_load_vllm:
+            self._register_cosyvoice_vllm_model_registry()
         factory = getattr(module, "CosyVoice2", None)
         if factory is None:
             raise RuntimeError("未找到 cosyvoice.cli.cosyvoice.CosyVoice2，请检查本地 CosyVoice 安装。")
@@ -385,25 +402,33 @@ class TTSService:
         if self.settings.tts_cosyvoice_load_trt:
             factory_kwargs["load_trt"] = True
             factory_kwargs["trt_concurrent"] = self.settings.tts_cosyvoice_trt_concurrent
+        if self.settings.tts_cosyvoice_load_vllm:
+            factory_kwargs["load_vllm"] = True
+            factory_kwargs["vllm_model_dir"] = self.settings.tts_cosyvoice_vllm_model_path
+            factory_kwargs["vllm_gpu_memory_utilization"] = (
+                self.settings.tts_cosyvoice_vllm_gpu_memory_utilization
+            )
+            factory_kwargs["vllm_dtype"] = self.settings.tts_cosyvoice_vllm_dtype
 
         try:
             self._cosyvoice_model = factory(str(model_path), **factory_kwargs)
         except TypeError as exc:
-            if self.settings.tts_cosyvoice_load_trt:
+            if self.settings.tts_cosyvoice_load_trt or self.settings.tts_cosyvoice_load_vllm:
                 raise TTSRuntimeValidationError(
-                    "TTS_COSYVOICE_LOAD_TRT=true，但当前 CosyVoice 运行时不支持 TensorRT 初始化参数。"
+                    "已启用 CosyVoice TRT/vLLM，但当前 CosyVoice 运行时不支持所需初始化参数。"
                 ) from exc
             self._cosyvoice_model = factory(str(model_path))
         except Exception as exc:
-            if self.settings.tts_cosyvoice_load_trt:
+            if self.settings.tts_cosyvoice_load_trt or self.settings.tts_cosyvoice_load_vllm:
                 raise TTSRuntimeValidationError(
-                    "TTS_COSYVOICE_LOAD_TRT=true，但 CosyVoice TensorRT 运行时初始化失败。"
+                    "已启用 CosyVoice TRT/vLLM，但运行时初始化失败。"
                 ) from exc
             raise
 
         self._move_cosyvoice_runtime(self._cosyvoice_model, device)
         self._refresh_runtime_trace_snapshot(
-            tts_trt_engine_loaded=bool(self.settings.tts_cosyvoice_load_trt)
+            tts_trt_engine_loaded=bool(self.settings.tts_cosyvoice_load_trt),
+            tts_vllm_engine_loaded=bool(self.settings.tts_cosyvoice_load_vllm),
         )
 
         return self._cosyvoice_model
@@ -478,11 +503,7 @@ class TTSService:
                     "或修改 TTS_COSYVOICE_CODE_PATH。"
                 ) from original_exc
 
-            if str(code_path) not in sys.path:
-                sys.path.insert(0, str(code_path))
-            matcha_path = code_path / "third_party" / "Matcha-TTS"
-            if matcha_path.exists() and str(matcha_path) not in sys.path:
-                sys.path.insert(0, str(matcha_path))
+            self._add_cosyvoice_python_paths(code_path)
 
             try:
                 module = importlib.import_module("cosyvoice.cli.cosyvoice")
@@ -493,6 +514,47 @@ class TTSService:
                     "已找到 CosyVoice 代码目录，但仍无法导入 cosyvoice.cli.cosyvoice。"
                     "请确认仓库完整克隆（含 third_party 子模块）并已安装 CosyVoice 运行时依赖。"
                 ) from patched_exc
+
+    def _add_cosyvoice_python_paths(self, code_path: Path) -> None:
+        candidate_paths = [code_path]
+        matcha_path = code_path / "third_party" / "Matcha-TTS"
+        if matcha_path.exists():
+            candidate_paths.append(matcha_path)
+
+        for candidate in candidate_paths:
+            candidate_str = str(candidate)
+            if candidate_str not in sys.path:
+                sys.path.insert(0, candidate_str)
+
+        existing_pythonpath = [entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry]
+        prepended = [str(candidate) for candidate in candidate_paths if str(candidate) not in existing_pythonpath]
+        ordered_pythonpath = prepended + [entry for entry in existing_pythonpath if entry not in prepended]
+        if ordered_pythonpath:
+            os.environ["PYTHONPATH"] = os.pathsep.join(ordered_pythonpath)
+
+    def _configure_cosyvoice_vllm_plugin_environment(self, code_path: Path) -> None:
+        os.environ[VLLM_COSYVOICE_CODE_PATH_ENV] = str(code_path.expanduser().resolve())
+
+        existing_plugins = [
+            entry.strip() for entry in os.environ.get("VLLM_PLUGINS", "").split(",") if entry.strip()
+        ]
+        if VLLM_COSYVOICE_PLUGIN_NAME not in existing_plugins:
+            existing_plugins.append(VLLM_COSYVOICE_PLUGIN_NAME)
+        os.environ["VLLM_PLUGINS"] = ",".join(existing_plugins)
+
+    def _register_cosyvoice_vllm_model_registry(self) -> None:
+        try:
+            from vllm import ModelRegistry
+        except ModuleNotFoundError as exc:
+            raise TTSRuntimeValidationError(
+                "TTS_COSYVOICE_LOAD_VLLM=true，但当前环境无法导入 vllm。"
+            ) from exc
+        model_reference = "cosyvoice.vllm.cosyvoice2:CosyVoice2ForCausalLM"
+        try:
+            ModelRegistry.register_model("CosyVoice2ForCausalLM", model_reference)
+        except Exception as exc:
+            if "already" not in str(exc).lower():
+                raise
 
     def _patch_cosyvoice_runtime_support(self, cosyvoice_module: object) -> None:
         profile = resolve_stream_profile(self.settings)
