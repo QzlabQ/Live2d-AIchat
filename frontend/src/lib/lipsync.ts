@@ -213,6 +213,10 @@ export function finalFrameEnd(frames: PhonemeFrame[]): number {
   return frames.at(-1)?.end ?? 0
 }
 
+export function isLipSyncPlaybackActive(lipSyncState: unknown): boolean {
+  return lipSyncState !== null && lipSyncState !== undefined
+}
+
 function roundScheduledTime(value: number): number {
   return Number(value.toFixed(6))
 }

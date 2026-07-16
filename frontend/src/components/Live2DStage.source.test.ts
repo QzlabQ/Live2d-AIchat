@@ -14,15 +14,14 @@ describe('Live2DStage source contracts', () => {
     expect(source).toContain('resetExpressionState()')
   })
 
-  it('gives mouth ownership to live audio only while speaking', () => {
+  it('gives mouth ownership to active local lip sync playback', () => {
     const source = readFileSync(new URL('./Live2DStage.vue', import.meta.url), 'utf8')
 
-    expect(source).toContain('function isSpeakingLipSyncActive()')
-    expect(source).toContain("currentAvatarPresentation.phase === 'speaking'")
-    expect(source).toContain('currentAvatarPresentation.lipSyncActive')
-    expect(source).toContain('!!lipSyncState')
+    expect(source).toContain('isLipSyncPlaybackActive(lipSyncState)')
     expect(source).toContain('beforeModelUpdate')
     expect(source).toContain('applyCurrentMouthPose()')
+    expect(source).not.toContain('function isSpeakingLipSyncActive()')
+    expect(source).not.toContain('currentAvatarPresentation.lipSyncActive')
   })
 
   it('does not keep overriding mouth pose while lip sync is inactive', () => {

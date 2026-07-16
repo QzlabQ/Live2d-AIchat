@@ -13,6 +13,7 @@ import {
   currentPhoneme,
   EMOTION_PRESETS,
   finalFrameEnd,
+  isLipSyncPlaybackActive,
   mouthPoseFromFrame,
   resolveScheduledPhonemeFrames,
   resolveModelAssetUrl,
@@ -148,14 +149,6 @@ function resetCurrentMouthPose() {
   currentOpen = 0.06
   currentForm = 0
   applyCurrentMouthPose()
-}
-
-function isSpeakingLipSyncActive() {
-  return (
-    currentAvatarPresentation.phase === 'speaking' &&
-    currentAvatarPresentation.lipSyncActive &&
-    !!lipSyncState
-  )
 }
 
 function rebuildEmotionTarget() {
@@ -383,7 +376,7 @@ async function createModel() {
   model = (await Live2DModel.from(settings)) as RuntimeLive2DModel
   model.internalModel.lipSync = false
   model.internalModel.on('beforeModelUpdate', () => {
-    if (isSpeakingLipSyncActive()) {
+    if (isLipSyncPlaybackActive(lipSyncState)) {
       applyCurrentMouthPose()
     }
   })

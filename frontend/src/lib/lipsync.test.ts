@@ -14,4 +14,13 @@ describe('lipsync mouth parameter guards', () => {
       ParamAngleX: 0.4,
     })
   })
+
+  it('treats local lip sync playback state as the source of mouth ownership', async () => {
+    const module = await import('./lipsync')
+
+    expect(typeof module.isLipSyncPlaybackActive).toBe('function')
+    expect(module.isLipSyncPlaybackActive?.(null)).toBe(false)
+    expect(module.isLipSyncPlaybackActive?.(undefined)).toBe(false)
+    expect(module.isLipSyncPlaybackActive?.({ frames: [] })).toBe(true)
+  })
 })
