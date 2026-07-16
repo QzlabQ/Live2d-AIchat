@@ -588,7 +588,7 @@ function updateStreamPlaybackTelemetry(context: AudioContext | null) {
 }
 
 function applyStreamVisemes(payload: TtsVisemeChunkEvent, scheduledAt: number, context: AudioContext) {
-  live2dRef.value?.queueScheduledPhonemes?.(payload.frames, context, scheduledAt)
+  live2dRef.value?.queueScheduledPhonemes?.(payload.frames, context, scheduledAt, payload.offset_ms)
 }
 
 function flushBufferedStreamAudio(context: AudioContext) {

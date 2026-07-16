@@ -29,6 +29,7 @@ export interface Live2DExpressionManifestEntry {
 const FALLBACK_POSE: MouthPose = { openY: 0.06, form: 0 }
 const PREVIEW_EMOTION_STRENGTH = 0.72
 const MOUTH_PARAMETER_IDS = new Set(['ParamMouthOpenY', 'PARAM_MOUTH_OPEN_Y', 'ParamMouthForm', 'PARAM_MOUTH_FORM'])
+const SEGMENT_TIMING_OFFSET_TOLERANCE_SECONDS = 0.12
 
 const PHONEME_TO_MOUTH: Record<string, MouthPose> = {
   a: { openY: 0.92, form: 0.04 },
@@ -210,4 +211,30 @@ export function currentPhoneme(frames: PhonemeFrame[], elapsedSeconds: number): 
 
 export function finalFrameEnd(frames: PhonemeFrame[]): number {
   return frames.at(-1)?.end ?? 0
+}
+
+function roundScheduledTime(value: number): number {
+  return Number(value.toFixed(6))
+}
+
+export function resolveScheduledPhonemeFrames(
+  frames: PhonemeFrame[],
+  scheduledAt: number,
+  offsetMs = 0,
+): PhonemeFrame[] {
+  if (!frames.length) {
+    return []
+  }
+
+  const offsetSeconds = Math.max(0, offsetMs) / 1000
+  const firstFrameStart = frames[0]?.start ?? 0
+  const usesSegmentAbsoluteTiming =
+    Math.abs(firstFrameStart - offsetSeconds) <= SEGMENT_TIMING_OFFSET_TOLERANCE_SECONDS
+  const baseOffset = usesSegmentAbsoluteTiming ? offsetSeconds : 0
+
+  return frames.map((frame) => ({
+    ...frame,
+    start: roundScheduledTime(scheduledAt + frame.start - baseOffset),
+    end: roundScheduledTime(scheduledAt + frame.end - baseOffset),
+  }))
 }

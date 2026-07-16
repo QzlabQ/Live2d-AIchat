@@ -13,4 +13,28 @@ describe('Live2DStage source contracts', () => {
     expect(source).toContain('delete currentEmotionValues[key]')
     expect(source).toContain('resetExpressionState()')
   })
+
+  it('gives mouth ownership to live audio only while speaking', () => {
+    const source = readFileSync(new URL('./Live2DStage.vue', import.meta.url), 'utf8')
+
+    expect(source).toContain('function isSpeakingLipSyncActive()')
+    expect(source).toContain("currentAvatarPresentation.phase === 'speaking'")
+    expect(source).toContain('currentAvatarPresentation.lipSyncActive')
+    expect(source).toContain('!!lipSyncState')
+    expect(source).toContain('beforeModelUpdate')
+    expect(source).toContain('applyCurrentMouthPose()')
+  })
+
+  it('does not keep overriding mouth pose while lip sync is inactive', () => {
+    const source = readFileSync(new URL('./Live2DStage.vue', import.meta.url), 'utf8')
+
+    expect(source).not.toContain('setMouthPose(0.06 + Math.sin')
+  })
+
+  it('does not globally freeze live2d motions to protect lip sync', () => {
+    const source = readFileSync(new URL('./Live2DStage.vue', import.meta.url), 'utf8')
+
+    expect(source).not.toContain('stopAllMotions()')
+    expect(source).not.toContain('groups.idle')
+  })
 })

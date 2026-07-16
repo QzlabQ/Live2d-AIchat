@@ -14,6 +14,7 @@ import {
   EMOTION_PRESETS,
   finalFrameEnd,
   mouthPoseFromFrame,
+  resolveScheduledPhonemeFrames,
   resolveModelAssetUrl,
 } from '../lib/lipsync'
 import {
@@ -54,6 +55,8 @@ type RuntimeLive2DModel = Live2DModel &
       coreModel: {
         setParameterValueById: (id: string, value: number) => void
       }
+      lipSync?: boolean
+      on: (event: string, handler: () => void) => void
     }
   }
 
@@ -136,6 +139,25 @@ function safeSetParameterAliases(ids: string[], value: number) {
   }
 }
 
+function applyCurrentMouthPose() {
+  safeSetParameterAliases(MOUTH_OPEN_IDS, currentOpen)
+  safeSetParameterAliases(MOUTH_FORM_IDS, currentForm)
+}
+
+function resetCurrentMouthPose() {
+  currentOpen = 0.06
+  currentForm = 0
+  applyCurrentMouthPose()
+}
+
+function isSpeakingLipSyncActive() {
+  return (
+    currentAvatarPresentation.phase === 'speaking' &&
+    currentAvatarPresentation.lipSyncActive &&
+    !!lipSyncState
+  )
+}
+
 function rebuildEmotionTarget() {
   targetEmotionValues = buildEmotionTarget(currentEmotion, currentEmotionStage, expressionTargets)
   emotionParamIds = new Set([
@@ -160,8 +182,7 @@ function setMouthPose(targetOpen: number, targetForm: number) {
   currentOpen += (targetOpen - currentOpen) * 0.35
   currentForm += (targetForm - currentForm) * 0.35
 
-  safeSetParameterAliases(MOUTH_OPEN_IDS, currentOpen)
-  safeSetParameterAliases(MOUTH_FORM_IDS, currentForm)
+  applyCurrentMouthPose()
 }
 
 function resizeModel() {
@@ -307,11 +328,9 @@ function startBreathingLoop() {
       }
 
       lipSyncState = null
-      setMouthPose(0.06, 0)
+      resetCurrentMouthPose()
       return
     }
-
-    setMouthPose(0.06 + Math.sin(t * profile.mouthIdleSpeed) * profile.mouthIdleAmplitude, currentForm * 0.85)
   })
 }
 
@@ -362,6 +381,12 @@ async function createModel() {
   rebuildEmotionTarget()
 
   model = (await Live2DModel.from(settings)) as RuntimeLive2DModel
+  model.internalModel.lipSync = false
+  model.internalModel.on('beforeModelUpdate', () => {
+    if (isSpeakingLipSyncActive()) {
+      applyCurrentMouthPose()
+    }
+  })
   model.interactive = true
   model.cursor = 'pointer'
   model.on('pointertap', () => {
@@ -465,7 +490,7 @@ function setAvatarPresentation(presentation: AvatarPresentation) {
 function playPhonemes(frames: PhonemeFrame[], audio?: HTMLAudioElement | null) {
   if (!frames.length) {
     lipSyncState = null
-    setMouthPose(0.06, 0)
+    resetCurrentMouthPose()
     return
   }
 
@@ -483,16 +508,13 @@ function queueScheduledPhonemes(
   frames: PhonemeFrame[],
   audioContext: AudioContext,
   scheduledAt: number,
+  offsetMs = 0,
 ) {
   if (!frames.length) {
     return
   }
 
-  const absoluteFrames = frames.map((frame) => ({
-    ...frame,
-    start: frame.start + scheduledAt,
-    end: frame.end + scheduledAt,
-  }))
+  const absoluteFrames = resolveScheduledPhonemeFrames(frames, scheduledAt, offsetMs)
 
   if (
     lipSyncState &&
