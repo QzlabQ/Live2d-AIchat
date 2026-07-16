@@ -242,6 +242,41 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("rag_rerank_ms", prepared.metrics)
         self.assertIn("rag_decision_llm_ms", prepared.metrics)
 
+    async def test_prepare_stream_answer_uses_split_retrieve_metrics_when_available(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
+
+        async def fake_retrieve(*args, **kwargs):
+            service._retrieve_metrics.set(
+                {
+                    "rag_embed_ms": 11,
+                    "rag_vector_search_ms": 22,
+                    "rag_retrieve_ms": 33,
+                    "rag_rerank_ms": 44,
+                    "rag_retrieve_total_ms": 77,
+                }
+            )
+            return [
+                make_chunk(
+                    category="schedule",
+                    text="景区开放时间为9:00-21:30，冬季闭园会提前。",
+                    title="景区开放时间",
+                )
+            ]
+
+        service.retrieve = fake_retrieve
+
+        prepared = await service.prepare_stream_answer("开放时间是什么时候？", persona="guide", history=[])
+
+        self.assertEqual(prepared.metrics["rag_embed_ms"], 11)
+        self.assertEqual(prepared.metrics["rag_vector_search_ms"], 22)
+        self.assertEqual(prepared.metrics["rag_retrieve_ms"], 33)
+        self.assertEqual(prepared.metrics["rag_rerank_ms"], 44)
+        self.assertEqual(prepared.metrics["rag_retrieve_total_ms"], 77)
+
     async def test_prepare_stream_answer_records_metrics_for_empty_question(self) -> None:
         with (
             patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),

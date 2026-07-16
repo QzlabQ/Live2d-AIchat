@@ -211,8 +211,11 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
     ) -> legacy_rag.PreparedRAGAnswer:
         prepare_started_at = perf_counter()
         metrics: dict[str, int] = {
+            "rag_embed_ms": 0,
+            "rag_vector_search_ms": 0,
             "rag_retrieve_ms": 0,
             "rag_rerank_ms": 0,
+            "rag_retrieve_total_ms": 0,
             "rag_decision_llm_ms": 0,
             "rag_prepare_total_ms": 0,
         }
@@ -244,11 +247,18 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                 )
             )
 
+        self._retrieve_metrics.set(None)
         retrieve_started_at = perf_counter()
         candidates = await self.retrieve(query)
         retrieve_elapsed_ms = int((perf_counter() - retrieve_started_at) * 1000)
-        metrics["rag_retrieve_ms"] = retrieve_elapsed_ms
-        metrics["rag_rerank_ms"] = retrieve_elapsed_ms
+        retrieve_metrics = self._retrieve_metrics.get() or {}
+        metrics["rag_embed_ms"] = int(retrieve_metrics.get("rag_embed_ms", 0))
+        metrics["rag_vector_search_ms"] = int(retrieve_metrics.get("rag_vector_search_ms", 0))
+        metrics["rag_retrieve_ms"] = int(retrieve_metrics.get("rag_retrieve_ms", retrieve_elapsed_ms))
+        metrics["rag_rerank_ms"] = int(retrieve_metrics.get("rag_rerank_ms", retrieve_elapsed_ms))
+        metrics["rag_retrieve_total_ms"] = int(
+            retrieve_metrics.get("rag_retrieve_total_ms", retrieve_elapsed_ms)
+        )
         if not self._has_grounded_context(query, candidates):
             return finish(
                 self._prepare_refusal(

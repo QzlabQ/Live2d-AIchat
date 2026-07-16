@@ -1,4 +1,6 @@
 import type {
+  AdminReplyTrace,
+  AdminReplyTraceSummary,
   AdminSessionDetail,
   AdminSessionListResponse,
   AdminSessionMessage,
@@ -332,6 +334,31 @@ interface AdminSessionMessageApi {
   latency_ms: number | null
 }
 
+interface AdminReplyTraceApi {
+  reply_id: string
+  created_at: string
+  streaming: boolean
+  chat_mode: string
+  tts_engine: string
+  tts_stream_profile: string | null
+  prompt_cache_hit: boolean | null
+  prompt_cache_build_ms: number | null
+  torch_cuda_available: boolean | null
+  torch_device_name: string | null
+  requested_onnx_provider: string | null
+  audio_chunk_count: number
+  segment_count: number
+  max_chunk_gap_ms: number
+  metrics: Record<string, number>
+}
+
+interface AdminReplyTraceSummaryApi {
+  trace_count: number
+  latest_created_at: string | null
+  avg_metrics: Record<string, number>
+  max_metrics: Record<string, number>
+}
+
 interface AdminSessionDetailApi {
   session_id: string
   created_at: string
@@ -340,6 +367,8 @@ interface AdminSessionDetailApi {
   interest_tags: string[]
   message_count: number
   items: AdminSessionMessageApi[]
+  reply_traces: AdminReplyTraceApi[]
+  reply_trace_summary: AdminReplyTraceSummaryApi
 }
 
 const API_BASE_URL = getRuntimeApiBaseUrl(import.meta.env)
@@ -512,6 +541,35 @@ function mapAdminSessionMessage(payload: AdminSessionMessageApi): AdminSessionMe
     createdAt: payload.created_at,
     emotion: payload.emotion,
     latencyMs: payload.latency_ms,
+  }
+}
+
+function mapAdminReplyTrace(payload: AdminReplyTraceApi): AdminReplyTrace {
+  return {
+    replyId: payload.reply_id,
+    createdAt: payload.created_at,
+    streaming: payload.streaming,
+    chatMode: payload.chat_mode,
+    ttsEngine: payload.tts_engine,
+    ttsStreamProfile: payload.tts_stream_profile,
+    promptCacheHit: payload.prompt_cache_hit,
+    promptCacheBuildMs: payload.prompt_cache_build_ms,
+    torchCudaAvailable: payload.torch_cuda_available,
+    torchDeviceName: payload.torch_device_name,
+    requestedOnnxProvider: payload.requested_onnx_provider,
+    audioChunkCount: payload.audio_chunk_count,
+    segmentCount: payload.segment_count,
+    maxChunkGapMs: payload.max_chunk_gap_ms,
+    metrics: payload.metrics ?? {},
+  }
+}
+
+function mapAdminReplyTraceSummary(payload: AdminReplyTraceSummaryApi): AdminReplyTraceSummary {
+  return {
+    traceCount: payload.trace_count,
+    latestCreatedAt: payload.latest_created_at,
+    avgMetrics: payload.avg_metrics ?? {},
+    maxMetrics: payload.max_metrics ?? {},
   }
 }
 
@@ -1036,6 +1094,8 @@ export async function fetchAdminSessionDetail(
     interestTags: payload.interest_tags,
     messageCount: payload.message_count,
     items: payload.items.map(mapAdminSessionMessage),
+    replyTraces: payload.reply_traces.map(mapAdminReplyTrace),
+    replyTraceSummary: mapAdminReplyTraceSummary(payload.reply_trace_summary),
   }
 }
 

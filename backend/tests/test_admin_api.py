@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import struct
@@ -257,6 +258,119 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["items"][1]["emotion"], "thinking")
         self.assertEqual(payload["items"][1]["latency_ms"], 2480)
         self.assertIn("九龙灌浴", payload["items"][1]["content"])
+
+    async def test_admin_session_detail_includes_reply_trace_diagnostics(self) -> None:
+        async with self.session_factory() as session:
+            session_obj = Session(interest_tags=["history"], device_type="mobile")
+            session.add(session_obj)
+            await session.flush()
+            session.add_all(
+                [
+                    Message(session_id=session_obj.id, role="user", content="开放时间是什么时候？"),
+                    Message(
+                        session_id=session_obj.id,
+                        role="assistant",
+                        content="景区整体开放一般是 9:00-21:30。",
+                        emotion="neutral",
+                        latency_ms=1240,
+                    ),
+                ]
+            )
+            await session.commit()
+            session_id = session_obj.id
+
+        trace_log_path = Path(self.temp_dir.name) / "avatar_trace.log"
+        trace_log_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "created_at": "2026-07-16T16:10:49+00:00",
+                            "reply_id": f"{session_id}-new",
+                            "session_id": session_id,
+                            "streaming": True,
+                            "chat_mode": "rag",
+                            "tts_engine": "cosyvoice",
+                            "tts_stream_profile": "stable",
+                            "prompt_cache_hit": True,
+                            "prompt_cache_build_ms": 0.0,
+                            "torch_cuda_available": True,
+                            "torch_device_name": "Tesla V100-PCIE-32GB",
+                            "requested_onnx_provider": "cuda",
+                            "audio_chunk_count": 4,
+                            "segment_count": 1,
+                            "max_chunk_gap_ms": 3200,
+                            "metrics": {
+                                "rag_embed_ms": 30,
+                                "rag_vector_search_ms": 10,
+                                "rag_retrieve_ms": 40,
+                                "rag_rerank_ms": 100,
+                                "rag_retrieve_total_ms": 140,
+                                "tts_first_audio_chunk_ms": 3400,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "created_at": "2026-07-16T16:05:49+00:00",
+                            "reply_id": f"{session_id}-old",
+                            "session_id": session_id,
+                            "streaming": True,
+                            "chat_mode": "rag",
+                            "tts_engine": "cosyvoice",
+                            "tts_stream_profile": "stable",
+                            "prompt_cache_hit": False,
+                            "prompt_cache_build_ms": 108.3,
+                            "torch_cuda_available": True,
+                            "torch_device_name": "Tesla V100-PCIE-32GB",
+                            "requested_onnx_provider": "cuda",
+                            "audio_chunk_count": 5,
+                            "segment_count": 2,
+                            "max_chunk_gap_ms": 4100,
+                            "metrics": {
+                                "rag_embed_ms": 50,
+                                "rag_vector_search_ms": 20,
+                                "rag_retrieve_ms": 70,
+                                "rag_rerank_ms": 2100,
+                                "rag_retrieve_total_ms": 2170,
+                                "tts_first_audio_chunk_ms": 9100,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "created_at": "2026-07-16T16:11:49+00:00",
+                            "reply_id": "other-session",
+                            "session_id": "other-session-id",
+                            "streaming": True,
+                            "chat_mode": "rag",
+                            "tts_engine": "cosyvoice",
+                            "audio_chunk_count": 1,
+                            "segment_count": 1,
+                            "max_chunk_gap_ms": 100,
+                            "metrics": {"rag_rerank_ms": 9999},
+                        },
+                        ensure_ascii=False,
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with patch("app.services.admin_sessions._DEFAULT_LOG_PATH", trace_log_path):
+            response = await self.client.get(f"/api/v1/admin/sessions/{session_id}", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["reply_traces"]), 2)
+        self.assertEqual(payload["reply_traces"][0]["reply_id"], f"{session_id}-new")
+        self.assertEqual(payload["reply_traces"][0]["metrics"]["rag_rerank_ms"], 100)
+        self.assertEqual(payload["reply_trace_summary"]["trace_count"], 2)
+        self.assertEqual(payload["reply_trace_summary"]["avg_metrics"]["rag_rerank_ms"], 1100.0)
+        self.assertEqual(payload["reply_trace_summary"]["max_metrics"]["tts_first_audio_chunk_ms"], 9100)
 
 
 if __name__ == "__main__":

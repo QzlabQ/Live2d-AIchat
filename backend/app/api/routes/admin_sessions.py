@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.schemas.admin_session import (
+    AdminReplyTraceResponse,
+    AdminReplyTraceSummaryResponse,
     AdminSessionDetailResponse,
     AdminSessionListResponse,
     AdminSessionMessageResponse,
@@ -65,4 +67,30 @@ async def get_admin_session_detail(
             )
             for item in detail.items
         ],
+        reply_traces=[
+            AdminReplyTraceResponse(
+                reply_id=item.reply_id,
+                created_at=item.created_at,
+                streaming=item.streaming,
+                chat_mode=item.chat_mode,
+                tts_engine=item.tts_engine,
+                tts_stream_profile=item.tts_stream_profile,
+                prompt_cache_hit=item.prompt_cache_hit,
+                prompt_cache_build_ms=item.prompt_cache_build_ms,
+                torch_cuda_available=item.torch_cuda_available,
+                torch_device_name=item.torch_device_name,
+                requested_onnx_provider=item.requested_onnx_provider,
+                audio_chunk_count=item.audio_chunk_count,
+                segment_count=item.segment_count,
+                max_chunk_gap_ms=item.max_chunk_gap_ms,
+                metrics=item.metrics,
+            )
+            for item in detail.reply_traces
+        ],
+        reply_trace_summary=AdminReplyTraceSummaryResponse(
+            trace_count=detail.reply_trace_summary.trace_count,
+            latest_created_at=detail.reply_trace_summary.latest_created_at,
+            avg_metrics=detail.reply_trace_summary.avg_metrics,
+            max_metrics=detail.reply_trace_summary.max_metrics,
+        ),
     )

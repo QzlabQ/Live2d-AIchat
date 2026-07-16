@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import lru_cache
 from time import perf_counter
@@ -205,9 +206,14 @@ class BgeRerankerService:
             ) from exc
 
         self._torch = torch
+        requested_device = str(device or "cpu").strip()
+        wants_cuda = requested_device.lower().startswith("cuda")
+        self.device = requested_device if wants_cuda and torch.cuda.is_available() else "cpu"
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        self.device = device if device != "cpu" and torch.cuda.is_available() else "cpu"
+        model_kwargs: dict[str, object] = {}
+        if self.device != "cpu":
+            model_kwargs["torch_dtype"] = torch.float16
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name, **model_kwargs)
         if self.device != "cpu":
             self.model = self.model.to(self.device)
         self.model.eval()
@@ -236,7 +242,7 @@ class BgeRerankerService:
                 for key, value in encoded.items()
             }
 
-            with self._torch.no_grad():
+            with self._torch.inference_mode():
                 logits = self.model(**encoded, return_dict=True).logits.view(-1).float()
 
             scores.extend(logits.cpu().tolist())
@@ -349,6 +355,10 @@ class ScenicRAGService:
         self.settings = settings or get_settings()
         self.vector_store = KnowledgeVectorStore(self.settings)
         self.embedder = build_embedding_service(self.settings)
+        self._retrieve_metrics: ContextVar[dict[str, int] | None] = ContextVar(
+            "rag_retrieve_metrics",
+            default=None,
+        )
         self._reranker = None
         self._reranker_error: str | None = None
         self.llm = DashScopeChatCompletionsClient(self.settings)
@@ -526,14 +536,31 @@ class ScenicRAGService:
         )
 
     async def retrieve(self, question: str) -> list[RetrievedChunk]:
+        metrics = {
+            "rag_embed_ms": 0,
+            "rag_vector_search_ms": 0,
+            "rag_retrieve_ms": 0,
+            "rag_rerank_ms": 0,
+            "rag_retrieve_total_ms": 0,
+        }
+
+        embed_started_at = perf_counter()
         query_embedding = self.embedder.embed_documents([question])[0]
+        metrics["rag_embed_ms"] = int((perf_counter() - embed_started_at) * 1000)
+
+        vector_search_started_at = perf_counter()
         raw_hits = self.vector_store.query_chunks(
             query_embedding=query_embedding,
             n_results=self.settings.rag_retrieval_top_k,
         )
+        metrics["rag_vector_search_ms"] = int((perf_counter() - vector_search_started_at) * 1000)
+        metrics["rag_retrieve_ms"] = metrics["rag_embed_ms"] + metrics["rag_vector_search_ms"]
         if not raw_hits:
+            metrics["rag_retrieve_total_ms"] = metrics["rag_retrieve_ms"]
+            self._retrieve_metrics.set(metrics)
             return []
 
+        rerank_started_at = perf_counter()
         reranker = self._get_reranker()
         documents = [
             f"{hit.metadata.get('title', '')}\n{hit.metadata.get('category', '')}\n{hit.text}"
@@ -545,6 +572,8 @@ class ScenicRAGService:
             self._reranker_error = str(exc)
             reranker = LexicalReranker()
             rerank_scores = await reranker.score_pairs(question, documents)
+        metrics["rag_rerank_ms"] = int((perf_counter() - rerank_started_at) * 1000)
+        metrics["rag_retrieve_total_ms"] = metrics["rag_retrieve_ms"] + metrics["rag_rerank_ms"]
 
         ranked: list[RetrievedChunk] = []
         intent = detect_query_intent(question)
@@ -580,6 +609,7 @@ class ScenicRAGService:
             ),
             reverse=True,
         )
+        self._retrieve_metrics.set(metrics)
         return limit_ranked_sources(ranked, self.settings.rag_rerank_top_n)
 
     def _get_reranker(self) -> LexicalReranker | BgeRerankerService:

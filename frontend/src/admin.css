@@ -340,6 +340,7 @@ button {
 
 .admin-grid-sessions {
   grid-template-columns: minmax(320px, 0.88fr) minmax(420px, 1.12fr);
+  align-items: start;
 }
 
 .admin-stat-card {
@@ -369,6 +370,10 @@ button {
   word-break: break-word;
 }
 
+.admin-stat-card-compact strong {
+  font-size: 1.35rem;
+}
+
 .admin-align-end {
   align-self: end;
 }
@@ -376,6 +381,7 @@ button {
 .admin-panel {
   display: grid;
   gap: 1rem;
+  align-content: start;
   padding: 1.3rem;
   border-radius: 24px;
   background: rgba(255, 255, 255, 0.92);
@@ -1412,6 +1418,95 @@ button {
   border-left: 4px solid rgba(255, 166, 77, 0.65);
 }
 
+.admin-session-trace-panel {
+  gap: 1rem;
+}
+
+.admin-trace-summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.admin-trace-list {
+  display: grid;
+  gap: 0.9rem;
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.admin-trace-card {
+  display: grid;
+  gap: 0.9rem;
+  padding: 1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(71, 98, 124, 0.12);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.admin-trace-card-header {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-trace-card-title {
+  display: grid;
+  gap: 0.22rem;
+}
+
+.admin-trace-card-title span {
+  color: #5e7489;
+  font-size: 0.88rem;
+}
+
+.admin-trace-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin: 0;
+}
+
+.admin-trace-meta-grid div {
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.82rem 0.9rem;
+  border-radius: 14px;
+  background: #f8fbfe;
+  border: 1px solid rgba(71, 98, 124, 0.1);
+}
+
+.admin-trace-meta-grid dt,
+.admin-trace-metric-item span {
+  color: #60788e;
+  font-size: 0.82rem;
+}
+
+.admin-trace-meta-grid dd {
+  margin: 0;
+  color: #17324a;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.admin-trace-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.admin-trace-metric-item {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.82rem 0.9rem;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(248, 251, 254, 0.95), rgba(241, 247, 252, 0.88));
+  border: 1px solid rgba(71, 98, 124, 0.1);
+}
+
+.admin-trace-metric-item strong {
+  color: #17324a;
+  font-variant-numeric: tabular-nums;
+}
+
 .admin-badge[data-role='assistant'] {
   background: rgba(61, 137, 212, 0.14);
   color: #1f67a6;
@@ -1670,7 +1765,10 @@ button {
   .admin-field-grid,
   .admin-knowledge-toolbar,
   .admin-gap-filter-grid,
-  .admin-gap-editor-grid {
+  .admin-gap-editor-grid,
+  .admin-trace-meta-grid,
+  .admin-trace-metric-grid,
+  .admin-trace-summary-grid {
     grid-template-columns: 1fr;
   }
 

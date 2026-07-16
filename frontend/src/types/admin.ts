@@ -243,6 +243,31 @@ export interface AdminSessionMessage {
   latencyMs: number | null
 }
 
+export interface AdminReplyTrace {
+  replyId: string
+  createdAt: string
+  streaming: boolean
+  chatMode: string
+  ttsEngine: string
+  ttsStreamProfile: string | null
+  promptCacheHit: boolean | null
+  promptCacheBuildMs: number | null
+  torchCudaAvailable: boolean | null
+  torchDeviceName: string | null
+  requestedOnnxProvider: string | null
+  audioChunkCount: number
+  segmentCount: number
+  maxChunkGapMs: number
+  metrics: Record<string, number>
+}
+
+export interface AdminReplyTraceSummary {
+  traceCount: number
+  latestCreatedAt: string | null
+  avgMetrics: Record<string, number>
+  maxMetrics: Record<string, number>
+}
+
 export interface AdminSessionDetail {
   sessionId: string
   createdAt: string
@@ -251,6 +276,8 @@ export interface AdminSessionDetail {
   interestTags: string[]
   messageCount: number
   items: AdminSessionMessage[]
+  replyTraces: AdminReplyTrace[]
+  replyTraceSummary: AdminReplyTraceSummary
 }
 
 export interface DailyEmotionReport {

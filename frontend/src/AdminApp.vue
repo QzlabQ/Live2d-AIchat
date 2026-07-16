@@ -42,6 +42,7 @@ import {
   uploadVoiceProfile,
 } from './services/adminApi'
 import type {
+  AdminReplyTrace,
   AdminSessionDetail,
   AdminSessionSummary,
   AvatarConfig,
@@ -124,6 +125,11 @@ interface AdminPageMeta {
   description: string
 }
 
+interface SessionTraceMetricDefinition {
+  key: string
+  label: string
+}
+
 const API_BASE_URL = getAdminApiBaseUrl()
 const TOKEN_STORAGE_KEY = 'ai-chat-live2d.admin.token'
 const MODEL_FALLBACK = '/live2d/haru/haru_greeter_t03.model3.json'
@@ -134,6 +140,17 @@ const KNOWLEDGE_GAP_STATUS_ORDER = [
   'resolved',
   'imported',
   'ignored',
+] as const
+const SESSION_TRACE_METRICS: SessionTraceMetricDefinition[] = [
+  { key: 'rag_embed_ms', label: 'Embedding' },
+  { key: 'rag_vector_search_ms', label: '向量检索' },
+  { key: 'rag_retrieve_ms', label: '召回阶段' },
+  { key: 'rag_rerank_ms', label: 'Rerank' },
+  { key: 'rag_retrieve_total_ms', label: '检索总计' },
+  { key: 'rag_prepare_total_ms', label: 'RAG 准备' },
+  { key: 'llm_first_delta_ms', label: '首个文本' },
+  { key: 'tts_first_audio_chunk_ms', label: '首包音频' },
+  { key: 'audio_done_ms', label: '音频完成' },
 ] as const
 const ADMIN_PAGES: AdminPageMeta[] = [
   {
@@ -593,6 +610,37 @@ const filteredAdminSessions = computed(() => {
 const selectedSessionSummary = computed(
   () => adminSessions.value.find((item) => item.sessionId === selectedSessionId.value) ?? null,
 )
+const selectedSessionReplyTraces = computed(() => selectedSessionDetail.value?.replyTraces ?? [])
+const selectedSessionReplyTraceSummary = computed(
+  () => selectedSessionDetail.value?.replyTraceSummary ?? null,
+)
+const latestSessionReplyTrace = computed(() => selectedSessionReplyTraces.value[0] ?? null)
+const sessionTraceOverviewCards = computed(() => {
+  const summary = selectedSessionReplyTraceSummary.value
+  const latest = latestSessionReplyTrace.value
+  return [
+    {
+      label: '最近诊断',
+      value: String(summary?.traceCount ?? 0),
+      detail: summary?.latestCreatedAt ? `最近一次：${formatDateTime(summary.latestCreatedAt)}` : '当前会话还没有 trace',
+    },
+    {
+      label: '平均 Rerank',
+      value: formatLatency(readTraceMetric(summary?.avgMetrics, 'rag_rerank_ms')),
+      detail: '检索排序阶段平均耗时',
+    },
+    {
+      label: '平均首包音频',
+      value: formatLatency(readTraceMetric(summary?.avgMetrics, 'tts_first_audio_chunk_ms')),
+      detail: '从请求开始到首个音频块',
+    },
+    {
+      label: '最新 RAG 准备',
+      value: formatLatency(readTraceMetric(latest?.metrics, 'rag_prepare_total_ms')),
+      detail: latest ? `reply ${shortTraceReplyId(latest.replyId)}` : '等待新回复进入',
+    },
+  ]
+})
 const totalSessionMessageCount = computed(() =>
   adminSessions.value.reduce((sum, item) => sum + item.messageCount, 0),
 )
@@ -1738,6 +1786,52 @@ function formatLatency(value: number | null | undefined) {
     return `${(value / 1000).toFixed(2)} s`
   }
   return `${value.toFixed(0)} ms`
+}
+
+function readTraceMetric(metrics: Record<string, number> | null | undefined, key: string) {
+  if (!metrics) {
+    return null
+  }
+  const value = metrics[key]
+  return typeof value === 'number' && !Number.isNaN(value) ? value : null
+}
+
+function shortTraceReplyId(replyId: string) {
+  if (replyId.length <= 24) {
+    return replyId
+  }
+  return `${replyId.slice(0, 14)}...${replyId.slice(-6)}`
+}
+
+function sessionTraceMetricEntries(trace: AdminReplyTrace) {
+  return SESSION_TRACE_METRICS.map((item) => ({
+    key: item.key,
+    label: item.label,
+    value: readTraceMetric(trace.metrics, item.key),
+  })).filter((item) => item.value !== null)
+}
+
+function traceRuntimeBadges(trace: AdminReplyTrace) {
+  const badges: string[] = []
+  badges.push(trace.streaming ? 'Streaming' : 'Non-streaming')
+  if (trace.promptCacheHit === true) {
+    badges.push('Prompt 缓存命中')
+  } else if (trace.promptCacheHit === false) {
+    badges.push(
+      trace.promptCacheBuildMs !== null
+        ? `Prompt 构建 ${Math.round(trace.promptCacheBuildMs)}ms`
+        : 'Prompt 未命中',
+    )
+  }
+  if (trace.torchDeviceName) {
+    badges.push(trace.torchDeviceName)
+  } else if (trace.torchCudaAvailable) {
+    badges.push('CUDA 可用')
+  }
+  if (trace.requestedOnnxProvider) {
+    badges.push(`ONNX ${trace.requestedOnnxProvider}`)
+  }
+  return badges
 }
 
 function sentimentLabel(value: string) {
@@ -3060,6 +3154,73 @@ async function handleHashChange() {
                     <dd>{{ selectedSessionDetail.interestTags.join(' / ') || '未设置' }}</dd>
                   </div>
                 </dl>
+
+                <section class="admin-form-section admin-session-trace-panel">
+                  <div class="admin-panel-header">
+                    <div>
+                      <p class="admin-section-tag">Reply Trace Diagnostics</p>
+                      <h4>回复链路诊断</h4>
+                    </div>
+                    <span class="admin-badge">{{ selectedSessionReplyTraceSummary?.traceCount ?? 0 }} 条</span>
+                  </div>
+
+                  <div class="admin-overview-stats admin-trace-summary-grid">
+                    <article v-for="item in sessionTraceOverviewCards" :key="item.label" class="admin-stat-card admin-stat-card-compact">
+                      <span>{{ item.label }}</span>
+                      <strong>{{ item.value }}</strong>
+                      <p>{{ item.detail }}</p>
+                    </article>
+                  </div>
+
+                  <div v-if="selectedSessionReplyTraces.length" class="admin-trace-list">
+                    <article v-for="trace in selectedSessionReplyTraces" :key="trace.replyId" class="admin-trace-card">
+                      <div class="admin-trace-card-header">
+                        <div class="admin-trace-card-title">
+                          <strong>{{ shortTraceReplyId(trace.replyId) }}</strong>
+                          <span>{{ formatDateTime(trace.createdAt) }}</span>
+                        </div>
+                        <div class="admin-chip-row admin-chip-row-wrap">
+                          <span v-for="badge in traceRuntimeBadges(trace)" :key="`${trace.replyId}-${badge}`" class="admin-badge">
+                            {{ badge }}
+                          </span>
+                        </div>
+                      </div>
+
+                      <dl class="admin-trace-meta-grid">
+                        <div>
+                          <dt>音频块</dt>
+                          <dd>{{ trace.audioChunkCount }}</dd>
+                        </div>
+                        <div>
+                          <dt>文本段</dt>
+                          <dd>{{ trace.segmentCount }}</dd>
+                        </div>
+                        <div>
+                          <dt>最大块间隔</dt>
+                          <dd>{{ formatLatency(trace.maxChunkGapMs) }}</dd>
+                        </div>
+                        <div>
+                          <dt>TTS 引擎</dt>
+                          <dd>{{ trace.ttsEngine }}{{ trace.ttsStreamProfile ? ` / ${trace.ttsStreamProfile}` : '' }}</dd>
+                        </div>
+                      </dl>
+
+                      <div class="admin-trace-metric-grid">
+                        <div
+                          v-for="metric in sessionTraceMetricEntries(trace)"
+                          :key="`${trace.replyId}-${metric.key}`"
+                          class="admin-trace-metric-item"
+                        >
+                          <span>{{ metric.label }}</span>
+                          <strong>{{ formatLatency(metric.value) }}</strong>
+                        </div>
+                      </div>
+                    </article>
+                  </div>
+                  <p v-else class="admin-empty-hint">
+                    当前会话还没有记录到 reply trace，通常是旧会话，或者当时后端尚未开启链路诊断日志。
+                  </p>
+                </section>
 
                 <div class="admin-message-list">
                   <article
