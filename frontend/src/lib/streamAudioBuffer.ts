@@ -27,9 +27,9 @@ export const STREAM_AUDIO_POLICIES: Record<StreamAudioPolicyProfile, StreamAudio
     scheduleLookaheadMs: 30,
   },
   stable: {
-    initialBufferMs: 3000,
-    initialChunkCount: 2,
-    minScheduledLeadMs: 1500,
+    initialBufferMs: 6500,
+    initialChunkCount: 3,
+    minScheduledLeadMs: 3500,
     scheduleLookaheadMs: 30,
   },
 };

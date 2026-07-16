@@ -9,9 +9,9 @@ import {
 describe('streamAudioBuffer', () => {
   it('uses the stable default stream audio policy', () => {
     expect(DEFAULT_STREAM_AUDIO_POLICY).toEqual({
-      initialBufferMs: 3000,
-      initialChunkCount: 2,
-      minScheduledLeadMs: 1500,
+      initialBufferMs: 6500,
+      initialChunkCount: 3,
+      minScheduledLeadMs: 3500,
       scheduleLookaheadMs: 30,
     })
   })
@@ -32,8 +32,8 @@ describe('streamAudioBuffer', () => {
   it('does not start early when the stable thresholds are not met', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
-        bufferedAudioMs: 2999,
-        pendingChunkCount: 1,
+        bufferedAudioMs: 6499,
+        pendingChunkCount: 2,
         isFinalChunkBuffered: false,
       },
       DEFAULT_STREAM_AUDIO_POLICY,
@@ -42,11 +42,24 @@ describe('streamAudioBuffer', () => {
     expect(shouldStart).toBe(false)
   })
 
-  it('starts buffered playback when two chunks are queued', () => {
+  it('does not start buffered playback when only two chunks are queued', () => {
+    const shouldStart = shouldStartBufferedPlayback(
+      {
+        bufferedAudioMs: 4000,
+        pendingChunkCount: 2,
+        isFinalChunkBuffered: false,
+      },
+      DEFAULT_STREAM_AUDIO_POLICY,
+    )
+
+    expect(shouldStart).toBe(false)
+  })
+
+  it('starts buffered playback when three chunks are queued', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
         bufferedAudioMs: 240,
-        pendingChunkCount: 2,
+        pendingChunkCount: 3,
         isFinalChunkBuffered: false,
       },
       DEFAULT_STREAM_AUDIO_POLICY,
@@ -58,7 +71,7 @@ describe('streamAudioBuffer', () => {
   it('starts buffered playback when buffered audio exceeds the initial threshold', () => {
     const shouldStart = shouldStartBufferedPlayback(
       {
-        bufferedAudioMs: 3000,
+        bufferedAudioMs: 6500,
         pendingChunkCount: 1,
         isFinalChunkBuffered: false,
       },
@@ -96,8 +109,8 @@ describe('streamAudioBuffer', () => {
     expect(
       shouldResetBufferedPlayback(
         {
-          bufferedAudioMs: 1600,
-          pendingChunkCount: 2,
+          bufferedAudioMs: 3600,
+          pendingChunkCount: 3,
           isFinalChunkBuffered: false,
         },
         -15,
