@@ -508,6 +508,27 @@ class VisitorVisionHttpSmokeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stub.requests[0]["interest_tags"], ["history", "architecture"])
         self.assertEqual(stub.requests[0]["user_prompt"], "What is this spot?")
 
+    async def test_post_vision_recognize_accepts_empty_interest_tags_array(self) -> None:
+        session_obj = await self._insert_session()
+        stub = StubVisionService(
+            result=VisitorVisionResult(
+                recognized_spot="Main Gate",
+                recognition_summary="A stone gate at the scenic area entrance.",
+                resolved_question="Can you introduce the Main Gate first?",
+                stored_image_path=f"{session_obj.id}/main-gate.jpg",
+            )
+        )
+        self.app.dependency_overrides[get_visitor_vision_service] = lambda: stub
+
+        response = await self.client.post(
+            f"/api/v1/sessions/{session_obj.id}/vision/recognize",
+            data={"interest_tags": "[]"},
+            files={"file": ("gate.jpg", b"\xff\xd8\xff\xe0mock-jpeg", "image/jpeg")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(stub.requests[0]["interest_tags"], ["history"])
+
     async def test_post_vision_recognize_returns_415_for_unsupported_media_type(self) -> None:
         session_obj = await self._insert_session()
         stub = StubVisionService(error=VisitorVisionUnsupportedMediaTypeError("Unsupported image content type."))

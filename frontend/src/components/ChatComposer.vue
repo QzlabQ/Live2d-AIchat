@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import InterestTagPanel from './InterestTagPanel.vue'
 import type { ComposerMode } from '../lib/chatComposerMode'
+import { extractClipboardImageFile } from '../lib/photoAttachment'
 
 const props = withDefaults(
   defineProps<{
@@ -88,6 +89,21 @@ function handlePhotoChange(event: Event) {
 
   emit('pickPhoto', file)
   input.value = ''
+}
+
+function handleComposerPaste(event: ClipboardEvent) {
+  if (!props.canAttachPhoto || props.photoBusy) {
+    return
+  }
+
+  const file = extractClipboardImageFile(event.clipboardData?.items)
+  if (!file) {
+    return
+  }
+
+  event.preventDefault()
+  attachmentMenuOpen.value = false
+  emit('pickPhoto', file)
 }
 
 function switchMode(mode: ComposerMode) {
@@ -178,6 +194,7 @@ onBeforeUnmount(() => {
         rows="4"
         @input="updateValue(($event.target as HTMLTextAreaElement).value)"
         @keydown.enter.exact.prevent="emit('send')"
+        @paste="handleComposerPaste"
       ></textarea>
 
       <div class="composer-footer">

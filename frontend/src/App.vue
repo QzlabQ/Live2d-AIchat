@@ -15,6 +15,7 @@ import { useVisitorSessions } from './composables/useVisitorSessions'
 import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
 import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageMeta'
 import { buildComposerQuickHints, type ComposerMode } from './lib/chatComposerMode'
+import { canUsePhotoAttachment } from './lib/photoAttachment'
 import { buildPhotoQuestion, shouldEnterThinkingForPhoto } from './lib/photoQuestion'
 import { getRuntimeApiBaseUrl, getRuntimeWsBaseUrl } from './lib/runtimeBaseUrl'
 import { buildRouteRecommendationMessage } from './lib/toolResultMessage'
@@ -972,7 +973,11 @@ const historyRailDisabled = computed(
   () => sessionBooting.value || visitorSessions.loading.value || isSessionSwitchBlocked.value,
 )
 const photoAttachmentDisabled = computed(
-  () => visitorToolsDisabled.value || historyRailDisabled.value,
+  () =>
+    !canUsePhotoAttachment({
+      sessionBooting: sessionBooting.value,
+      sessionsLoading: visitorSessions.loading.value,
+    }),
 )
 const quickHints = computed(() =>
   buildComposerQuickHints(composerMode.value, {

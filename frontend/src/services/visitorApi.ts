@@ -76,7 +76,17 @@ function trimApiBaseUrl(apiBaseUrl: string) {
 
 async function readJson<T>(response: Response, action: string) {
   if (!response.ok) {
-    throw new Error(`Failed to ${action}: ${response.status}`)
+    let detail = ''
+    try {
+      const payload = (await response.json()) as { detail?: unknown }
+      if (typeof payload.detail === 'string' && payload.detail.trim()) {
+        detail = payload.detail.trim()
+      }
+    } catch {
+      // Fall back to the HTTP status when the backend does not return JSON.
+    }
+
+    throw new Error(detail ? `Failed to ${action}: ${detail}` : `Failed to ${action}: ${response.status}`)
   }
 
   return (await response.json()) as T
@@ -229,7 +239,9 @@ export async function recognizeVisitorPhoto(
 ): Promise<VisionRecognitionResult> {
   const formData = new FormData()
   formData.append('file', file)
-  formData.append('interest_tags', JSON.stringify(interestTags))
+  if (interestTags.length > 0) {
+    formData.append('interest_tags', JSON.stringify(interestTags))
+  }
   if (userPrompt) {
     formData.append('user_prompt', userPrompt)
   }

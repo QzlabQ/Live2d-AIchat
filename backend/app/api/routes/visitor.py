@@ -175,10 +175,7 @@ def _parse_interest_tags(raw_value: str | None, fallback: list[str]) -> list[str
         )
 
     if not parsed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="interest_tags must be a JSON array of non-empty strings.",
-        )
+        return list(fallback)
 
     normalized: list[str] = []
     for item in parsed:
