@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from app.core.config import Settings
 from app.services.rag import (
     ClarificationResolver,
+    DashScopeChatCompletionsClient,
     RetrievedChunk,
     ScenicRAGService,
     build_structured_answer,
@@ -499,6 +500,81 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
             return value
 
         return _inner
+
+
+class DashScopeChatCompletionsClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_complete_disables_thinking_in_payload(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, object]:
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs) -> None:
+                del args, kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            async def post(self, url: str, json: dict[str, object], headers: dict[str, str]):
+                del url, headers
+                captured.update(json)
+                return FakeResponse()
+
+        client = DashScopeChatCompletionsClient(Settings(dashscope_api_key="key"))
+
+        with patch("app.services.rag.httpx.AsyncClient", FakeAsyncClient):
+            result = await client.complete([{"role": "user", "content": "hello"}])
+
+        self.assertEqual(result, "ok")
+        self.assertIs(captured["enable_thinking"], False)
+
+    async def test_stream_complete_disables_thinking_in_payload(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeStreamResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            def raise_for_status(self) -> None:
+                return None
+
+            async def aiter_lines(self):
+                yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
+                yield "data: [DONE]"
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs) -> None:
+                del args, kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            def stream(self, method: str, url: str, json: dict[str, object], headers: dict[str, str]):
+                del method, url, headers
+                captured.update(json)
+                return FakeStreamResponse()
+
+        client = DashScopeChatCompletionsClient(Settings(dashscope_api_key="key"))
+
+        with patch("app.services.rag.httpx.AsyncClient", FakeAsyncClient):
+            chunks = [chunk async for chunk in client.stream_complete([{"role": "user", "content": "hello"}])]
+
+        self.assertEqual(chunks, ["hello"])
+        self.assertIs(captured["enable_thinking"], False)
 
 
 if __name__ == "__main__":

@@ -390,6 +390,7 @@ class ScenicRAGService:
 
     async def answer(
         self,
+            "enable_thinking": False,
         question: str,
         persona: str | None = None,
         response_language: str | None = None,
@@ -420,6 +421,7 @@ class ScenicRAGService:
             sources=prepared.sources,
             confidence=prepared.confidence,
             used_llm=prepared.used_llm,
+            "enable_thinking": False,
         )
 
         query = normalize_question(question)
