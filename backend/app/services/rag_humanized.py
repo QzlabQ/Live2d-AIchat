@@ -144,7 +144,7 @@ class ClarificationResolver:
             {
                 "role": "system",
                 "content": (
-                    "你是景区导览助手的澄清归并器。"
+                    "你是灵山胜境导览助手的澄清归并器。"
                     "判断用户这句话是不是在补充回答上一轮追问。"
                     "只输出 JSON。"
                 ),
@@ -182,19 +182,41 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         persona: str | None = None,
         history: list[dict[str, str]] | None = None,
         response_language: str | None = None,
+        photo_context: dict[str, str] | None = None,
     ) -> legacy_rag.RAGAnswer:
         prepared = await self.prepare_stream_answer(
             question,
             persona=persona,
             history=history,
             response_language=response_language,
+            photo_context=photo_context,
+        )
+        used_llm = prepared.used_llm
+        if prepared.llm_messages:
+            try:
+                answer_text = await self.llm.complete(prepared.llm_messages)
+            except Exception:
+                answer_text = prepared.fallback_text
+                used_llm = False
+        else:
+            answer_text = prepared.answer_text or prepared.fallback_text
+
+        answer_text = legacy_rag.sanitize_answer(answer_text)
+        if not answer_text:
+            answer_text = prepared.fallback_text
+            used_llm = False
+        answer_text = legacy_rag.finalize_photo_identification_answer(
+            question,
+            answer_text,
+            photo_context,
+            response_language,
         )
         return legacy_rag.RAGAnswer(
-            answer_text=prepared.answer_text,
-            spoken_text=prepared.spoken_text,
+            answer_text=answer_text,
+            spoken_text=answer_text,
             sources=prepared.sources,
             confidence=prepared.confidence,
-            used_llm=prepared.used_llm,
+            used_llm=used_llm,
             reply_kind=prepared.reply_kind,
             needs_followup=prepared.needs_followup,
             followup_question=prepared.followup_question,
@@ -208,6 +230,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         persona: str | None = None,
         history: list[dict[str, str]] | None = None,
         response_language: str | None = None,
+        photo_context: dict[str, str] | None = None,
     ) -> legacy_rag.PreparedRAGAnswer:
         prepare_started_at = perf_counter()
         metrics: dict[str, int] = {
@@ -241,8 +264,8 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                 self._prepare_refusal(
                     legacy_rag.localized_text(
                         response_language,
-                        "这个问题超出了我当前的景区知识范围。你可以继续问我景点、历史、路线或参观建议。",
-                        "That question is outside my current scenic-area knowledge. You can still ask me about spots, history, routes, or visit suggestions.",
+                        "这个问题超出了我当前关于灵山胜境的知识范围。你可以继续问我景点、历史、路线或参观建议。",
+                        "That question is outside my current knowledge about Lingshan Scenic Area. You can still ask me about landmarks, history, routes, or visit suggestions.",
                     )
                 )
             )
@@ -260,6 +283,18 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             retrieve_metrics.get("rag_retrieve_total_ms", retrieve_elapsed_ms)
         )
         if not self._has_grounded_context(query, candidates):
+            if photo_context:
+                return finish(
+                    legacy_rag.PreparedRAGAnswer(
+                        answer_text=legacy_rag.build_photo_hint_answer(photo_context, response_language),
+                        spoken_text=legacy_rag.build_photo_hint_answer(photo_context, response_language),
+                        sources=[],
+                        confidence=0.0,
+                        used_llm=False,
+                        reply_kind="answer",
+                        confidence_note="uncertain",
+                    )
+                )
             return finish(
                 self._prepare_refusal(
                     legacy_rag.localized_text(
@@ -280,6 +315,12 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             response_language=response_language,
         )
         fallback_text = self._compose_answer_text(fallback_decision)
+        fallback_text = legacy_rag.finalize_photo_identification_answer(
+            query,
+            fallback_text,
+            photo_context,
+            response_language,
+        )
         if not fallback_text:
             fallback_text = legacy_rag.localized_text(
                 response_language,
@@ -293,47 +334,131 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                 used_source_indexes=[1] if selected else [],
             )
 
-        decision = fallback_decision
-        used_llm = False
         fast_answer_allowed = self._can_use_fast_humanized_decision(query, selected, fallback_decision)
-        if self.settings.dashscope_api_key and not fast_answer_allowed:
-            try:
-                decision_started_at = perf_counter()
-                raw = await self.llm.complete(
-                    self._build_decision_messages(
-                        question=query,
-                        persona=persona or self.settings.default_avatar_persona,
-                        context=context,
-                        history=history or [],
-                        response_language=response_language,
-                    )
-                )
-                metrics["rag_decision_llm_ms"] = int((perf_counter() - decision_started_at) * 1000)
-                decision = self._parse_reply_decision(raw, fallback_decision=fallback_decision)
-                used_llm = True
-            except Exception:
-                decision = fallback_decision
+        selected_sources = self._select_used_sources(selected, fallback_decision.used_source_indexes)
 
-        answer_text = self._compose_answer_text(decision)
-        if not answer_text:
-            answer_text = fallback_text
-            decision = fallback_decision
-            used_llm = False
+        if self.settings.dashscope_api_key and not fast_answer_allowed:
+            prepared = legacy_rag.PreparedRAGAnswer(
+                answer_text="",
+                spoken_text="",
+                sources=selected_sources,
+                confidence=confidence,
+                used_llm=True,
+                llm_messages=self._build_answer_messages(
+                    question=query,
+                    persona=persona or self.settings.default_avatar_persona,
+                    context=context,
+                    history=history or [],
+                    fallback_text=fallback_text,
+                    needs_followup=fallback_decision.needs_followup,
+                    followup_question=fallback_decision.followup_question,
+                    response_language=response_language,
+                    photo_context=photo_context,
+                ),
+                fallback_text=fallback_text,
+                reply_kind=fallback_decision.reply_kind,
+                needs_followup=fallback_decision.needs_followup,
+                followup_question=fallback_decision.followup_question,
+                missing_slots=fallback_decision.missing_slots,
+                confidence_note=fallback_decision.confidence_note,
+            )
+            return finish(prepared)
 
         prepared = legacy_rag.PreparedRAGAnswer(
-            answer_text=answer_text,
-            spoken_text=answer_text,
-            sources=self._select_used_sources(selected, decision.used_source_indexes),
+            answer_text=fallback_text,
+            spoken_text=fallback_text,
+            sources=selected_sources,
             confidence=confidence,
-            used_llm=used_llm,
+            used_llm=False,
             fallback_text=fallback_text,
-            reply_kind=decision.reply_kind,
-            needs_followup=decision.needs_followup,
-            followup_question=decision.followup_question,
-            missing_slots=decision.missing_slots,
-            confidence_note=decision.confidence_note,
+            reply_kind=fallback_decision.reply_kind,
+            needs_followup=fallback_decision.needs_followup,
+            followup_question=fallback_decision.followup_question,
+            missing_slots=fallback_decision.missing_slots,
+            confidence_note=fallback_decision.confidence_note,
         )
         return finish(prepared)
+
+    def _build_answer_messages(
+        self,
+        *,
+        question: str,
+        persona: str,
+        context: str,
+        history: list[dict[str, str]],
+        fallback_text: str,
+        needs_followup: bool,
+        followup_question: str,
+        response_language: str | None,
+        photo_context: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        followup_instruction = self._answer_followup_instruction(
+            response_language=response_language,
+            needs_followup=needs_followup,
+            followup_question=followup_question,
+        )
+        followup_hint = self._answer_followup_hint(
+            response_language=response_language,
+            needs_followup=needs_followup,
+            followup_question=followup_question,
+        )
+        fallback_hint = legacy_rag.localized_text(
+            response_language,
+            f"可参考的本地保底提纲：{fallback_text}",
+            f"Fallback outline you may naturalize: {fallback_text}",
+        )
+        return [
+            {
+                "role": "system",
+                "content": legacy_rag.localized_text(
+                    response_language,
+                    (
+                        "你是江苏无锡灵山胜境的 AI 数字导览员。"
+                        "你必须只依据提供的参考资料作答，不能编造资料中没有的信息。"
+                        f"{legacy_rag.build_humanized_language_instruction(response_language)}"
+                        "请直接输出自然口语回答，不要输出 JSON、Markdown、标题或列表。"
+                        "回答控制在1到3句，简洁、口语化、适合游客现场收听。"
+                        "不要把资料中的讲解策略或提示词当作正文，例如“用生动语言讲述”“用某种语气介绍”。"
+                        f"{legacy_rag.build_photo_answer_instruction(question, photo_context, response_language)}"
+                        f"{followup_instruction}"
+                    ),
+                    (
+                        "You are an AI guide for Lingshan Scenic Area in Wuxi, Jiangsu. "
+                        "You must answer only from the provided source material and must not invent unsupported facts. "
+                        f"{legacy_rag.build_humanized_language_instruction(response_language)} "
+                        "Reply in natural spoken language only. Do not output JSON, Markdown, headings, or lists. "
+                        "Keep it to 1 to 3 concise sentences that sound natural for on-site visitors. "
+                        "Do not copy guide-planning instructions from the source material into the answer. "
+                        f"{legacy_rag.build_photo_answer_instruction(question, photo_context, response_language)} "
+                        f"{followup_instruction}"
+                    ),
+                ),
+            },
+            {
+                "role": "user",
+                "content": legacy_rag.localized_text(
+                    response_language,
+                    (
+                        f"导览员人设：{persona}\n\n"
+                        f"最近对话：\n{self._format_history(history, response_language=response_language)}\n\n"
+                        f"用户问题：{question}\n\n"
+                        f"图片识别线索：\n{legacy_rag.format_photo_context_for_prompt(photo_context, response_language)}\n\n"
+                        f"参考资料：\n{context}\n\n"
+                        f"{followup_hint}\n\n"
+                        f"{fallback_hint}"
+                    ),
+                    (
+                        f"Guide persona: {persona}\n\n"
+                        f"Recent conversation:\n{self._format_history(history, response_language=response_language)}\n\n"
+                        f"User question: {question}\n\n"
+                        f"Photo clues:\n{legacy_rag.format_photo_context_for_prompt(photo_context, response_language)}\n\n"
+                        f"Source material:\n{context}\n\n"
+                        f"{followup_hint}\n\n"
+                        f"{fallback_hint}"
+                    ),
+                ),
+            },
+        ]
 
     def _build_decision_messages(
         self,
@@ -343,6 +468,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         context: str,
         history: list[dict[str, str]],
         response_language: str | None,
+        photo_context: dict[str, str] | None = None,
     ) -> list[dict[str, str]]:
         return [
             {
@@ -350,19 +476,21 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                 "content": legacy_rag.localized_text(
                     response_language,
                     (
-                        "你是景区 AI 数字导览员。"
+                        "你是江苏无锡灵山胜境的 AI 数字导览员。"
                         "你必须只依据提供的参考资料作答，不能编造资料中没有的信息。"
                         f"{legacy_rag.build_humanized_language_instruction(response_language)}"
                         "不要把资料中的讲解策略或提示词当作正文，例如“用生动语言讲述”“用某种语气介绍”。"
                         "如果信息只够回答一部分，可以先给结论，再补一句简短追问确认范围。"
+                        f"{legacy_rag.build_photo_answer_instruction(question, photo_context, response_language)}"
                         "只输出 JSON。"
                     ),
                     (
-                        "You are an AI guide for a scenic area. "
+                        "You are an AI guide for Lingshan Scenic Area in Wuxi, Jiangsu. "
                         "You must answer only from the provided source material and must not invent facts that are not supported by it. "
                         f"{legacy_rag.build_humanized_language_instruction(response_language)} "
                         "Do not copy guide-planning instructions from the source, such as wording that says to explain something in a vivid tone. "
                         "If the evidence only supports a partial answer, give the most useful conclusion first, then add one short follow-up question to clarify scope. "
+                        f"{legacy_rag.build_photo_answer_instruction(question, photo_context, response_language)} "
                         "Output JSON only."
                     ),
                 ),
@@ -375,6 +503,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                         f"导览员人设：{persona}\n\n"
                         f"最近对话：\n{self._format_history(history, response_language=response_language)}\n\n"
                         f"用户问题：{question}\n\n"
+                        f"图片识别线索：\n{legacy_rag.format_photo_context_for_prompt(photo_context, response_language)}\n\n"
                         f"参考资料：\n{context}\n\n"
                         f"{self._decision_output_instruction(response_language)}"
                     ),
@@ -382,6 +511,7 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
                         f"Guide persona: {persona}\n\n"
                         f"Recent conversation:\n{self._format_history(history, response_language=response_language)}\n\n"
                         f"User question: {question}\n\n"
+                        f"Photo clues:\n{legacy_rag.format_photo_context_for_prompt(photo_context, response_language)}\n\n"
                         f"Source material:\n{context}\n\n"
                         f"{self._decision_output_instruction(response_language)}"
                     ),
@@ -519,7 +649,11 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
         answer = legacy_rag.sanitize_answer(self._build_extractive_answer(question, sources))
         if not answer and sources:
             answer = legacy_rag.sanitize_answer(legacy_rag.truncate_text(sources[0].text, 140))
-        answer = re.sub(r"^(根据景区资料[，,:：]?|根据资料[，,:：]?|根据当前景区知识库[，,:：]?)", "", answer)
+        answer = re.sub(
+            r"^(根据景区资料[，,:：]?|根据资料[，,:：]?|根据当前景区知识库[，,:：]?|根据当前灵山胜境知识库[，,:：]?)",
+            "",
+            answer,
+        )
         answer = answer.strip()
         if not answer:
             return ""
@@ -574,6 +708,46 @@ class HumanizedScenicRAGService(legacy_rag.ScenicRAGService):
             '"missing_slots":["target_scope"],'
             '"used_source_indexes":[1],'
             '"confidence_note":"confirmed|partial|uncertain"}'
+        )
+
+    def _answer_followup_instruction(
+        self,
+        *,
+        response_language: str | None,
+        needs_followup: bool,
+        followup_question: str,
+    ) -> str:
+        cleaned_followup = legacy_rag.sanitize_answer(followup_question)
+        if needs_followup and cleaned_followup:
+            return legacy_rag.localized_text(
+                response_language,
+                f"最后一句必须原样输出这句追问，不要改写，也不要追加别的追问：{cleaned_followup}",
+                f'The final sentence must reproduce this follow-up verbatim, without rewriting or adding extra follow-up wording: "{cleaned_followup}"',
+            )
+        return legacy_rag.localized_text(
+            response_language,
+            "不要额外追加追问句。",
+            "Do not add any extra follow-up sentence.",
+        )
+
+    def _answer_followup_hint(
+        self,
+        *,
+        response_language: str | None,
+        needs_followup: bool,
+        followup_question: str,
+    ) -> str:
+        cleaned_followup = legacy_rag.sanitize_answer(followup_question)
+        if needs_followup and cleaned_followup:
+            return legacy_rag.localized_text(
+                response_language,
+                f"固定追问句：{cleaned_followup}",
+                f"Verbatim follow-up sentence: {cleaned_followup}",
+            )
+        return legacy_rag.localized_text(
+            response_language,
+            "固定追问句：无",
+            "Verbatim follow-up sentence: none",
         )
 
     def _needs_schedule_followup(

@@ -15,6 +15,7 @@ from app.services.chat import RAGGuideChatService, ReplyStreamEvent, TTSSegmente
 from app.services.emotion import EmotionAnalysis
 from app.services.rag import PreparedRAGAnswer
 from app.services.tts import StreamingTTSChunk
+from app.services.vision import VisitorVisionResult
 
 
 class FakeTraceService:
@@ -907,6 +908,17 @@ class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class ProcessTextMessageTestCase(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _advancing_perf_counter(start: float = 100.0, step: float = 0.01):
+        current = start
+
+        def _fake_perf_counter() -> float:
+            nonlocal current
+            current += step
+            return current
+
+        return _fake_perf_counter
+
     async def test_cancelled_reply_does_not_persist_user_or_assistant_messages(self) -> None:
         avatar = SimpleNamespace(
             persona="guide",
@@ -953,6 +965,270 @@ class ProcessTextMessageTestCase(unittest.IsolatedAsyncioTestCase):
                 )
 
         save_message_mock.assert_not_awaited()
+
+    async def test_photo_attachment_is_recognized_inside_chat_mainline(self) -> None:
+        avatar = SimpleNamespace(
+            persona="guide",
+            response_language="zh",
+            voice_id="voice",
+            tts_reference_audio_path="prompt.wav",
+            tts_reference_text="prompt text",
+            tts_speed=1.0,
+            tts_emotion_enabled=True,
+        )
+        quick_emotion = EmotionAnalysis(
+            label="thinking",
+            confidence=0.72,
+            keywords=["景点照片"],
+            reason="quick emotion",
+            source="heuristic",
+        )
+        save_message_mock = AsyncMock(
+            side_effect=[
+                SimpleNamespace(id=101),
+                SimpleNamespace(id=102),
+            ]
+        )
+        stream_result = SimpleNamespace(
+            text="这张图片看起来像灵山大佛。",
+            sources=[],
+            confidence=0.88,
+            mode="rag",
+            emotion=None,
+            metrics={},
+            reply_kind="answer",
+            needs_followup=False,
+            followup_question="",
+            missing_slots=[],
+            confidence_note="confirmed",
+        )
+        vision_service = SimpleNamespace(
+            recognize_stored_photo=AsyncMock(
+                return_value=VisitorVisionResult(
+                    recognized_spot="灵山大佛",
+                    recognition_summary="画面主体是一尊高大的金色佛像，周围是开阔广场。",
+                    resolved_question="这张图里的灵山大佛有什么看点？",
+                    stored_image_path="session-1/photo.jpg",
+                )
+            )
+        )
+
+        with (
+            patch("app.api.ws_router.get_chat_service", return_value=SimpleNamespace()),
+            patch("app.api.ws_router.get_tts_service", return_value=SimpleNamespace()),
+            patch("app.api.ws_router.get_avatar_config", AsyncMock(return_value=avatar)),
+            patch("app.api.ws_router.load_recent_history", AsyncMock(return_value=[])),
+            patch("app.api.ws_router.get_active_clarification_state", AsyncMock(return_value=None)),
+            patch(
+                "app.api.ws_router.get_emotion_analyzer",
+                return_value=SimpleNamespace(analyze_quick=lambda user_text: quick_emotion),
+            ),
+            patch("app.api.ws_router.get_visitor_vision_service", return_value=vision_service),
+            patch("app.api.ws_router.stream_assistant_reply", AsyncMock(return_value=stream_result)) as stream_reply_mock,
+            patch("app.api.ws_router.save_message", save_message_mock),
+            patch("app.api.ws_router.perf_counter", side_effect=self._advancing_perf_counter()),
+        ):
+            await process_text_message(
+                websocket=SimpleNamespace(),
+                db_session=SimpleNamespace(),
+                session_id="session-1",
+                content="",
+                attachments=[
+                    {
+                        "kind": "photo",
+                        "stored_image_path": "session-1/photo.jpg",
+                        "filename": "photo.jpg",
+                        "mime_type": "image/jpeg",
+                    }
+                ],
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                send_lock=asyncio.Lock(),
+            )
+
+        stream_kwargs = stream_reply_mock.await_args.kwargs
+        self.assertEqual(stream_kwargs["content"], "请帮我看看这张图片。")
+        self.assertIn("灵山大佛", stream_kwargs["query_text"])
+        self.assertIn("金色佛像", stream_kwargs["query_text"])
+        self.assertEqual(stream_kwargs["photo_context"]["recognized_spot"], "灵山大佛")
+        self.assertIn("reply_context_prepare_ms", stream_kwargs["initial_metrics"])
+        self.assertEqual(stream_kwargs["initial_metrics"]["clarification_resolve_ms"], 0)
+        self.assertGreater(stream_kwargs["initial_metrics"]["photo_recognition_ms"], 0)
+        self.assertEqual(save_message_mock.await_args_list[0].kwargs["content"], "请帮我看看这张图片。")
+        self.assertEqual(
+            save_message_mock.await_args_list[0].kwargs["attachments"][0]["stored_image_path"],
+            "session-1/photo.jpg",
+        )
+        self.assertEqual(
+            save_message_mock.await_args_list[0].kwargs["attachments"][0]["recognized_spot"],
+            "灵山大佛",
+        )
+
+    async def test_photo_attachment_uses_canonical_spot_name_in_query_text(self) -> None:
+        avatar = SimpleNamespace(
+            persona="guide",
+            response_language="zh",
+            voice_id="voice",
+            tts_reference_audio_path="prompt.wav",
+            tts_reference_text="prompt text",
+            tts_speed=1.0,
+            tts_emotion_enabled=True,
+        )
+        quick_emotion = EmotionAnalysis(
+            label="thinking",
+            confidence=0.72,
+            keywords=["景点照片"],
+            reason="quick emotion",
+            source="heuristic",
+        )
+        save_message_mock = AsyncMock(
+            side_effect=[
+                SimpleNamespace(id=201),
+                SimpleNamespace(id=202),
+            ]
+        )
+        stream_result = SimpleNamespace(
+            text="这是五印坛城。",
+            sources=[],
+            confidence=0.92,
+            mode="rag",
+            emotion=None,
+            metrics={},
+            reply_kind="answer",
+            needs_followup=False,
+            followup_question="",
+            missing_slots=[],
+            confidence_note="confirmed",
+        )
+        vision_service = SimpleNamespace(
+            recognize_stored_photo=AsyncMock(
+                return_value=VisitorVisionResult(
+                    recognized_spot="五印坛城",
+                    recognition_summary="图片主体是一座藏式白塔建筑。",
+                    resolved_question="请介绍一下这个景点。",
+                    stored_image_path="session-2/photo.jpg",
+                    is_canonical_spot=True,
+                )
+            )
+        )
+
+        with (
+            patch("app.api.ws_router.get_chat_service", return_value=SimpleNamespace()),
+            patch("app.api.ws_router.get_tts_service", return_value=SimpleNamespace()),
+            patch("app.api.ws_router.get_avatar_config", AsyncMock(return_value=avatar)),
+            patch("app.api.ws_router.load_recent_history", AsyncMock(return_value=[])),
+            patch("app.api.ws_router.get_active_clarification_state", AsyncMock(return_value=None)),
+            patch(
+                "app.api.ws_router.get_emotion_analyzer",
+                return_value=SimpleNamespace(analyze_quick=lambda user_text: quick_emotion),
+            ),
+            patch("app.api.ws_router.get_visitor_vision_service", return_value=vision_service),
+            patch("app.api.ws_router.stream_assistant_reply", AsyncMock(return_value=stream_result)) as stream_reply_mock,
+            patch("app.api.ws_router.save_message", save_message_mock),
+            patch("app.api.ws_router.perf_counter", side_effect=self._advancing_perf_counter()),
+        ):
+            await process_text_message(
+                websocket=SimpleNamespace(),
+                db_session=SimpleNamespace(),
+                session_id="session-2",
+                content="这是哪个景点？",
+                attachments=[
+                    {
+                        "kind": "photo",
+                        "stored_image_path": "session-2/photo.jpg",
+                        "filename": "photo.jpg",
+                        "mime_type": "image/jpeg",
+                    }
+                ],
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                send_lock=asyncio.Lock(),
+            )
+
+        stream_kwargs = stream_reply_mock.await_args.kwargs
+        self.assertIn("图片标准景点名：五印坛城", stream_kwargs["query_text"])
+        self.assertNotIn("图片识别名称：五印坛城", stream_kwargs["query_text"])
+        self.assertTrue(stream_kwargs["photo_context"]["recognized_spot_canonical"])
+        self.assertEqual(
+            save_message_mock.await_args_list[0].kwargs["attachments"][0]["recognized_spot"],
+            "五印坛城",
+        )
+
+    async def test_process_text_message_records_clarification_prepare_metrics(self) -> None:
+        avatar = SimpleNamespace(
+            persona="guide",
+            response_language="zh",
+            voice_id="voice",
+            tts_reference_audio_path="prompt.wav",
+            tts_reference_text="prompt text",
+            tts_speed=1.0,
+            tts_emotion_enabled=True,
+        )
+        quick_emotion = EmotionAnalysis(
+            label="thinking",
+            confidence=0.72,
+            keywords=["开放时间"],
+            reason="quick emotion",
+            source="heuristic",
+        )
+        active_state = SimpleNamespace(
+            original_question="开放时间是什么时候？",
+            assistant_followup_question="你想问的是景区整体开放时间，还是商铺/夜游时间？",
+        )
+        stream_result = SimpleNamespace(
+            text="景区整体开放一般是9:00-21:30。",
+            sources=[],
+            confidence=0.9,
+            mode="rag",
+            emotion=None,
+            metrics={},
+            reply_kind="answer",
+            needs_followup=False,
+            followup_question="",
+            missing_slots=[],
+            confidence_note="confirmed",
+        )
+        resolver = SimpleNamespace(
+            resolve=AsyncMock(
+                return_value=SimpleNamespace(
+                    continues_clarification=True,
+                    resolved_question="景区整体开放时间是什么时候？",
+                )
+            )
+        )
+        rag_service = SimpleNamespace(clarification_resolver=resolver)
+
+        with (
+            patch("app.api.ws_router.get_chat_service", return_value=SimpleNamespace()),
+            patch("app.api.ws_router.get_tts_service", return_value=SimpleNamespace()),
+            patch("app.api.ws_router.get_avatar_config", AsyncMock(return_value=avatar)),
+            patch("app.api.ws_router.load_recent_history", AsyncMock(return_value=[])),
+            patch("app.api.ws_router.get_active_clarification_state", AsyncMock(return_value=active_state)),
+            patch("app.api.ws_router.get_rag_service", return_value=rag_service),
+            patch(
+                "app.api.ws_router.get_emotion_analyzer",
+                return_value=SimpleNamespace(analyze_quick=lambda user_text: quick_emotion),
+            ),
+            patch("app.api.ws_router.stream_assistant_reply", AsyncMock(return_value=stream_result)) as stream_reply_mock,
+            patch(
+                "app.api.ws_router.save_message",
+                AsyncMock(side_effect=[SimpleNamespace(id=301), SimpleNamespace(id=302)]),
+            ),
+            patch("app.api.ws_router.resolve_pending_clarification_state", AsyncMock()),
+            patch("app.api.ws_router.perf_counter", side_effect=self._advancing_perf_counter()),
+        ):
+            await process_text_message(
+                websocket=SimpleNamespace(),
+                db_session=SimpleNamespace(),
+                session_id="session-3",
+                content="我想问景区整体开放时间。",
+                capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                send_lock=asyncio.Lock(),
+            )
+
+        stream_kwargs = stream_reply_mock.await_args.kwargs
+        self.assertEqual(stream_kwargs["query_text"], "景区整体开放时间是什么时候？")
+        self.assertGreater(stream_kwargs["initial_metrics"]["reply_context_prepare_ms"], 0)
+        self.assertGreater(stream_kwargs["initial_metrics"]["clarification_resolve_ms"], 0)
+        self.assertEqual(stream_kwargs["initial_metrics"]["photo_recognition_ms"], 0)
 
 
 if __name__ == "__main__":

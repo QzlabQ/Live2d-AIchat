@@ -27,9 +27,11 @@ from app.services.knowledge_gaps import record_knowledge_gap, should_record_know
 from app.services.rag import get_rag_service
 from app.services.tts import TTSService, get_tts_service
 from app.services.visitor_sessions import save_session_message
+from app.services.vision import VisitorVisionError, get_visitor_vision_service
 
 logger = logging.getLogger(__name__)
 websocket_router = APIRouter()
+DEFAULT_PHOTO_QUESTION = "请帮我看看这张图片。"
 
 
 @dataclass(slots=True)
@@ -107,6 +109,7 @@ async def save_message(
     session_id: str,
     role: str,
     content: str,
+    attachments: list[dict[str, object]] | None = None,
     emotion: str | None = None,
     latency_ms: int | None = None,
 ) -> None:
@@ -115,6 +118,7 @@ async def save_message(
         session_id=session_id,
         role=role,
         content=content,
+        attachments=attachments,
         emotion=emotion,
         latency_ms=latency_ms,
     )
@@ -125,6 +129,71 @@ def resolve_client_capabilities(payload: dict[str, object]) -> ClientCapabilitie
         tts_streaming=bool(payload.get("tts_streaming")),
         audio_format=str(payload.get("audio_format", "audio/wav")).strip().lower() or "audio/wav",
     )
+
+
+def normalize_message_text(content: object) -> str:
+    return " ".join(str(content or "").strip().split())
+
+
+def normalize_photo_attachments(raw_attachments: object) -> list[dict[str, str]]:
+    if raw_attachments is None:
+        return []
+    if not isinstance(raw_attachments, list):
+        raise ValueError("attachments must be a list.")
+    if len(raw_attachments) > 1:
+        raise ValueError("Only one photo attachment is supported.")
+
+    attachments: list[dict[str, str]] = []
+    for raw in raw_attachments:
+        if not isinstance(raw, dict):
+            raise ValueError("attachments items must be objects.")
+        kind = str(raw.get("kind", "")).strip().lower()
+        if kind != "photo":
+            raise ValueError("Only photo attachments are supported.")
+        stored_image_path = str(raw.get("stored_image_path", "")).strip()
+        filename = str(raw.get("filename", "")).strip()
+        mime_type = str(raw.get("mime_type", "")).strip().lower()
+        if not stored_image_path or not filename or not mime_type:
+            raise ValueError("photo attachment is missing required fields.")
+        attachments.append(
+            {
+                "kind": "photo",
+                "stored_image_path": stored_image_path,
+                "filename": filename,
+                "mime_type": mime_type,
+            }
+        )
+    return attachments
+
+
+def enrich_photo_attachments(
+    attachments: list[dict[str, str]],
+    photo_context: dict[str, object],
+) -> list[dict[str, str]]:
+    enriched: list[dict[str, str]] = []
+    for attachment in attachments:
+        if attachment.get("kind") != "photo":
+            enriched.append(dict(attachment))
+            continue
+        enriched.append(
+            {
+                **attachment,
+                "recognized_spot": photo_context.get("recognized_spot", ""),
+                "recognition_summary": photo_context.get("recognition_summary", ""),
+            }
+        )
+    return enriched
+
+
+def build_photo_query_text(user_text: str, photo_context: dict[str, str]) -> str:
+    has_canonical_spot = bool(photo_context.get("recognized_spot_canonical"))
+    spot_label = "图片标准景点名" if has_canonical_spot else "图片识别名称"
+    parts = [
+        f"{spot_label}：{str(photo_context.get('recognized_spot', '')).strip()}",
+        f"图片识别摘要：{photo_context.get('recognition_summary', '').strip()}",
+        f"用户问题：{user_text}",
+    ]
+    return "\n".join(part for part in parts if part and not part.endswith("："))
 
 
 def build_source_excerpt(text: str, limit: int = 140) -> str:
@@ -191,6 +260,7 @@ async def stream_assistant_reply(
     started_at: float,
     initial_metrics: dict[str, int] | None = None,
     send_lock: asyncio.Lock | None = None,
+    photo_context: dict[str, str] | None = None,
 ) -> ReplyExecutionResult:
     segment_queue: asyncio.Queue[QueuedTTSSegment | None] = asyncio.Queue()
     result = ReplyExecutionResult(text="")
@@ -248,12 +318,17 @@ async def stream_assistant_reply(
     async def produce_text() -> None:
         next_segment_seq = 0
         mark_metric("llm_stream_start_ms")
+        stream_kwargs = {
+            "query_text": query_text,
+            "history": history,
+        }
+        if photo_context is not None:
+            stream_kwargs["photo_context"] = photo_context
         async for event in chat_service.stream_reply(
             content,
             persona=avatar.persona,
             response_language=avatar.response_language,
-            query_text=query_text,
-            history=history,
+            **stream_kwargs,
         ):
             if event.kind == "text_delta":
                 mark_metric("llm_first_delta_ms")
@@ -507,6 +582,7 @@ async def process_text_message(
     content: str,
     capabilities: ClientCapabilities,
     *,
+    attachments: list[dict[str, str]] | None = None,
     started_at: float | None = None,
     initial_metrics: dict[str, int] | None = None,
     send_lock: asyncio.Lock | None = None,
@@ -514,20 +590,30 @@ async def process_text_message(
     chat_service = get_chat_service()
     tts_service = get_tts_service()
     started_at = started_at or perf_counter()
+    reply_context_started_at = perf_counter()
+    initial_metrics_payload = dict(initial_metrics or {})
+    normalized_attachments = normalize_photo_attachments(attachments)
+    visible_content = normalize_message_text(content)
+    if normalized_attachments and not visible_content:
+        visible_content = DEFAULT_PHOTO_QUESTION
 
     avatar = await get_avatar_config(db_session)
     history = await load_recent_history(db_session, session_id=session_id, limit=6)
-    query_text = content
+    query_text = visible_content
     continued_clarification = False
     cancel_existing_clarification = False
+    clarification_resolve_ms = 0
+    photo_recognition_ms = 0
 
     active_state = await get_active_clarification_state(db_session, session_id=session_id)
     if active_state is not None:
+        clarification_started_at = perf_counter()
         resolution = await get_rag_service().clarification_resolver.resolve(
             original_question=active_state.original_question,
             assistant_followup_question=active_state.assistant_followup_question,
-            user_reply=content,
+            user_reply=visible_content,
         )
+        clarification_resolve_ms = int((perf_counter() - clarification_started_at) * 1000)
         if resolution.continues_clarification:
             continued_clarification = True
             query_text = resolution.resolved_question
@@ -536,7 +622,32 @@ async def process_text_message(
         else:
             cancel_existing_clarification = True
 
-    locked = get_emotion_analyzer().analyze_quick(user_text=content)
+    photo_context: dict[str, str] | None = None
+    stored_attachments: list[dict[str, str]] = list(normalized_attachments)
+    if stored_attachments:
+        session_obj = None
+        get_session = getattr(db_session, "get", None)
+        if callable(get_session):
+            session_obj = await get_session(Session, session_id)
+        interest_tags = list(getattr(session_obj, "interest_tags", []))
+        photo_recognition_started_at = perf_counter()
+        recognition = await get_visitor_vision_service().recognize_stored_photo(
+            session_id=session_id,
+            stored_image_path=stored_attachments[0]["stored_image_path"],
+            interest_tags=interest_tags,
+            user_prompt=visible_content,
+        )
+        photo_recognition_ms = int((perf_counter() - photo_recognition_started_at) * 1000)
+        photo_context = {
+            "recognized_spot": recognition.recognized_spot,
+            "recognition_summary": recognition.recognition_summary,
+            "stored_image_path": recognition.stored_image_path,
+            "recognized_spot_canonical": recognition.is_canonical_spot,
+        }
+        stored_attachments = enrich_photo_attachments(stored_attachments, photo_context)
+        query_text = build_photo_query_text(query_text, photo_context)
+
+    locked = get_emotion_analyzer().analyze_quick(user_text=visible_content)
     reply_id = f"{session_id}-{int(started_at * 1000)}"
     emotion_payload = {
         "type": "emotion",
@@ -547,12 +658,18 @@ async def process_text_message(
         "reason": locked.reason,
         "source": locked.source,
     }
+    initial_metrics_payload["clarification_resolve_ms"] = clarification_resolve_ms
+    initial_metrics_payload["photo_recognition_ms"] = photo_recognition_ms
+    initial_metrics_payload["reply_context_prepare_ms"] = int(
+        (perf_counter() - reply_context_started_at) * 1000
+    )
     result = await stream_assistant_reply(
         websocket=websocket,
         session_id=session_id,
         avatar=avatar,
-        content=content,
+        content=visible_content,
         query_text=query_text,
+        photo_context=photo_context,
         history=history,
         chat_service=chat_service,
         tts_service=tts_service,
@@ -560,7 +677,7 @@ async def process_text_message(
         reply_id=reply_id,
         locked_emotion=locked.label,
         emotion_payload=emotion_payload,
-        initial_metrics=initial_metrics,
+        initial_metrics=initial_metrics_payload,
         started_at=started_at,
         send_lock=send_lock,
     )
@@ -570,7 +687,13 @@ async def process_text_message(
     elif continued_clarification:
         await resolve_pending_clarification_state(db_session, session_id=session_id)
 
-    await save_message(db_session, session_id=session_id, role="user", content=content)
+    await save_message(
+        db_session,
+        session_id=session_id,
+        role="user",
+        content=visible_content,
+        attachments=stored_attachments,
+    )
     if result.needs_followup and result.followup_question:
         await upsert_clarification_state(
             db_session,
@@ -604,7 +727,7 @@ async def process_text_message(
             await record_knowledge_gap(
                 db_session,
                 session_id=session_id,
-                user_question=content,
+                user_question=visible_content,
                 query_text=query_text,
                 assistant_reply=result.text,
                 reply_kind=result.reply_kind,
@@ -696,6 +819,8 @@ async def chat_websocket(websocket: WebSocket, session_id: str) -> None:
                         await task_coro
                     except asyncio.CancelledError:
                         raise
+                    except VisitorVisionError as exc:
+                        await send_error(websocket, "PHOTO_RECOGNITION_FAILED", str(exc), send_lock)
                     except Exception as exc:
                         logger.exception("Reply task failed for session=%s", session_id)
                         await send_error(websocket, "INTERNAL_ERROR", str(exc), send_lock)
@@ -740,8 +865,13 @@ async def chat_websocket(websocket: WebSocket, session_id: str) -> None:
                             send_lock,
                         )
                         continue
-                    content = str(payload.get("content", "")).strip()
-                    if not content:
+                    try:
+                        attachments = normalize_photo_attachments(payload.get("attachments"))
+                    except ValueError as exc:
+                        await send_error(websocket, "INVALID_ATTACHMENTS", str(exc), send_lock)
+                        continue
+                    content = normalize_message_text(payload.get("content", ""))
+                    if not content and not attachments:
                         await send_error(websocket, "EMPTY_TEXT", "文本消息不能为空。", send_lock)
                         continue
                     await start_reply_task(
@@ -751,6 +881,7 @@ async def chat_websocket(websocket: WebSocket, session_id: str) -> None:
                             session_id,
                             content,
                             capabilities,
+                            attachments=attachments,
                             send_lock=send_lock,
                         )
                     )

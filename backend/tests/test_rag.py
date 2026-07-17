@@ -1,7 +1,7 @@
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.core.config import Settings
 from app.services.rag import (
@@ -38,6 +38,14 @@ def make_chunk(
 
 
 class DetectQueryIntentTests(unittest.TestCase):
+    def test_default_persona_mentions_lingshan(self) -> None:
+        self.assertIn("灵山胜境", Settings().default_avatar_persona)
+
+    def test_default_persona_mentions_on_site_guidance_and_cultural_explanations(self) -> None:
+        persona = Settings().default_avatar_persona
+        self.assertIn("现场问路", persona)
+        self.assertIn("历史文化", persona)
+
     def test_detects_route_queries(self) -> None:
         self.assertEqual(detect_query_intent("第一次来灵山胜境应该怎么逛？"), "route")
 
@@ -173,7 +181,7 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer.missing_slots, ["target_scope"])
         self.assertEqual(len(answer.sources), 1)
 
-    async def test_invalid_decision_json_falls_back_to_humanized_answer(self) -> None:
+    async def test_answer_falls_back_to_local_humanized_answer_without_llm(self) -> None:
         with (
             patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
             patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
@@ -196,23 +204,74 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("参考资料", answer.answer_text)
         self.assertIn("9:00", answer.answer_text)
 
-    async def test_builds_english_decision_prompt_when_avatar_language_is_en(self) -> None:
+    def test_builds_answer_only_prompt_when_avatar_language_is_en(self) -> None:
         with (
             patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
             patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
         ):
             service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
 
-        messages = service._build_decision_messages(
+        messages = service._build_answer_messages(
             question="开放时间是什么时候？",
             persona="You are a witty guide.",
             context="[1] 景区开放时间 9:00-21:30",
             history=[],
+            fallback_text="The scenic area generally opens at 9:00.",
+            needs_followup=False,
+            followup_question="",
             response_language="en",
         )
 
         self.assertIn("natural, concise spoken English", messages[0]["content"])
-        self.assertIn('"spoken_answer":"natural spoken English for visitors', messages[1]["content"])
+        self.assertIn("Do not output JSON", messages[0]["content"])
+        self.assertIn("The scenic area generally opens at 9:00.", messages[1]["content"])
+
+    def test_answer_prompt_reuses_followup_question_verbatim(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
+
+        followup_question = "如果你问的是商铺、夜游或演出时间，我也可以继续帮你细看。"
+        messages = service._build_answer_messages(
+            question="开放时间是什么时候？",
+            persona="guide",
+            context="[1] 景区开放时间 9:00-21:30",
+            history=[],
+            fallback_text="景区整体开放一般是 9:00-21:30。",
+            needs_followup=True,
+            followup_question=followup_question,
+            response_language="zh",
+        )
+
+        self.assertIn("最后一句必须原样输出这句追问", messages[0]["content"])
+        self.assertIn(followup_question, messages[1]["content"])
+
+    def test_answer_prompt_prioritizes_canonical_spot_name_for_photo_identification(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
+
+        messages = service._build_answer_messages(
+            question="这是哪个景点？",
+            persona="guide",
+            context="[1] 五印坛城：采用藏式建筑风格。",
+            history=[],
+            fallback_text="这是五印坛城。它采用藏式建筑风格。",
+            needs_followup=False,
+            followup_question="",
+            response_language="zh",
+            photo_context={
+                "recognized_spot": "五印坛城",
+                "recognized_spot_canonical": True,
+                "recognition_summary": "图片主体是一座藏式白塔建筑。",
+            },
+        )
+
+        self.assertIn("第一句必须直接回答“这是五印坛城。”", messages[0]["content"])
 
     async def test_prepare_stream_answer_records_rag_stage_metrics(self) -> None:
         with (
@@ -229,18 +288,48 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
                 )
             ]
         )
-        service.llm = SimpleNamespace(
-            complete=self._async_return(
-                '{"spoken_answer":"景区一般9:00开放。","used_source_indexes":[1],"confidence_note":"confirmed"}'
-            )
-        )
+        service.llm = SimpleNamespace(complete=AsyncMock(side_effect=AssertionError("should not run decision LLM")))
 
         prepared = await service.prepare_stream_answer("开放时间是什么时候？", persona="guide", history=[])
 
         self.assertIn("rag_prepare_total_ms", prepared.metrics)
         self.assertIn("rag_retrieve_ms", prepared.metrics)
         self.assertIn("rag_rerank_ms", prepared.metrics)
-        self.assertIn("rag_decision_llm_ms", prepared.metrics)
+        self.assertEqual(prepared.metrics["rag_decision_llm_ms"], 0)
+        self.assertTrue(prepared.llm_messages)
+        self.assertIn("9:00", prepared.fallback_text)
+
+    async def test_prepare_stream_answer_uses_local_followup_meta_when_streaming_llm_answer(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key="key"))
+        service.retrieve = self._async_return(
+            [
+                make_chunk(
+                    category="schedule",
+                    text=(
+                        "景区开放时间为9:00-21:30，冬季闭园会提前。\n"
+                        "商铺营业时间一般为9:30-21:00。\n"
+                        "夜游灯光开放时间一般持续到21:30。"
+                    ),
+                    title="景区开放与夜游时间",
+                    rerank_score=0.6,
+                )
+            ]
+        )
+        service.llm = SimpleNamespace(complete=AsyncMock(side_effect=AssertionError("should not run decision LLM")))
+
+        prepared = await service.prepare_stream_answer("开放时间是什么时候？", persona="guide", history=[])
+
+        self.assertTrue(prepared.llm_messages)
+        self.assertEqual(prepared.reply_kind, "answer")
+        self.assertTrue(prepared.needs_followup)
+        self.assertEqual(prepared.missing_slots, ["target_scope"])
+        self.assertIn("商铺", prepared.followup_question)
+        self.assertEqual(prepared.confidence_note, "partial")
+        self.assertEqual(prepared.metrics["rag_decision_llm_ms"], 0)
 
     async def test_prepare_stream_answer_uses_split_retrieve_metrics_when_available(self) -> None:
         with (
@@ -347,6 +436,62 @@ class RAGReplyDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("花开见佛", answer.answer_text)
         self.assertNotIn("用生动语言讲述", answer.answer_text)
         self.assertNotIn("让孩子理解", answer.answer_text)
+
+    async def test_photo_identification_answer_starts_with_canonical_spot_name(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
+        service.retrieve = self._async_return(
+            [
+                make_chunk(
+                    category="scenery",
+                    text=(
+                        "五印坛城：灵山胜境的重要景点之一，采用藏式建筑风格，"
+                        "白墙红边金顶，常用于游客参观与宗教文化展示。"
+                    ),
+                    title="灵山胜境景点结构化数据集",
+                    rerank_score=0.96,
+                )
+            ]
+        )
+
+        answer = await service.answer(
+            "这是哪个景点？",
+            persona="guide",
+            history=[],
+            photo_context={
+                "recognized_spot": "五印坛城",
+                "recognized_spot_canonical": True,
+                "recognition_summary": "图片主体是一座藏式白塔建筑。",
+            },
+        )
+
+        self.assertTrue(answer.answer_text.startswith("这是五印坛城。"))
+        self.assertIn("藏式建筑", answer.answer_text)
+
+    async def test_noncanonical_photo_identification_uses_conservative_hint(self) -> None:
+        with (
+            patch("app.services.rag.KnowledgeVectorStore", return_value=SimpleNamespace()),
+            patch("app.services.rag.build_embedding_service", return_value=SimpleNamespace()),
+        ):
+            service = ScenicRAGService(Settings(chat_mode="rag", dashscope_api_key=None))
+        service.retrieve = self._async_return([])
+
+        answer = await service.answer(
+            "这是哪个景点？",
+            persona="guide",
+            history=[],
+            photo_context={
+                "recognized_spot": "灵山胜境",
+                "recognized_spot_canonical": False,
+                "recognition_summary": "画面展示景区建筑，但没有足够线索确认具体景点。",
+            },
+        )
+
+        self.assertIn("从图片看起来像是灵山胜境", answer.answer_text)
+        self.assertFalse(answer.answer_text.startswith("这是灵山胜境。"))
 
     @staticmethod
     def _async_return(value):
