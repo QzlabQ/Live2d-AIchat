@@ -150,6 +150,7 @@ npm run dev
 仓库已提供两套测试服务器部署资产：
 
 - [deploy/docker-compose.yml](deploy/docker-compose.yml)
+- [deploy/docker/](deploy/docker/)
 - [deploy/native/](deploy/native/)
 - [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)
 - [docs/deployment/test-server-native.md](docs/deployment/test-server-native.md)

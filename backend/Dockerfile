@@ -3,9 +3,11 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG ALL_PROXY
+ARG NO_PROXY
 ARG http_proxy
 ARG https_proxy
 ARG all_proxy
+ARG no_proxy
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CONDA_DIR=/opt/conda
@@ -13,9 +15,11 @@ ENV CONDA_ENV_NAME=ai-chat-gpu
 ENV HTTP_PROXY=${HTTP_PROXY}
 ENV HTTPS_PROXY=${HTTPS_PROXY}
 ENV ALL_PROXY=${ALL_PROXY}
+ENV NO_PROXY=${NO_PROXY}
 ENV http_proxy=${http_proxy}
 ENV https_proxy=${https_proxy}
 ENV all_proxy=${all_proxy}
+ENV no_proxy=${no_proxy}
 ENV PATH=/opt/conda/bin:/opt/conda/envs/ai-chat-gpu/bin:${PATH}
 ENV PYTHONUNBUFFERED=1
 

@@ -122,22 +122,31 @@ scp -r ./backend/storage/knowledge user@server:/opt/ai-chat-live2d/data/
 - `deploy/backend.env.v100.example`
 - `deploy/postgres.env.example`
 - `deploy/nginx/default.conf`
+- `deploy/docker/bootstrap.sh`
+- `deploy/docker/up.sh`
+- `deploy/docker/down.sh`
+- `deploy/docker/logs.sh`
 
-首次部署时，在服务器执行：
+现在推荐直接使用 Docker helper 脚本，而不是手工一条条 `cp`。
 
-```bash
-cp /opt/ai-chat-live2d/app/deploy/docker-compose.yml /opt/ai-chat-live2d/deploy/docker-compose.yml
-cp /opt/ai-chat-live2d/app/deploy/backend.env.example /opt/ai-chat-live2d/deploy/backend.env
-cp /opt/ai-chat-live2d/app/deploy/postgres.env.example /opt/ai-chat-live2d/deploy/postgres.env
-mkdir -p /opt/ai-chat-live2d/deploy/nginx
-cp /opt/ai-chat-live2d/app/deploy/nginx/default.conf /opt/ai-chat-live2d/deploy/nginx/default.conf
-```
-
-如果你这台服务器是 V100，并且你需要直接启用 ONNX CUDA + TRT 路径，可以把第二行替换成：
+首次部署时：
 
 ```bash
-cp /opt/ai-chat-live2d/app/deploy/backend.env.v100.example /opt/ai-chat-live2d/deploy/backend.env
+/opt/ai-chat-live2d/app/deploy/docker/bootstrap.sh
 ```
+
+如果是 `V100` 服务器，首次可直接：
+
+```bash
+/opt/ai-chat-live2d/app/deploy/docker/bootstrap.sh --v100
+```
+
+它会：
+
+- 同步仓库里的 `docker-compose.yml` 和 `nginx/default.conf` 到 `/opt/ai-chat-live2d/deploy/`
+- 如果 `deploy/backend.env` 不存在，则按普通模板或 `--v100` 模板创建
+- 如果 `deploy/postgres.env` 不存在，则创建默认模板
+- 自动创建 `deploy/nginx/`、`data/logs/` 等目录
 
 这份 V100 示例会额外打开：
 
@@ -162,7 +171,8 @@ cp /opt/ai-chat-live2d/app/deploy/backend.env.v100.example /opt/ai-chat-live2d/d
 DASHSCOPE_API_KEY=你的真实 Key
 ADMIN_PASSWORD=请改成自己的后台密码
 ADMIN_JWT_SECRET=请改成随机长字符串
-CORS_ORIGINS=http://127.0.0.1:18080,http://localhost:18080
+DATABASE_URL=postgresql+psycopg://ai_chat:你的数据库密码@postgres:5432/ai_chat_live2d
+CORS_ORIGINS=["http://localhost:8080","http://127.0.0.1:8080","http://localhost:18080","http://127.0.0.1:18080"]
 ```
 
 ```env
@@ -170,38 +180,28 @@ CORS_ORIGINS=http://127.0.0.1:18080,http://localhost:18080
 POSTGRES_PASSWORD=请改成自己的数据库密码
 ```
 
-## 5.1 V100 原生 venv 安装顺序与 TRT 校验
+### 5.1 受限网络下的代理写法
 
-如果这台 V100 服务器不是常驻跑 Docker，而是原生 `venv/conda` 部署，建议把运行时修复顺序固定成下面这样：
+如果服务器本身不能直接访问 Docker Hub / PyPI / npm，但你已经通过 SSH 反向隧道给它开了代理，可以把下面这些值填到 `/opt/ai-chat-live2d/deploy/backend.env`：
 
-```bash
-cd /opt/ai-chat-live2d/app/backend
-python -m pip install -r requirements.runtime.txt --no-build-isolation
-python -m pip uninstall -y onnxruntime onnxruntime-gpu
-python -m pip install onnxruntime-gpu==1.18.0 --no-build-isolation
-python - <<'PY'
-import onnxruntime as ort
-print(ort.get_available_providers())
-PY
+```env
+HTTP_PROXY=http://127.0.0.1:17897
+HTTPS_PROXY=http://127.0.0.1:17897
+ALL_PROXY=socks5://127.0.0.1:17897
+http_proxy=http://127.0.0.1:17897
+https_proxy=http://127.0.0.1:17897
+all_proxy=socks5://127.0.0.1:17897
+NO_PROXY=127.0.0.1,localhost
+no_proxy=127.0.0.1,localhost
 ```
 
-输出里必须包含 `CUDAExecutionProvider`。如果没有，不要继续启动后端。
+`deploy/docker/up.sh` 会先加载 `backend.env`，再执行 `docker compose up -d --build`。因此这里的代理变量会同时作用于：
 
-注意：`chromadb` 和 `faster-whisper` 的依赖链可能会重新拉回 CPU 版 `onnxruntime`，所以只要后面改过依赖，就要再次执行一次 provider 校验。
+- `backend` 镜像构建阶段的 `apt / curl / pip`
+- `frontend` 镜像构建阶段的 `npm / pnpm`
+- 后端容器运行阶段对 DashScope 等外部服务的访问
 
-如果你准备启用 `TTS_COSYVOICE_LOAD_TRT=true`，再补一轮 TensorRT 自检和 engine 预热：
-
-```bash
-python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-python -c "import tensorrt as trt; print(trt.__version__)"
-python -c "from cosyvoice.cli.cosyvoice import CosyVoice2; CosyVoice2('/opt/ai-chat-live2d/app/backend/storage/models/CosyVoice2-0.5B', load_trt=True, fp16=True)"
-```
-
-预期会生成或加载类似下面的 plan 文件：
-
-```text
-flow.decoder.estimator.fp16.mygpu.plan
-```
+如果你不用代理，这一段保持注释即可。
 
 ## 6. 启动服务
 
@@ -215,18 +215,41 @@ docker run --rm --gpus all nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 nvidia-
 然后启动：
 
 ```bash
-cd /opt/ai-chat-live2d/deploy
-docker compose up -d --build
+/opt/ai-chat-live2d/app/deploy/docker/up.sh
 ```
 
 查看状态：
 
 ```bash
+cd /opt/ai-chat-live2d/deploy
 docker compose ps
-docker compose logs -f backend
-docker compose logs -f frontend
-docker compose logs -f postgres
+/opt/ai-chat-live2d/app/deploy/docker/logs.sh backend
+/opt/ai-chat-live2d/app/deploy/docker/logs.sh frontend
+/opt/ai-chat-live2d/app/deploy/docker/logs.sh postgres
 ```
+
+如果要停止：
+
+```bash
+/opt/ai-chat-live2d/app/deploy/docker/down.sh
+```
+
+### 6.1 V100 上的 TRT / provider 验收
+
+如果你使用的是 `backend.env.v100.example`，建议在容器启动后再做一轮运行态确认：
+
+```bash
+cd /opt/ai-chat-live2d/deploy
+docker compose exec backend python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+docker compose exec backend python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+```
+
+输出里至少应看到：
+
+- `True`
+- `CUDAExecutionProvider`
+
+如果没有，请先修 Docker GPU runtime，不要继续排查 TTS 断流。
 
 ## 7. 从本机访问网页
 
@@ -256,11 +279,8 @@ http://127.0.0.1:18080
 cd /opt/ai-chat-live2d/app
 git pull
 
-cp /opt/ai-chat-live2d/app/deploy/docker-compose.yml /opt/ai-chat-live2d/deploy/docker-compose.yml
-cp /opt/ai-chat-live2d/app/deploy/nginx/default.conf /opt/ai-chat-live2d/deploy/nginx/default.conf
-
-cd /opt/ai-chat-live2d/deploy
-docker compose up -d --build
+/opt/ai-chat-live2d/app/deploy/docker/bootstrap.sh
+/opt/ai-chat-live2d/app/deploy/docker/up.sh
 ```
 
 如果 `backend.env` / `postgres.env` 已经按你的服务器修改过，不要再用 `.example` 覆盖它们。
@@ -270,8 +290,8 @@ docker compose up -d --build
 在本机执行 `rsync` 同步代码后，再在服务器执行：
 
 ```bash
-cd /opt/ai-chat-live2d/deploy
-docker compose up -d --build
+/opt/ai-chat-live2d/app/deploy/docker/bootstrap.sh
+/opt/ai-chat-live2d/app/deploy/docker/up.sh
 ```
 
 ### 8.3 版本回滚
@@ -279,8 +299,8 @@ docker compose up -d --build
 ```bash
 cd /opt/ai-chat-live2d/app
 git checkout <commit-or-tag>
-cd /opt/ai-chat-live2d/deploy
-docker compose up -d --build
+/opt/ai-chat-live2d/app/deploy/docker/bootstrap.sh
+/opt/ai-chat-live2d/app/deploy/docker/up.sh
 ```
 
 ## 9. 常见排查
@@ -290,8 +310,7 @@ docker compose up -d --build
 先看日志：
 
 ```bash
-cd /opt/ai-chat-live2d/deploy
-docker compose logs -f backend
+/opt/ai-chat-live2d/app/deploy/docker/logs.sh backend
 ```
 
 常见原因：
