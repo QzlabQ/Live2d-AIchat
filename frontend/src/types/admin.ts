@@ -255,6 +255,10 @@ export interface AdminReplyTrace {
   torchCudaAvailable: boolean | null
   torchDeviceName: string | null
   requestedOnnxProvider: string | null
+  ttsCosyvoiceFp16: boolean | null
+  ttsCosyvoiceLoadJit: boolean | null
+  ttsArBackend: string | null
+  ttsFlowBackend: string | null
   audioChunkCount: number
   segmentCount: number
   maxChunkGapMs: number

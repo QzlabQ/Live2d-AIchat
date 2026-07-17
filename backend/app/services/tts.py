@@ -373,8 +373,12 @@ class TTSService:
             "torch_cuda_available": None,
             "torch_device_name": None,
             "tts_stream_profile": resolve_stream_profile(self.settings).name,
+            "tts_cosyvoice_fp16": self.settings.tts_cosyvoice_fp16,
+            "tts_cosyvoice_load_jit": self.settings.tts_cosyvoice_load_jit,
             "tts_cosyvoice_load_trt": self.settings.tts_cosyvoice_load_trt,
             "tts_cosyvoice_trt_concurrent": self.settings.tts_cosyvoice_trt_concurrent,
+            "tts_ar_backend": self._resolve_tts_ar_backend(),
+            "tts_flow_backend": self._resolve_tts_flow_backend(),
             "tts_trt_engine_expected": self.settings.tts_cosyvoice_load_trt,
             "tts_trt_engine_loaded": False,
             "tts_segment_soft_min_chars": self.settings.tts_segment_soft_min_chars,
@@ -424,8 +428,12 @@ class TTSService:
             "torch_cuda_available": None,
             "torch_device_name": None,
             "tts_stream_profile": resolve_stream_profile(self.settings).name,
+            "tts_cosyvoice_fp16": self.settings.tts_cosyvoice_fp16,
+            "tts_cosyvoice_load_jit": self.settings.tts_cosyvoice_load_jit,
             "tts_cosyvoice_load_trt": self.settings.tts_cosyvoice_load_trt,
             "tts_cosyvoice_trt_concurrent": self.settings.tts_cosyvoice_trt_concurrent,
+            "tts_ar_backend": self._resolve_tts_ar_backend(),
+            "tts_flow_backend": self._resolve_tts_flow_backend(),
             "tts_trt_engine_expected": self.settings.tts_cosyvoice_load_trt,
             "tts_trt_engine_loaded": False,
             "tts_segment_soft_min_chars": self.settings.tts_segment_soft_min_chars,
@@ -444,6 +452,24 @@ class TTSService:
         if self.settings.tts_provider == "remote":
             return "remote"
         return "per_segment"
+
+    def _resolve_tts_ar_backend(self) -> str | None:
+        if self.settings.tts_provider == "remote":
+            return "remote"
+        if self.settings.tts_engine == "cosyvoice":
+            return "pytorch"
+        if self.settings.tts_engine == "mock":
+            return "mock"
+        if self.settings.tts_engine == "edge-tts":
+            return "cloud"
+        return None
+
+    def _resolve_tts_flow_backend(self) -> str | None:
+        if self.settings.tts_provider == "remote":
+            return "remote"
+        if self.settings.tts_engine != "cosyvoice":
+            return None
+        return "trt" if self.settings.tts_cosyvoice_load_trt else "pytorch"
 
     def _sanitize_synthesis_text(self, text: str) -> str:
         def replace_directive(match: re.Match[str]) -> str:

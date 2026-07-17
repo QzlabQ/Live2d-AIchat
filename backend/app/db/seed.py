@@ -7,6 +7,12 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.db.models import AvatarConfig, VoiceProfile
 from app.db.session import AsyncSessionFactory
+from app.services.live2d_models import (
+    PREFERRED_LIVE2D_MODEL_PATH,
+    discover_live2d_model_paths,
+    normalize_live2d_model_path,
+    pick_default_live2d_model_path,
+)
 
 settings = get_settings()
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +30,13 @@ def _resolve_backend_path(value: str) -> str:
 
 
 async def ensure_default_avatar_config() -> None:
+    available_model_paths = discover_live2d_model_paths()
+    seed_model_path = normalize_live2d_model_path(
+        settings.default_avatar_model_path,
+        available_model_paths,
+        preferred_path=PREFERRED_LIVE2D_MODEL_PATH,
+    )
+
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(AvatarConfig).limit(1))
         avatar_config = result.scalar_one_or_none()
@@ -35,7 +48,7 @@ async def ensure_default_avatar_config() -> None:
                 name="默认数字人",
                 slug="default-avatar",
                 is_active=True,
-                model_path=settings.default_avatar_model_path,
+                model_path=seed_model_path,
                 voice_id=settings.default_avatar_voice_id,
                 voice_profile_id=None,
                 response_language=settings.default_avatar_response_language,
@@ -51,6 +64,33 @@ async def ensure_default_avatar_config() -> None:
             )
         )
         await session.commit()
+
+
+async def ensure_avatar_model_paths() -> None:
+    available_model_paths = discover_live2d_model_paths()
+    if not available_model_paths:
+        return
+
+    fallback_model_path = pick_default_live2d_model_path(
+        available_model_paths,
+        preferred_path=PREFERRED_LIVE2D_MODEL_PATH,
+    )
+
+    async with AsyncSessionFactory() as session:
+        avatars = list((await session.execute(select(AvatarConfig).order_by(AvatarConfig.id.asc()))).scalars())
+        changed = False
+        for avatar in avatars:
+            normalized_model_path = normalize_live2d_model_path(
+                avatar.model_path,
+                available_model_paths,
+                preferred_path=fallback_model_path,
+            )
+            if avatar.model_path != normalized_model_path:
+                avatar.model_path = normalized_model_path
+                changed = True
+
+        if changed:
+            await session.commit()
 
 
 async def ensure_default_voice_profile() -> None:

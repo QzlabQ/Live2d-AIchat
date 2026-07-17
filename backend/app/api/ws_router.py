@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, field
 from time import perf_counter
 
@@ -58,8 +59,30 @@ class ReplyExecutionResult:
     confidence_note: str = "confirmed"
 
 
-async def send_error(websocket: WebSocket, code: str, message: str) -> None:
-    await websocket.send_json({"type": "error", "code": code, "message": message})
+async def send_json_payload(
+    websocket: WebSocket,
+    payload: dict[str, object],
+    send_lock: asyncio.Lock | None = None,
+) -> None:
+    if send_lock is None:
+        await websocket.send_json(payload)
+        return
+
+    async with send_lock:
+        await websocket.send_json(payload)
+
+
+async def send_error(
+    websocket: WebSocket,
+    code: str,
+    message: str,
+    send_lock: asyncio.Lock | None = None,
+) -> None:
+    await send_json_payload(
+        websocket,
+        {"type": "error", "code": code, "message": message},
+        send_lock,
+    )
 
 
 async def get_avatar_config(session) -> AvatarConfig:
@@ -167,8 +190,8 @@ async def stream_assistant_reply(
     emotion_payload: dict[str, object],
     started_at: float,
     initial_metrics: dict[str, int] | None = None,
+    send_lock: asyncio.Lock | None = None,
 ) -> ReplyExecutionResult:
-    send_lock = asyncio.Lock()
     segment_queue: asyncio.Queue[QueuedTTSSegment | None] = asyncio.Queue()
     result = ReplyExecutionResult(text="")
     use_streaming_audio = (
@@ -193,8 +216,7 @@ async def stream_assistant_reply(
             metrics[name] = trace.metrics[name]
 
     async def send_json(payload: dict[str, object]) -> None:
-        async with send_lock:
-            await websocket.send_json(payload)
+        await send_json_payload(websocket, payload, send_lock)
 
     def elapsed_ms() -> int:
         return int((perf_counter() - started_at) * 1000)
@@ -455,6 +477,15 @@ async def stream_assistant_reply(
         result.metrics = metrics
         await send_json({"type": "done", "session_id": session_id})
         return result
+    except asyncio.CancelledError:
+        for task in (producer_task, consumer_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (producer_task, consumer_task) if task is not None),
+            return_exceptions=True,
+        )
+        raise
     except Exception:
         for task in (producer_task, consumer_task):
             if task is not None and not task.done():
@@ -478,16 +509,17 @@ async def process_text_message(
     *,
     started_at: float | None = None,
     initial_metrics: dict[str, int] | None = None,
+    send_lock: asyncio.Lock | None = None,
 ) -> None:
     chat_service = get_chat_service()
     tts_service = get_tts_service()
     started_at = started_at or perf_counter()
 
-    await save_message(db_session, session_id=session_id, role="user", content=content)
     avatar = await get_avatar_config(db_session)
     history = await load_recent_history(db_session, session_id=session_id, limit=6)
     query_text = content
     continued_clarification = False
+    cancel_existing_clarification = False
 
     active_state = await get_active_clarification_state(db_session, session_id=session_id)
     if active_state is not None:
@@ -502,7 +534,7 @@ async def process_text_message(
             if history and history[-1]["role"] == "user":
                 history[-1]["content"] = query_text
         else:
-            await cancel_pending_clarification_state(db_session, session_id=session_id)
+            cancel_existing_clarification = True
 
     locked = get_emotion_analyzer().analyze_quick(user_text=content)
     reply_id = f"{session_id}-{int(started_at * 1000)}"
@@ -530,11 +562,15 @@ async def process_text_message(
         emotion_payload=emotion_payload,
         initial_metrics=initial_metrics,
         started_at=started_at,
+        send_lock=send_lock,
     )
 
-    if continued_clarification:
+    if cancel_existing_clarification:
+        await cancel_pending_clarification_state(db_session, session_id=session_id)
+    elif continued_clarification:
         await resolve_pending_clarification_state(db_session, session_id=session_id)
 
+    await save_message(db_session, session_id=session_id, role="user", content=content)
     if result.needs_followup and result.followup_question:
         await upsert_clarification_state(
             db_session,
@@ -590,22 +626,23 @@ async def process_audio_buffer(
     websocket: WebSocket,
     db_session,
     session_id: str,
-    audio_buffer: bytearray,
+    audio_data: bytes,
     capabilities: ClientCapabilities,
+    *,
+    send_lock: asyncio.Lock | None = None,
 ) -> None:
-    if not audio_buffer:
-        await send_error(websocket, "ASR_FAILED", "未接收到可识别的音频数据。")
+    if not audio_data:
+        await send_error(websocket, "ASR_FAILED", "未接收到可识别的音频数据。", send_lock)
         return
 
     started_at = perf_counter()
-    asr_result = await get_asr_service().transcribe_with_metrics(bytes(audio_buffer))
-    audio_buffer.clear()
+    asr_result = await get_asr_service().transcribe_with_metrics(audio_data)
     transcript = asr_result.text
     if not transcript:
-        await send_error(websocket, "ASR_FAILED", "语音识别未返回有效文本。")
+        await send_error(websocket, "ASR_FAILED", "语音识别未返回有效文本。", send_lock)
         return
 
-    await websocket.send_json({"type": "asr_result", "content": transcript})
+    await send_json_payload(websocket, {"type": "asr_result", "content": transcript}, send_lock)
     await process_text_message(
         websocket,
         db_session,
@@ -618,6 +655,7 @@ async def process_audio_buffer(
             "asr_transcribe_ms": asr_result.asr_transcribe_ms,
             "asr_total_ms": asr_result.asr_total_ms,
         },
+        send_lock=send_lock,
     )
 
 
@@ -626,14 +664,64 @@ async def chat_websocket(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
     audio_buffer = bytearray()
     capabilities = ClientCapabilities()
+    send_lock = asyncio.Lock()
+    active_reply_task: asyncio.Task[None] | None = None
 
     try:
         async with AsyncSessionFactory() as db_session:
             session_obj = await db_session.get(Session, session_id)
             if session_obj is None:
-                await send_error(websocket, "SESSION_NOT_FOUND", "会话不存在，请先创建会话。")
+                await send_error(
+                    websocket,
+                    "SESSION_NOT_FOUND",
+                    "会话不存在，请先创建会话。",
+                    send_lock,
+                )
                 await websocket.close(code=4404)
                 return
+
+            def has_active_reply() -> bool:
+                return active_reply_task is not None and not active_reply_task.done()
+
+            def clear_active_reply(task: asyncio.Task[None]) -> None:
+                nonlocal active_reply_task
+                if active_reply_task is task:
+                    active_reply_task = None
+
+            async def start_reply_task(task_coro) -> None:
+                nonlocal active_reply_task
+
+                async def runner() -> None:
+                    try:
+                        await task_coro
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.exception("Reply task failed for session=%s", session_id)
+                        await send_error(websocket, "INTERNAL_ERROR", str(exc), send_lock)
+
+                active_reply_task = asyncio.create_task(runner())
+                active_reply_task.add_done_callback(clear_active_reply)
+
+            async def cancel_active_reply(reason: str = "client_cancelled") -> None:
+                nonlocal active_reply_task
+                had_active_reply = has_active_reply()
+                audio_buffer.clear()
+                if had_active_reply and active_reply_task is not None:
+                    active_reply_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await active_reply_task
+                active_reply_task = None
+                await send_json_payload(
+                    websocket,
+                    {
+                        "type": "reply_cancelled",
+                        "session_id": session_id,
+                        "had_active_reply": had_active_reply,
+                        "reason": reason,
+                    },
+                    send_lock,
+                )
 
             while True:
                 payload = await websocket.receive_json()
@@ -644,40 +732,120 @@ async def chat_websocket(websocket: WebSocket, session_id: str) -> None:
                     continue
 
                 if message_type == "text":
+                    if has_active_reply():
+                        await send_error(
+                            websocket,
+                            "REPLY_IN_PROGRESS",
+                            "当前回复仍在生成，请先停止当前回答或等待完成。",
+                            send_lock,
+                        )
+                        continue
                     content = str(payload.get("content", "")).strip()
                     if not content:
-                        await send_error(websocket, "EMPTY_TEXT", "文本消息不能为空。")
+                        await send_error(websocket, "EMPTY_TEXT", "文本消息不能为空。", send_lock)
                         continue
-                    await process_text_message(websocket, db_session, session_id, content, capabilities)
+                    await start_reply_task(
+                        process_text_message(
+                            websocket,
+                            db_session,
+                            session_id,
+                            content,
+                            capabilities,
+                            send_lock=send_lock,
+                        )
+                    )
                     continue
 
                 if message_type == "audio_chunk":
+                    if has_active_reply():
+                        await send_error(
+                            websocket,
+                            "REPLY_IN_PROGRESS",
+                            "当前回复仍在生成，请先停止当前回答或等待完成。",
+                            send_lock,
+                        )
+                        continue
                     encoded = payload.get("data")
                     if not isinstance(encoded, str):
-                        await send_error(websocket, "INVALID_AUDIO", "音频块必须为 base64 字符串。")
+                        await send_error(
+                            websocket,
+                            "INVALID_AUDIO",
+                            "音频块必须为 base64 字符串。",
+                            send_lock,
+                        )
                         continue
 
                     try:
                         audio_buffer.extend(base64.b64decode(encoded))
                     except Exception:
-                        await send_error(websocket, "INVALID_AUDIO", "音频块 base64 解码失败。")
+                        await send_error(
+                            websocket,
+                            "INVALID_AUDIO",
+                            "音频块 base64 解码失败。",
+                            send_lock,
+                        )
                         continue
 
                     if bool(payload.get("is_final")):
-                        await process_audio_buffer(websocket, db_session, session_id, audio_buffer, capabilities)
+                        audio_data = bytes(audio_buffer)
+                        audio_buffer.clear()
+                        await start_reply_task(
+                            process_audio_buffer(
+                                websocket,
+                                db_session,
+                                session_id,
+                                audio_data,
+                                capabilities,
+                                send_lock=send_lock,
+                            )
+                        )
                     continue
 
                 if message_type == "audio_end":
-                    await process_audio_buffer(websocket, db_session, session_id, audio_buffer, capabilities)
+                    if has_active_reply():
+                        await send_error(
+                            websocket,
+                            "REPLY_IN_PROGRESS",
+                            "当前回复仍在生成，请先停止当前回答或等待完成。",
+                            send_lock,
+                        )
+                        continue
+                    audio_data = bytes(audio_buffer)
+                    audio_buffer.clear()
+                    await start_reply_task(
+                        process_audio_buffer(
+                            websocket,
+                            db_session,
+                            session_id,
+                            audio_data,
+                            capabilities,
+                            send_lock=send_lock,
+                        )
+                    )
                     continue
 
                 if message_type == "ping":
-                    await websocket.send_json({"type": "pong"})
+                    await send_json_payload(websocket, {"type": "pong"}, send_lock)
                     continue
 
-                await send_error(websocket, "UNSUPPORTED_MESSAGE", f"不支持的消息类型: {message_type}")
+                if message_type == "cancel_reply":
+                    await cancel_active_reply()
+                    continue
+
+                await send_error(
+                    websocket,
+                    "UNSUPPORTED_MESSAGE",
+                    f"不支持的消息类型: {message_type}",
+                    send_lock,
+                )
     except WebSocketDisconnect:
+        if active_reply_task is not None and not active_reply_task.done():
+            active_reply_task.cancel()
+            await asyncio.gather(active_reply_task, return_exceptions=True)
         return
     except Exception as exc:
-        await send_error(websocket, "INTERNAL_ERROR", str(exc))
+        if active_reply_task is not None and not active_reply_task.done():
+            active_reply_task.cancel()
+            await asyncio.gather(active_reply_task, return_exceptions=True)
+        await send_error(websocket, "INTERNAL_ERROR", str(exc), send_lock)
         await websocket.close(code=1011)

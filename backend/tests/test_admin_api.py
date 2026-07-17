@@ -297,6 +297,10 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
                             "torch_cuda_available": True,
                             "torch_device_name": "Tesla V100-PCIE-32GB",
                             "requested_onnx_provider": "cuda",
+                            "tts_cosyvoice_fp16": True,
+                            "tts_cosyvoice_load_jit": False,
+                            "tts_ar_backend": "pytorch",
+                            "tts_flow_backend": "trt",
                             "audio_chunk_count": 4,
                             "segment_count": 1,
                             "max_chunk_gap_ms": 3200,
@@ -340,6 +344,10 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
                             "torch_cuda_available": True,
                             "torch_device_name": "Tesla V100-PCIE-32GB",
                             "requested_onnx_provider": "cuda",
+                            "tts_cosyvoice_fp16": True,
+                            "tts_cosyvoice_load_jit": False,
+                            "tts_ar_backend": "pytorch",
+                            "tts_flow_backend": "trt",
                             "audio_chunk_count": 5,
                             "segment_count": 2,
                             "max_chunk_gap_ms": 4100,
@@ -386,6 +394,9 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["reply_traces"][0]["reply_id"], f"{session_id}-new")
         self.assertEqual(payload["reply_traces"][0]["metrics"]["rag_rerank_ms"], 100)
         self.assertEqual(payload["reply_traces"][0]["tts_chunks"][0]["tts_chunk_real_rtf"], 0.417)
+        self.assertTrue(payload["reply_traces"][0]["tts_cosyvoice_fp16"])
+        self.assertEqual(payload["reply_traces"][0]["tts_ar_backend"], "pytorch")
+        self.assertEqual(payload["reply_traces"][0]["tts_flow_backend"], "trt")
         self.assertEqual(payload["reply_trace_summary"]["trace_count"], 2)
         self.assertEqual(payload["reply_trace_summary"]["avg_metrics"]["rag_rerank_ms"], 1100.0)
         self.assertEqual(payload["reply_trace_summary"]["max_metrics"]["tts_first_audio_chunk_ms"], 9100)

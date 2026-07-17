@@ -148,6 +148,10 @@ cp /opt/ai-chat-live2d/app/deploy/backend.env.v100.example /opt/ai-chat-live2d/d
 
 这里要特别注意：旧版 V100 调参文档里曾经用过 `22 / 40 / 64` 这组更长的 TTS 分段阈值，它会减少分段数量，但也会显著放大长句在单个 segment 内的 `token_wait_ms` 与 `token2wav_ms` 退化。当前测试服务器如果要优先避免长句断流，建议继续使用 `12 / 20 / 28`，不要因为沿用了老的 `backend.env` 而误以为那是稳定默认值。
 
+还要区分清楚 TRT 覆盖范围：`TTS_COSYVOICE_LOAD_TRT=true` 目前只代表 flow 侧 TensorRT 路径开启，不代表 AR speech-token LLM 已被 TRT 或 vLLM 加速。后台 trace 里的 `tts_ar_backend` 与 `tts_flow_backend` 会直接反映真实运行态。
+
+对 `V100` 来说，当前不建议把 vLLM 当成默认提速选项。由于这类卡在缺少 `flash attention` 时容易走到更慢路径，实际效果可能比现有 PyTorch AR 还差；第一轮排障应优先确认短分段是否真正生效，再看 AR 侧是否需要更换方案。
+
 然后至少修改这几个值：
 
 ```env

@@ -31,8 +31,12 @@ class ReplyTrace:
     requested_onnx_provider: str | None = None
     available_onnx_providers: list[str] = field(default_factory=list)
     tts_stream_profile: str | None = None
+    tts_cosyvoice_fp16: bool | None = None
+    tts_cosyvoice_load_jit: bool | None = None
     tts_cosyvoice_load_trt: bool | None = None
     tts_cosyvoice_trt_concurrent: int | None = None
+    tts_ar_backend: str | None = None
+    tts_flow_backend: str | None = None
     tts_trt_engine_expected: bool | None = None
     tts_trt_engine_loaded: bool | None = None
     tts_segment_soft_min_chars: int | None = None
@@ -65,8 +69,12 @@ class ReplyTrace:
         providers = snapshot.get("available_onnx_providers")
         self.available_onnx_providers = list(providers) if isinstance(providers, list) else []
         self.tts_stream_profile = snapshot.get("tts_stream_profile")  # type: ignore[assignment]
+        self.tts_cosyvoice_fp16 = snapshot.get("tts_cosyvoice_fp16")  # type: ignore[assignment]
+        self.tts_cosyvoice_load_jit = snapshot.get("tts_cosyvoice_load_jit")  # type: ignore[assignment]
         self.tts_cosyvoice_load_trt = snapshot.get("tts_cosyvoice_load_trt")  # type: ignore[assignment]
         self.tts_cosyvoice_trt_concurrent = snapshot.get("tts_cosyvoice_trt_concurrent")  # type: ignore[assignment]
+        self.tts_ar_backend = snapshot.get("tts_ar_backend")  # type: ignore[assignment]
+        self.tts_flow_backend = snapshot.get("tts_flow_backend")  # type: ignore[assignment]
         self.tts_trt_engine_expected = snapshot.get("tts_trt_engine_expected")  # type: ignore[assignment]
         self.tts_trt_engine_loaded = snapshot.get("tts_trt_engine_loaded")  # type: ignore[assignment]
         self.tts_segment_soft_min_chars = snapshot.get("tts_segment_soft_min_chars")  # type: ignore[assignment]
@@ -179,8 +187,12 @@ class ReplyTrace:
             "requested_onnx_provider": self.requested_onnx_provider,
             "available_onnx_providers": list(self.available_onnx_providers),
             "tts_stream_profile": self.tts_stream_profile,
+            "tts_cosyvoice_fp16": self.tts_cosyvoice_fp16,
+            "tts_cosyvoice_load_jit": self.tts_cosyvoice_load_jit,
             "tts_cosyvoice_load_trt": self.tts_cosyvoice_load_trt,
             "tts_cosyvoice_trt_concurrent": self.tts_cosyvoice_trt_concurrent,
+            "tts_ar_backend": self.tts_ar_backend,
+            "tts_flow_backend": self.tts_flow_backend,
             "tts_trt_engine_expected": self.tts_trt_engine_expected,
             "tts_trt_engine_loaded": self.tts_trt_engine_loaded,
             "tts_segment_soft_min_chars": self.tts_segment_soft_min_chars,

@@ -191,6 +191,11 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0]['model_path'], str(Path(temp_dir)))
         self.assertTrue(calls[0]['fp16'])
         self.assertFalse(calls[0].get('load_trt', False))
+        snapshot = service.get_runtime_trace_snapshot()
+        self.assertTrue(snapshot['tts_cosyvoice_fp16'])
+        self.assertFalse(snapshot['tts_cosyvoice_load_jit'])
+        self.assertEqual(snapshot['tts_ar_backend'], 'pytorch')
+        self.assertEqual(snapshot['tts_flow_backend'], 'pytorch')
 
     def test_load_cosyvoice_model_passes_trt_flags_to_factory_when_enabled(self) -> None:
         calls: list[dict[str, object]] = []
@@ -227,6 +232,10 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
         snapshot = service.get_runtime_trace_snapshot()
         self.assertTrue(snapshot['tts_cosyvoice_load_trt'])
         self.assertEqual(snapshot['tts_cosyvoice_trt_concurrent'], 1)
+        self.assertTrue(snapshot['tts_cosyvoice_fp16'])
+        self.assertFalse(snapshot['tts_cosyvoice_load_jit'])
+        self.assertEqual(snapshot['tts_ar_backend'], 'pytorch')
+        self.assertEqual(snapshot['tts_flow_backend'], 'trt')
         self.assertTrue(snapshot['tts_trt_engine_expected'])
         self.assertTrue(snapshot['tts_trt_engine_loaded'])
         self.assertEqual(snapshot['tts_segment_soft_min_chars'], 22)

@@ -1884,6 +1884,17 @@ function traceRuntimeBadges(trace: AdminReplyTrace) {
   if (trace.requestedOnnxProvider) {
     badges.push(`ONNX ${trace.requestedOnnxProvider}`)
   }
+  if (trace.ttsCosyvoiceFp16 === true) {
+    badges.push('FP16')
+  } else if (trace.ttsCosyvoiceFp16 === false) {
+    badges.push('FP32')
+  }
+  if (trace.ttsArBackend) {
+    badges.push(`AR ${trace.ttsArBackend}`)
+  }
+  if (trace.ttsFlowBackend) {
+    badges.push(`Flow ${trace.ttsFlowBackend}`)
+  }
   return badges
 }
 
@@ -2048,7 +2059,7 @@ async function handleHashChange() {
               </div>
 
               <div class="admin-preview-stage">
-                <Live2DStage :model-path="previewModelPath" />
+                <Live2DStage :key="previewModelPath" :model-path="previewModelPath" />
               </div>
 
               <div class="admin-preview-meta">
@@ -2367,6 +2378,7 @@ async function handleHashChange() {
 
             <div class="admin-preview-stage" :style="adminPreviewStageStyle">
               <Live2DStage
+                :key="previewModelPath"
                 ref="adminLive2dRef"
                 :model-path="previewModelPath"
                 :model-scale="avatarForm.displayScale"
@@ -3255,6 +3267,22 @@ async function handleHashChange() {
                         <div>
                           <dt>TTS 引擎</dt>
                           <dd>{{ trace.ttsEngine }}{{ trace.ttsStreamProfile ? ` / ${trace.ttsStreamProfile}` : '' }}</dd>
+                        </div>
+                        <div>
+                          <dt>AR 后端</dt>
+                          <dd>{{ trace.ttsArBackend || '--' }}</dd>
+                        </div>
+                        <div>
+                          <dt>Flow 后端</dt>
+                          <dd>{{ trace.ttsFlowBackend || '--' }}</dd>
+                        </div>
+                        <div>
+                          <dt>推理精度</dt>
+                          <dd>{{ trace.ttsCosyvoiceFp16 === null ? '--' : trace.ttsCosyvoiceFp16 ? 'FP16' : 'FP32' }}</dd>
+                        </div>
+                        <div>
+                          <dt>Flow JIT</dt>
+                          <dd>{{ trace.ttsCosyvoiceLoadJit === null ? '--' : trace.ttsCosyvoiceLoadJit ? '开启' : '关闭' }}</dd>
                         </div>
                       </dl>
 

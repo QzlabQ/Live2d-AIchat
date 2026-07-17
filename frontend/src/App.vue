@@ -17,6 +17,11 @@ import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageM
 import { buildComposerQuickHints, type ComposerMode } from './lib/chatComposerMode'
 import { canUsePhotoAttachment } from './lib/photoAttachment'
 import { buildPhotoQuestion, shouldEnterThinkingForPhoto } from './lib/photoQuestion'
+import {
+  discardReplyMessages,
+  hasCancellableReplyActivity,
+  shouldIgnoreReplyEventWhileCancelling,
+} from './lib/replyCancellation'
 import { getRuntimeApiBaseUrl, getRuntimeWsBaseUrl } from './lib/runtimeBaseUrl'
 import { buildRouteRecommendationMessage } from './lib/toolResultMessage'
 import {
@@ -35,6 +40,7 @@ import {
   reduceAvatarPhaseEvent,
 } from './lib/avatarPresentation'
 import {
+  buildStreamPlaybackTelemetry,
   DEFAULT_STREAM_AUDIO_POLICY,
   getScheduledLeadMs,
   shouldResetBufferedPlayback,
@@ -69,6 +75,7 @@ const API_BASE_URL = getRuntimeApiBaseUrl(import.meta.env)
 const WS_BASE_URL = getRuntimeWsBaseUrl(import.meta.env, window.location)
 const DEFAULT_MODEL_PATH =
   import.meta.env.VITE_LIVE2D_MODEL_PATH || '/live2d/haru/haru_greeter_t03.model3.json'
+const LEGACY_BROKEN_MODEL_PATH = '/live2d/models/guide/guide.model3.json'
 const HEARTBEAT_MS = Number(import.meta.env.VITE_HEARTBEAT_MS || 15000)
 const RECONNECT_BASE_MS = Number(import.meta.env.VITE_RECONNECT_BASE_MS || 1200)
 
@@ -134,7 +141,11 @@ const bootError = ref('')
 const composer = ref('')
 const messages = visitorSessions.activeMessages
 const assistantDraftId = ref<string | null>(null)
+const activeReplyUserMessageId = ref<string | null>(null)
+const activeReplyAssistantMessageId = ref<string | null>(null)
 const replyPending = ref(false)
+const replyCanceling = ref(false)
+const ignoreReplyEventsUntilCancelAck = ref(false)
 const lastAsrPreview = ref('')
 const latestEmotion = ref<EmotionValue>('neutral')
 const emotionTelemetry = ref<EmotionTelemetry>(createDefaultEmotionTelemetry())
@@ -158,6 +169,7 @@ const streamChunkSchedule = new Map<string, number>()
 let currentAudio: HTMLAudioElement | null = null
 let currentAudioSeq: number | null = null
 let audioPlaying = false
+const currentAudioActive = ref(false)
 let audioUnlockContext: AudioContext | null = null
 let audioUnlocked = false
 let activeStreamReplyId: string | null = null
@@ -288,6 +300,7 @@ function resetReplyMediaState() {
   currentAudio = null
   currentAudioSeq = null
   audioPlaying = false
+  currentAudioActive.value = false
   activeStreamReplyId = null
   streamNextStartTime = 0
   streamPlaybackStarted = false
@@ -315,6 +328,10 @@ function resetReplyMediaState() {
 function resetConversation() {
   visitorSessions.replaceActiveMessages([createWelcomeMessage()])
   assistantDraftId.value = null
+  activeReplyUserMessageId.value = null
+  activeReplyAssistantMessageId.value = null
+  replyCanceling.value = false
+  ignoreReplyEventsUntilCancelAck.value = false
   lastAsrPreview.value = ''
   latestEmotion.value = 'neutral'
   emotionTelemetry.value = createDefaultEmotionTelemetry()
@@ -347,6 +364,7 @@ function ensureAssistantDraft() {
     content: '',
     streaming: true,
   })
+  activeReplyAssistantMessageId.value = id
   return id
 }
 
@@ -361,6 +379,30 @@ function finalizeAssistantDraft() {
   }
 
   assistantDraftId.value = null
+}
+
+function startTrackedReplyTurn(userMessageId: string | null) {
+  activeReplyUserMessageId.value = userMessageId
+  activeReplyAssistantMessageId.value = null
+  replyCanceling.value = false
+  ignoreReplyEventsUntilCancelAck.value = false
+}
+
+function finishTrackedReplyTurn() {
+  activeReplyUserMessageId.value = null
+  activeReplyAssistantMessageId.value = null
+  replyCanceling.value = false
+  ignoreReplyEventsUntilCancelAck.value = false
+}
+
+function discardTrackedReplyTurn() {
+  messages.value = discardReplyMessages(messages.value, {
+    userMessageId: activeReplyUserMessageId.value,
+    assistantMessageId: activeReplyAssistantMessageId.value,
+  })
+  assistantDraftId.value = null
+  activeReplyUserMessageId.value = null
+  activeReplyAssistantMessageId.value = null
 }
 
 function patchLatestAssistantMessage(patch: Parameters<typeof attachAssistantMessageMeta>[2]) {
@@ -499,6 +541,7 @@ async function playNextAudio() {
   const phonemes = pendingPhonemes.get(nextAudio.seq)
   currentAudio = new Audio(nextAudio.url)
   currentAudioSeq = nextAudio.seq
+  currentAudioActive.value = true
   currentAudio.preload = 'auto'
   currentAudio.volume = 1
   currentAudio.setAttribute('playsinline', 'true')
@@ -508,6 +551,7 @@ async function playNextAudio() {
     currentAudio = null
     currentAudioSeq = null
     audioPlaying = false
+    currentAudioActive.value = false
     void playNextAudio()
   }
 
@@ -574,17 +618,27 @@ function pcm16ToFloat32(bytes: Uint8Array) {
   return samples
 }
 
-function removeScheduledSource(key: string) {
+function removeScheduledSource(key: string, context: AudioContext | null) {
   scheduledSources = scheduledSources.filter((item) => item.key !== key)
+
+  if (scheduledSources.length === 0 && pendingStreamAudio.length === 0) {
+    streamPlaybackStarted = false
+    streamNextStartTime = 0
+  }
+
+  updateStreamPlaybackTelemetry(context)
 }
 
 function updateStreamPlaybackTelemetry(context: AudioContext | null) {
-  playbackTelemetry.value = {
-    bufferedAudioMs: Math.round(pendingStreamAudio.reduce((sum, chunk) => sum + chunk.durationMs, 0)),
-    scheduledLeadMs:
-      context && streamPlaybackStarted ? getScheduledLeadMs(context.currentTime, streamNextStartTime) : 0,
+  playbackTelemetry.value = buildStreamPlaybackTelemetry({
+    bufferedAudioMs: pendingStreamAudio.reduce((sum, chunk) => sum + chunk.durationMs, 0),
+    pendingChunkCount: pendingStreamAudio.length,
+    scheduledSourceCount: scheduledSources.length,
+    playbackStarted: streamPlaybackStarted,
+    currentTime: context?.currentTime ?? null,
+    nextStartTime: streamNextStartTime,
     underrunCount: playbackTelemetry.value.underrunCount,
-  }
+  })
 }
 
 function applyStreamVisemes(payload: TtsVisemeChunkEvent, scheduledAt: number, context: AudioContext) {
@@ -633,7 +687,7 @@ function flushBufferedStreamAudio(context: AudioContext) {
 
     streamChunkSchedule.set(key, scheduledAt)
     scheduledSources.push({ key, source })
-    source.onended = () => removeScheduledSource(key)
+    source.onended = () => removeScheduledSource(key, context)
     streamNextStartTime = scheduledAt + buffer.duration
 
     const pending = pendingStreamVisemes.get(key)
@@ -751,6 +805,26 @@ function handleEmotion(payload: EmotionEvent) {
 }
 
 function handleSocketMessage(payload: ServerSocketMessage) {
+  if (payload.type === 'reply_cancelled') {
+    replyPending.value = false
+    replyCanceling.value = false
+    ignoreReplyEventsUntilCancelAck.value = false
+    finalizeAssistantDraft()
+    finishTrackedReplyTurn()
+    applyAvatarPhase({
+      type: 'avatar_phase',
+      phase: 'idle',
+      at_ms: Date.now(),
+      reason: payload.reason || 'reply_cancelled',
+    })
+    void refreshSessionsQuietly()
+    return
+  }
+
+  if (ignoreReplyEventsUntilCancelAck.value && shouldIgnoreReplyEventWhileCancelling(payload)) {
+    return
+  }
+
   if (payload.type === 'text_delta') {
     const draftId = ensureAssistantDraft()
     const target = messages.value.find((message) => message.id === draftId)
@@ -762,13 +836,15 @@ function handleSocketMessage(payload: ServerSocketMessage) {
   }
 
   if (payload.type === 'asr_result') {
+    const userMessageId = createMessageId('user-voice')
     lastAsrPreview.value = payload.content
     messages.value.push({
-      id: createMessageId('user-voice'),
+      id: userMessageId,
       role: 'user',
       content: payload.content,
       meta: '语音识别',
     })
+    activeReplyUserMessageId.value = userMessageId
     void scrollChatToEnd()
     return
   }
@@ -840,6 +916,7 @@ function handleSocketMessage(payload: ServerSocketMessage) {
   if (payload.type === 'done') {
     replyPending.value = false
     finalizeAssistantDraft()
+    finishTrackedReplyTurn()
     applyAvatarPhase({
       type: 'avatar_phase',
       phase: 'idle',
@@ -853,6 +930,9 @@ function handleSocketMessage(payload: ServerSocketMessage) {
 
 function handleSocketError(message: string) {
   replyPending.value = false
+  replyCanceling.value = false
+  ignoreReplyEventsUntilCancelAck.value = false
+  finishTrackedReplyTurn()
   pushSystemMessage(message)
   finalizeAssistantDraft()
   applyAvatarPhase({
@@ -916,8 +996,21 @@ const isReplyStreaming = computed(
       avatarSpeechActive: avatarSpeechActive.value,
       queuedAudioCount: queuedAudio.value.length,
       bufferedAudioMs: playbackTelemetry.value.bufferedAudioMs,
-      scheduledLeadMs: playbackTelemetry.value.scheduledLeadMs,
+        scheduledLeadMs: playbackTelemetry.value.scheduledLeadMs,
     }),
+)
+const canCancelReply = computed(() =>
+  hasCancellableReplyActivity({
+    replyPending: replyPending.value,
+    assistantDraftActive: assistantDraftId.value !== null,
+    avatarSpeechActive: avatarSpeechActive.value,
+    queuedAudioCount: queuedAudio.value.length,
+    bufferedAudioMs: playbackTelemetry.value.bufferedAudioMs,
+    scheduledLeadMs: playbackTelemetry.value.scheduledLeadMs,
+    currentAudioActive: currentAudioActive.value,
+    pendingStreamAudioCount: pendingStreamAudio.length,
+    scheduledSourceCount: scheduledSources.length,
+  }),
 )
 const isSessionSwitchBlocked = computed(
   () =>
@@ -942,10 +1035,20 @@ const sessionSwitchBlockedReason = computed(() => {
   return ''
 })
 const canSend = computed(
-  () => socket.state.value === 'connected' && composer.value.trim().length > 0 && !sessionBooting.value,
+  () =>
+    socket.state.value === 'connected' &&
+    composer.value.trim().length > 0 &&
+    !sessionBooting.value &&
+    !canCancelReply.value &&
+    !replyCanceling.value,
 )
 const canRecord = computed(
-  () => recorder.isSupported.value && socket.state.value === 'connected' && !sessionBooting.value,
+  () =>
+    recorder.isSupported.value &&
+    socket.state.value === 'connected' &&
+    !sessionBooting.value &&
+    !canCancelReply.value &&
+    !replyCanceling.value,
 )
 const meterScale = computed(() => Math.max(0.05, recorder.level.value))
 const avatarPresentation = computed(() =>
@@ -977,7 +1080,9 @@ const photoAttachmentDisabled = computed(
     !canUsePhotoAttachment({
       sessionBooting: sessionBooting.value,
       sessionsLoading: visitorSessions.loading.value,
-    }),
+    }) ||
+    canCancelReply.value ||
+    replyCanceling.value,
 )
 const quickHints = computed(() =>
   buildComposerQuickHints(composerMode.value, {
@@ -1048,7 +1153,17 @@ const avatarDisplayConfig = computed(() =>
   ),
 )
 const stageCardStyle = computed(() => buildStageHeightStyle(avatarDisplayConfig.value))
-const currentModelPath = computed(() => activeAvatarProfile.value?.modelPath || DEFAULT_MODEL_PATH)
+const currentModelPath = computed(() => {
+  if (avatarProfilesLoading.value && avatarProfiles.value.length === 0) {
+    return ''
+  }
+
+  const modelPath = activeAvatarProfile.value?.modelPath?.trim()
+  if (!modelPath || modelPath === LEGACY_BROKEN_MODEL_PATH) {
+    return DEFAULT_MODEL_PATH
+  }
+  return modelPath
+})
 const avatarSwitchDisabled = computed(
   () => avatarProfilesLoading.value || sessionBooting.value || isSessionSwitchBlocked.value,
 )
@@ -1162,18 +1277,21 @@ async function sendOutgoingText(
 
   void unlockAudioPlayback()
 
-  messages.value.push({
-    id: createMessageId(options.meta ? 'user-meta' : 'user'),
-    role: 'user',
-    content: normalized,
-    meta: options.meta,
-  })
-
   if (options.resetTurn ?? true) {
     resetReplyMediaState()
     beginLocalThinkingPhase()
     finalizeAssistantDraft()
+    finishTrackedReplyTurn()
   }
+
+  const userMessageId = createMessageId(options.meta ? 'user-meta' : 'user')
+  messages.value.push({
+    id: userMessageId,
+    role: 'user',
+    content: normalized,
+    meta: options.meta,
+  })
+  startTrackedReplyTurn(userMessageId)
 
   if (options.clearComposer) {
     composer.value = ''
@@ -1181,6 +1299,11 @@ async function sendOutgoingText(
 
   const sent = socket.send({ type: 'text', content: normalized })
   if (!sent) {
+    messages.value = discardReplyMessages(messages.value, {
+      userMessageId,
+      assistantMessageId: null,
+    })
+    finishTrackedReplyTurn()
     handleSocketError('文本消息发送失败，请稍后重试。')
     return false
   }
@@ -1212,8 +1335,29 @@ async function toggleRecording() {
   resetReplyMediaState()
   beginLocalThinkingPhase('voice_recording_started')
   finalizeAssistantDraft()
+  finishTrackedReplyTurn()
   replyPending.value = true
   await recorder.start()
+}
+
+async function cancelCurrentReply() {
+  if (!canCancelReply.value || replyCanceling.value) {
+    return
+  }
+
+  replyCanceling.value = true
+  ignoreReplyEventsUntilCancelAck.value = replyPending.value || assistantDraftId.value !== null
+  lastAsrPreview.value = ''
+  resetReplyMediaState()
+  discardTrackedReplyTurn()
+
+  const sent = socket.send({ type: 'cancel_reply' })
+  if (!sent) {
+    replyCanceling.value = false
+    ignoreReplyEventsUntilCancelAck.value = false
+  }
+
+  await scrollChatToEnd()
 }
 
 async function reconnectNow() {
@@ -1508,6 +1652,8 @@ onBeforeUnmount(() => {
 
         <div class="stage-card" :style="stageCardStyle">
           <Live2DStage
+            v-if="currentModelPath"
+            :key="currentModelPath"
             ref="live2dRef"
             :model-path="currentModelPath"
             :model-scale="avatarDisplayConfig.displayScale"
@@ -1611,6 +1757,7 @@ onBeforeUnmount(() => {
               :quick-hints="quickHints"
               :can-send="canSend"
               :can-record="canRecord"
+              :can-cancel-reply="canCancelReply"
               :composer-mode="composerMode"
               :can-attach-photo="!photoAttachmentDisabled"
               :can-toggle-route-mode="!!sessionId"
@@ -1628,6 +1775,7 @@ onBeforeUnmount(() => {
               @toggle-route-tag="handleToggleInterestTag"
               @generate-route="handleGenerateRecommendation"
               @pick-photo="handlePhotoPicked"
+              @cancel-reply="cancelCurrentReply"
               @send="sendText"
               @toggle-recording="toggleRecording"
             />

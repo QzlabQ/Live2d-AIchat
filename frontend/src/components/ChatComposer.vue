@@ -11,6 +11,7 @@ const props = withDefaults(
     quickHints: string[]
     canSend: boolean
     canRecord: boolean
+    canCancelReply?: boolean
     isRecording: boolean
     composerMode?: ComposerMode
     canAttachPhoto?: boolean
@@ -29,6 +30,7 @@ const props = withDefaults(
     composerMode: 'chat',
     canAttachPhoto: false,
     canToggleRouteMode: false,
+    canCancelReply: false,
     photoBusy: false,
     photoStatusTitle: '',
     photoStatusDetail: '',
@@ -46,6 +48,7 @@ const emit = defineEmits<{
   switchMode: [mode: ComposerMode]
   pickPhoto: [file: File]
   send: []
+  cancelReply: []
   toggleRecording: []
   toggleRouteTag: [tag: string]
   generateRoute: []
@@ -253,14 +256,27 @@ onBeforeUnmount(() => {
           </span>
           <button
             type="button"
-            class="record-button"
+            class="composer-action-button stop-button"
+            :disabled="!props.canCancelReply"
+            @click="emit('cancelReply')"
+          >
+            停止生成
+          </button>
+          <button
+            type="button"
+            class="composer-action-button record-button"
             :class="{ active: props.isRecording }"
             :disabled="!props.canRecord"
             @click="emit('toggleRecording')"
           >
             {{ props.isRecording ? '停止录音' : '开始录音' }}
           </button>
-          <button type="button" class="send-button" :disabled="!props.canSend" @click="emit('send')">
+          <button
+            type="button"
+            class="composer-action-button send-button"
+            :disabled="!props.canSend"
+            @click="emit('send')"
+          >
             发送文本
           </button>
         </div>

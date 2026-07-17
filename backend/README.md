@@ -218,6 +218,10 @@ RAG_RESPONSE_MODE=fast_humanized
 
 说明：服务器示例里 `TTS_COSYVOICE_ONNX_PROVIDER=cuda` 与 `TTS_COSYVOICE_LOAD_TRT=true` 适合继续保留，但分段阈值不建议再沿用旧的 `22 / 40 / 64`。那组值会减少 segment 数量，却会把单个 segment 拉得过长，容易在 CosyVoice 单段流式生成后半段触发明显退化。当前稳定推荐仍是 `12 / 20 / 28`，优先保证长句连续播放。
 
+补充说明：当前这条 `TTS_COSYVOICE_LOAD_TRT=true` 只表示 CosyVoice 的 flow 侧 TensorRT 路径已开启，不代表 AR speech-token LLM 也被 TRT 或 vLLM 加速。管理后台里的 `tts_ar_backend` / `tts_flow_backend` 会分别展示这两段链路的真实运行态。
+
+如果你使用的是 `V100`，当前默认不建议把 vLLM 作为第一轮优化手段。我们已经验证过在缺少 `flash attention` 的条件下，它可能比现有 PyTorch AR 路径更慢，因此现阶段仍以修正分段与核对 AR/flow 运行态为主。
+
 说明：`voice_id` 现在只作为兼容展示字段保留，真实发声由 `avatar_config` 中的参考音频、参考文本、语速和情感开关决定。
 
 ### 4060 本机策略

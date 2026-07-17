@@ -47,6 +47,10 @@ class AdminReplyTrace:
     torch_cuda_available: bool | None
     torch_device_name: str | None
     requested_onnx_provider: str | None
+    tts_cosyvoice_fp16: bool | None
+    tts_cosyvoice_load_jit: bool | None
+    tts_ar_backend: str | None
+    tts_flow_backend: str | None
     audio_chunk_count: int
     segment_count: int
     max_chunk_gap_ms: int
@@ -250,6 +254,14 @@ def _parse_reply_trace(payload: dict[str, Any]) -> AdminReplyTrace | None:
         else None,
         torch_device_name=_as_optional_str(payload.get("torch_device_name")),
         requested_onnx_provider=_as_optional_str(payload.get("requested_onnx_provider")),
+        tts_cosyvoice_fp16=payload.get("tts_cosyvoice_fp16")
+        if isinstance(payload.get("tts_cosyvoice_fp16"), bool)
+        else None,
+        tts_cosyvoice_load_jit=payload.get("tts_cosyvoice_load_jit")
+        if isinstance(payload.get("tts_cosyvoice_load_jit"), bool)
+        else None,
+        tts_ar_backend=_as_optional_str(payload.get("tts_ar_backend")),
+        tts_flow_backend=_as_optional_str(payload.get("tts_flow_backend")),
         audio_chunk_count=int(payload.get("audio_chunk_count") or 0),
         segment_count=int(payload.get("segment_count") or 0),
         max_chunk_gap_ms=int(payload.get("max_chunk_gap_ms") or 0),

@@ -70,6 +70,9 @@ interface VisitorAvatarProfileListResponseApi {
   items: VisitorAvatarProfileSummaryApi[]
 }
 
+const MODEL_FALLBACK_PATH = '/live2d/haru/haru_greeter_t03.model3.json'
+const LEGACY_BROKEN_MODEL_PATH = '/live2d/models/guide/guide.model3.json'
+
 function trimApiBaseUrl(apiBaseUrl: string) {
   return apiBaseUrl.replace(/\/+$/, '')
 }
@@ -125,12 +128,17 @@ function mapVisionRecognition(payload: VisionRecognitionResultApi): VisionRecogn
 function mapVisitorAvatarProfile(
   payload: VisitorAvatarProfileSummaryApi,
 ): VisitorAvatarProfileSummary {
+  const normalizedModelPath =
+    payload.model_path && payload.model_path !== LEGACY_BROKEN_MODEL_PATH
+      ? payload.model_path
+      : MODEL_FALLBACK_PATH
+
   return {
     id: payload.id,
     name: payload.name,
     slug: payload.slug,
     isActive: payload.is_active,
-    modelPath: payload.model_path,
+    modelPath: normalizedModelPath,
     displayScale: payload.display_scale,
     displayOffsetX: payload.display_offset_x,
     displayOffsetY: payload.display_offset_y,

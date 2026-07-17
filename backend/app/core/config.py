@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     analytics_scheduler_catchup_days: int = 2
     analytics_report_sample_sessions: int = 8
 
-    default_avatar_model_path: str = "/live2d/models/guide/guide.model3.json"
+    default_avatar_model_path: str = "/live2d/haru/haru_greeter_t03.model3.json"
     default_avatar_voice_id: str = "zh-CN-XiaoxiaoNeural"
     default_avatar_response_language: str = "zh"
     default_avatar_persona: str = (

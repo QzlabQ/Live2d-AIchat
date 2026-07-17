@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { recognizeVisitorPhoto } from './visitorApi'
+import { listVisitorAvatarProfiles, recognizeVisitorPhoto } from './visitorApi'
 
 const originalFetch = globalThis.fetch
 
@@ -59,5 +59,38 @@ describe('recognizeVisitorPhoto', () => {
         [],
       ),
     ).rejects.toThrow('Failed to recognize photo: Image file is empty.')
+  })
+})
+
+describe('listVisitorAvatarProfiles', () => {
+  it('falls back to Haru when the backend still returns the legacy broken guide path', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: 1,
+              name: '默认数字人',
+              slug: 'default-avatar',
+              is_active: true,
+              model_path: '/live2d/models/guide/guide.model3.json',
+              display_scale: 1,
+              display_offset_x: 0,
+              display_offset_y: 0,
+              stage_height: 420,
+              updated_at: '2026-07-17T05:39:12',
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    ) as typeof fetch
+
+    const response = await listVisitorAvatarProfiles('http://testserver/api/v1')
+
+    expect(response.items[0]?.modelPath).toBe('/live2d/haru/haru_greeter_t03.model3.json')
   })
 })

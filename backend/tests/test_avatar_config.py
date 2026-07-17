@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.api.routes.avatar import get_avatar_config, list_avatar_models, update_avatar_config
 from app.core.config import Settings
 from app.db.base import Base
+from app.db.seed import ensure_avatar_model_paths
 from app.db.migrations import (
     ensure_avatar_config_admin_columns,
     ensure_avatar_config_display_columns,
@@ -19,6 +21,7 @@ from app.db.migrations import (
 )
 from app.db.models import AvatarConfig, VoiceProfile
 from app.schemas.avatar import AvatarConfigUpdate, AvatarProfileCreate
+from app.services.live2d_models import PREFERRED_LIVE2D_MODEL_PATH
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -279,7 +282,7 @@ class AvatarConfigApiTestCase(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(raised.exception.status_code, 400)
                     self.assertEqual(
                         raised.exception.detail,
-                        'TTS reference audio must be inside the backend workspace.',
+                        'TTS reference audio must be inside the backend workspace or approved shared storage.',
                     )
             finally:
                 await engine.dispose()
@@ -332,6 +335,46 @@ class AvatarConfigApiTestCase(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(after.voice_id, 'Warm Guide')
                     self.assertEqual(after.tts_reference_text, '新的参考文本')
                     self.assertEqual(Path(after.tts_reference_audio_path).resolve(), prompt_wav.resolve())
+            finally:
+                await engine.dispose()
+
+    async def test_avatar_config_update_rejects_unknown_model_path(self) -> None:
+        with TemporaryDirectory() as temp_dir, TemporaryDirectory(dir=BACKEND_ROOT) as prompt_dir:
+            db_path = Path(temp_dir) / 'api.db'
+            engine = create_async_engine(f'sqlite+aiosqlite:///{db_path}')
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+            prompt_wav = Path(prompt_dir) / 'prompt.wav'
+            prompt_wav.write_bytes(b'fake wav')
+
+            try:
+                async with engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+
+                async with session_factory() as session:
+                    session.add(
+                        AvatarConfig(
+                            model_path='model',
+                            voice_id='voice',
+                            persona='persona',
+                            tts_reference_audio_path=str(prompt_wav),
+                            tts_reference_text='old text',
+                            tts_speed=1.0,
+                            tts_emotion_enabled=True,
+                        )
+                    )
+                    await session.commit()
+
+                    with self.assertRaises(HTTPException) as raised:
+                        await update_avatar_config(
+                            AvatarConfigUpdate(model_path='/live2d/models/guide/guide.model3.json'),
+                            db=session,
+                        )
+
+                    self.assertEqual(raised.exception.status_code, 400)
+                    self.assertEqual(
+                        raised.exception.detail,
+                        'Avatar model path is not available in frontend/public/live2d.',
+                    )
             finally:
                 await engine.dispose()
 
@@ -425,7 +468,7 @@ class AvatarConfigApiTestCase(unittest.IsolatedAsyncioTestCase):
                         name='Haru',
                         slug='haru',
                         is_active=True,
-                        model_path='/live2d/haru/haru.model3.json',
+                        model_path=PREFERRED_LIVE2D_MODEL_PATH,
                         voice_id='haru-voice',
                         persona='haru persona',
                         tts_reference_audio_path=str(prompt_wav),
@@ -440,7 +483,7 @@ class AvatarConfigApiTestCase(unittest.IsolatedAsyncioTestCase):
                     neuro = await create_avatar_profile(
                         AvatarProfileCreate(
                             name='Neuro',
-                            model_path='/live2d/neuro/neuro.model3.json',
+                            model_path=PREFERRED_LIVE2D_MODEL_PATH,
                             voice_id='neuro-voice',
                             response_language='en',
                             persona='neuro persona',
@@ -472,6 +515,49 @@ class AvatarConfigApiTestCase(unittest.IsolatedAsyncioTestCase):
                     haru_after = await get_avatar_config(session, profile_id=haru.id)
                     self.assertEqual(haru_after.persona, 'haru persona')
                     self.assertEqual(haru_after.tts_speed, 1.0)
+            finally:
+                await engine.dispose()
+
+    async def test_ensure_avatar_model_paths_repairs_invalid_stored_profile(self) -> None:
+        with TemporaryDirectory() as temp_dir, TemporaryDirectory(dir=BACKEND_ROOT) as prompt_dir:
+            db_path = Path(temp_dir) / 'repair.db'
+            engine = create_async_engine(f'sqlite+aiosqlite:///{db_path}')
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+            prompt_wav = Path(prompt_dir) / 'prompt.wav'
+            prompt_wav.write_bytes(b'fake wav')
+
+            try:
+                async with engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+
+                async with session_factory() as session:
+                    invalid_profile = AvatarConfig(
+                        name='Guide',
+                        slug='guide',
+                        is_active=True,
+                        model_path='/live2d/models/guide/guide.model3.json',
+                        voice_id='guide-voice',
+                        persona='guide persona',
+                        tts_reference_audio_path=str(prompt_wav),
+                        tts_reference_text='guide text',
+                        tts_speed=1.0,
+                        tts_emotion_enabled=True,
+                    )
+                    session.add(invalid_profile)
+                    await session.commit()
+                    await session.refresh(invalid_profile)
+                    profile_id = invalid_profile.id
+
+                with (
+                    patch('app.db.seed.AsyncSessionFactory', session_factory),
+                    patch('app.db.seed.discover_live2d_model_paths', return_value=[PREFERRED_LIVE2D_MODEL_PATH]),
+                ):
+                    await ensure_avatar_model_paths()
+
+                async with session_factory() as session:
+                    repaired = await get_avatar_config(session, profile_id=profile_id)
+
+                self.assertEqual(repaired.model_path, PREFERRED_LIVE2D_MODEL_PATH)
             finally:
                 await engine.dispose()
 

@@ -346,6 +346,10 @@ interface AdminReplyTraceApi {
   torch_cuda_available: boolean | null
   torch_device_name: string | null
   requested_onnx_provider: string | null
+  tts_cosyvoice_fp16: boolean | null
+  tts_cosyvoice_load_jit: boolean | null
+  tts_ar_backend: string | null
+  tts_flow_backend: string | null
   audio_chunk_count: number
   segment_count: number
   max_chunk_gap_ms: number
@@ -558,6 +562,10 @@ function mapAdminReplyTrace(payload: AdminReplyTraceApi): AdminReplyTrace {
     torchCudaAvailable: payload.torch_cuda_available,
     torchDeviceName: payload.torch_device_name,
     requestedOnnxProvider: payload.requested_onnx_provider,
+    ttsCosyvoiceFp16: payload.tts_cosyvoice_fp16,
+    ttsCosyvoiceLoadJit: payload.tts_cosyvoice_load_jit,
+    ttsArBackend: payload.tts_ar_backend,
+    ttsFlowBackend: payload.tts_flow_backend,
     audioChunkCount: payload.audio_chunk_count,
     segmentCount: payload.segment_count,
     maxChunkGapMs: payload.max_chunk_gap_ms,

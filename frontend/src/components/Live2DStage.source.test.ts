@@ -36,4 +36,12 @@ describe('Live2DStage source contracts', () => {
     expect(source).not.toContain('stopAllMotions()')
     expect(source).not.toContain('groups.idle')
   })
+
+  it('surfaces a friendly error when model settings resolve to html or invalid json', () => {
+    const source = readFileSync(new URL('./Live2DStage.vue', import.meta.url), 'utf8')
+
+    expect(source).toContain("contentType.includes('text/html')")
+    expect(source).toContain('返回了 HTML 页面，请检查模型路径或 nginx 的 /live2d/ 静态映射')
+    expect(source).toContain('模型配置不是有效的 JSON 文件')
+  })
 })

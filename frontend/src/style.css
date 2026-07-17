@@ -277,6 +277,7 @@ button {
 .status-pill,
 .hint-chip,
 .ghost-button,
+.composer-action-button,
 .record-button,
 .send-button {
   border: 0;
@@ -1034,6 +1035,7 @@ button {
 
 .hint-chip:hover,
 .ghost-button:hover,
+.composer-action-button:hover,
 .record-button:hover,
 .send-button:hover {
   transform: translateY(-1px);
@@ -1205,10 +1207,13 @@ button {
   transform: translateY(6px);
 }
 
-.record-button,
-.send-button {
+.composer-action-button {
   padding: 0.82rem 1.2rem;
   color: #fffdf5;
+}
+
+.stop-button {
+  background: linear-gradient(135deg, #c79082 0%, #d8a59a 100%);
 }
 
 .record-button {
@@ -1223,8 +1228,7 @@ button {
   background: linear-gradient(135deg, #123f59 0%, #226b92 100%);
 }
 
-.record-button:disabled,
-.send-button:disabled {
+.composer-action-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
   box-shadow: none;

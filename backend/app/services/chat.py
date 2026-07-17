@@ -134,10 +134,8 @@ class TTSSegmenter:
             return None
 
         buffer_len = len(self.buffer)
-        strong_within_hard = self._last_boundary_before(
-            TTS_STRONG_BOUNDARY_RE,
-            min(buffer_len, self.hard_max_chars),
-        )
+        hard_window = min(buffer_len, self.hard_max_chars)
+        strong_within_hard = self._last_boundary_before(TTS_STRONG_BOUNDARY_RE, hard_window)
         strong_any = self._last_boundary_before(TTS_STRONG_BOUNDARY_RE, buffer_len)
 
         # Prefer the latest sentence-ending boundary within the hard window, but
@@ -145,6 +143,19 @@ class TTSSegmenter:
         # amortizes per-segment TTS startup on longer replies.
         if strong_within_hard is not None and strong_within_hard >= self.soft_min_chars:
             return strong_within_hard
+
+        # Once the buffered reply exceeds the hard window we must choose a cut
+        # inside that window. Looking at the whole buffer here would allow a
+        # far-later comma to bypass hard_max_chars entirely.
+        if buffer_len > self.hard_max_chars:
+            soft_cut = self._last_boundary_before(TTS_SOFT_BOUNDARY_RE, self.hard_max_chars)
+            if soft_cut is not None and soft_cut >= self.soft_min_chars:
+                return soft_cut
+
+            fallback_cut = self._last_boundary_before(TTS_FALLBACK_BOUNDARY_RE, self.hard_max_chars)
+            if fallback_cut is not None and fallback_cut >= self.soft_min_chars // 2:
+                return fallback_cut
+            return self.hard_max_chars
 
         if buffer_len >= self.soft_min_chars:
             if force:
@@ -162,16 +173,6 @@ class TTSSegmenter:
                 soft_cut = self._last_boundary_before(TTS_SOFT_BOUNDARY_RE, buffer_len)
                 if soft_cut is not None and soft_cut >= self.soft_min_chars:
                     return soft_cut
-
-        if buffer_len > self.hard_max_chars:
-            soft_cut = self._last_boundary_before(TTS_SOFT_BOUNDARY_RE, self.hard_max_chars)
-            if soft_cut is not None and soft_cut >= self.soft_min_chars:
-                return soft_cut
-
-            fallback_cut = self._last_boundary_before(TTS_FALLBACK_BOUNDARY_RE, self.hard_max_chars)
-            if fallback_cut is not None and fallback_cut >= self.soft_min_chars // 2:
-                return fallback_cut
-            return self.hard_max_chars
 
         if force:
             if strong_any is not None:

@@ -20,11 +20,15 @@ from app.schemas.avatar import (
     MessageResponse,
 )
 from app.services.admin_auth import require_admin_auth
+from app.services.live2d_models import (
+    APP_ROOT,
+    LIVE2D_ROOT,
+    discover_live2d_model_entries,
+    discover_live2d_model_paths,
+)
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
-APP_ROOT = BACKEND_ROOT.parent
 PROJECT_ROOT = APP_ROOT.parent
-LIVE2D_ROOT = APP_ROOT / "frontend" / "public" / "live2d"
 
 router = APIRouter(prefix="/admin/avatar", dependencies=[Depends(require_admin_auth)])
 
@@ -96,19 +100,27 @@ def validate_reference_audio_path(value: str) -> str:
 
 
 def discover_live2d_models() -> list[Live2DModelOption]:
-    if not LIVE2D_ROOT.exists():
-        return []
+    return [
+        Live2DModelOption(path=entry.web_path, label=entry.label)
+        for entry in discover_live2d_model_entries(LIVE2D_ROOT)
+    ]
 
-    options: list[Live2DModelOption] = []
-    for model_path in sorted(LIVE2D_ROOT.rglob("*.model3.json")):
-        web_path = "/" + str(model_path.relative_to(APP_ROOT / "frontend" / "public")).replace("\\", "/")
-        options.append(
-            Live2DModelOption(
-                path=web_path,
-                label=model_path.parent.name,
-            )
+
+def validate_model_path(value: str) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Avatar model path must not be empty.",
         )
-    return options
+
+    available_paths = discover_live2d_model_paths(LIVE2D_ROOT)
+    if normalized not in available_paths:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Avatar model path is not available in frontend/public/live2d.",
+        )
+    return normalized
 
 
 def make_slug(value: str) -> str:
@@ -149,7 +161,7 @@ async def apply_avatar_payload(
         avatar.name = str(payload.name).strip() or avatar.name
 
     if payload.model_path is not None:
-        avatar.model_path = payload.model_path
+        avatar.model_path = validate_model_path(payload.model_path)
 
     if "voice_profile_id" in provided:
         if payload.voice_profile_id:
@@ -237,7 +249,7 @@ async def create_avatar_profile(
         name=payload.name.strip(),
         slug=await build_unique_slug(db, payload.name),
         is_active=False,
-        model_path=payload.model_path,
+        model_path=validate_model_path(payload.model_path),
         voice_id=payload.voice_id,
         voice_profile_id=None,
         response_language=payload.response_language,

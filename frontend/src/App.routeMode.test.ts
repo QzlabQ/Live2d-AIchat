@@ -17,6 +17,9 @@ describe('App route mode layout', () => {
     expect(composerSource).toContain('class="composer-mode-banner"')
     expect(composerSource).toContain('<InterestTagPanel')
     expect(composerSource).toContain("emit('generateRoute')")
+    expect(composerSource).toContain('class="composer-action-button stop-button"')
+    expect(composerSource).toContain('class="composer-action-button record-button"')
+    expect(composerSource).toContain('class="composer-action-button send-button"')
   })
 
   test('transcript source renders route recommendation card branch', () => {

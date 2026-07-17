@@ -292,6 +292,7 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.main.init_db", side_effect=fake_init_db),
             patch("app.main.ensure_default_avatar_config", side_effect=fake_seed),
+            patch("app.main.ensure_avatar_model_paths", side_effect=fake_seed),
             patch("app.main.ensure_default_voice_profile", side_effect=fake_seed),
             patch("app.main.get_tts_service", return_value=FakeTTSService()),
             patch("app.main.get_asr_service", return_value=FakeASRService()),
@@ -307,6 +308,7 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
             events,
             [
                 "init_db",
+                "seed",
                 "seed",
                 "seed",
                 "tts_warmup",
@@ -363,6 +365,7 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.main.init_db", side_effect=fake_init_db),
             patch("app.main.ensure_default_avatar_config", side_effect=fake_seed),
+            patch("app.main.ensure_avatar_model_paths", side_effect=fake_seed),
             patch("app.main.ensure_default_voice_profile", side_effect=fake_seed),
             patch("app.main.get_tts_service", return_value=FatalTTSService()),
             patch("app.main.get_asr_service", return_value=FakeASRService()),
@@ -375,7 +378,10 @@ class LifespanTraceTestCase(unittest.IsolatedAsyncioTestCase):
                 async with lifespan(SimpleNamespace()):
                     pass
 
-        self.assertEqual(events, ["init_db", "seed", "seed", "report_stop", "trace_stop", "shutdown_db"])
+        self.assertEqual(
+            events,
+            ["init_db", "seed", "seed", "seed", "report_stop", "trace_stop", "shutdown_db"],
+        )
 
 
 if __name__ == "__main__":

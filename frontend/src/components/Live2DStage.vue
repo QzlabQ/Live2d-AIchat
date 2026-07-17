@@ -327,6 +327,23 @@ function startBreathingLoop() {
   })
 }
 
+async function parseModelSettingsResponse(response: Response) {
+  if (!response.ok) {
+    throw new Error(`Live2D 模型配置加载失败：服务器返回 ${response.status}。`)
+  }
+
+  const contentType = (response.headers.get('content-type') || '').toLowerCase()
+  if (contentType.includes('text/html')) {
+    throw new Error('Live2D 模型配置加载失败：返回了 HTML 页面，请检查模型路径或 nginx 的 /live2d/ 静态映射。')
+  }
+
+  try {
+    return (await response.json()) as ModelSettings
+  } catch {
+    throw new Error('Live2D 模型配置加载失败：模型配置不是有效的 JSON 文件。')
+  }
+}
+
 async function createModel() {
   if (!stageHost.value) {
     return
@@ -338,11 +355,7 @@ async function createModel() {
 
   window.PIXI = PIXI
   const response = await fetch(props.modelPath)
-  if (!response.ok) {
-    throw new Error(`Unable to load model settings: ${response.status}`)
-  }
-
-  const settings = (await response.json()) as ModelSettings
+  const settings = await parseModelSettingsResponse(response)
   settings.url = props.modelPath
   availableMotionGroups = new Set(Object.keys(settings.FileReferences?.Motions ?? {}))
   lastTriggeredMotionKey = ''
@@ -452,7 +465,8 @@ async function loadModel() {
   try {
     await createModel()
   } catch (error) {
-    loadError.value = error instanceof Error ? error.message : 'Live2D model loading failed.'
+    loadError.value =
+      error instanceof Error ? error.message : 'Live2D 模型加载失败，请检查当前数字人资源配置。'
   } finally {
     loading.value = false
   }

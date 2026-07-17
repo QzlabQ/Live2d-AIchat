@@ -10,7 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.api.ws_router import websocket_router
 from app.core.config import get_settings
-from app.db.seed import ensure_default_avatar_config, ensure_default_voice_profile
+from app.db.seed import (
+    ensure_avatar_model_paths,
+    ensure_default_avatar_config,
+    ensure_default_voice_profile,
+)
 from app.db.session import init_db, shutdown_db
 from app.services.asr import get_asr_service
 from app.services.avatar_trace import get_avatar_trace_service
@@ -28,6 +32,7 @@ async def lifespan(_: FastAPI):
     try:
         await init_db()
         await ensure_default_avatar_config()
+        await ensure_avatar_model_paths()
         await ensure_default_voice_profile()
         await asyncio.to_thread(get_tts_service().warmup)
         await get_asr_service().warmup()

@@ -40,6 +40,10 @@ class AdminReplyTraceResponse(BaseModel):
     torch_cuda_available: bool | None = None
     torch_device_name: str | None = None
     requested_onnx_provider: str | None = None
+    tts_cosyvoice_fp16: bool | None = None
+    tts_cosyvoice_load_jit: bool | None = None
+    tts_ar_backend: str | None = None
+    tts_flow_backend: str | None = None
     audio_chunk_count: int
     segment_count: int
     max_chunk_gap_ms: int

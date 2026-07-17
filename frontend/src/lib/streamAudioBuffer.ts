@@ -11,6 +11,22 @@ export interface BufferedPlaybackState {
   isFinalChunkBuffered: boolean;
 }
 
+export interface StreamPlaybackTelemetryState {
+  bufferedAudioMs: number;
+  pendingChunkCount: number;
+  scheduledSourceCount: number;
+  playbackStarted: boolean;
+  currentTime: number | null;
+  nextStartTime: number;
+  underrunCount: number;
+}
+
+export interface StreamPlaybackTelemetrySnapshot {
+  bufferedAudioMs: number;
+  scheduledLeadMs: number;
+  underrunCount: number;
+}
+
 export type StreamAudioPolicyProfile = 'low-latency' | 'balanced' | 'stable';
 
 export const STREAM_AUDIO_POLICIES: Record<StreamAudioPolicyProfile, StreamAudioPolicy> = {
@@ -82,4 +98,22 @@ export function shouldResetBufferedPlayback(
 
 export function getScheduledLeadMs(currentTime: number, nextStartTime: number) {
   return Math.max(0, Math.round((nextStartTime - currentTime) * 1000));
+}
+
+export function buildStreamPlaybackTelemetry(
+  state: StreamPlaybackTelemetryState,
+): StreamPlaybackTelemetrySnapshot {
+  const hasBufferedOrScheduledAudio =
+    state.pendingChunkCount > 0 || state.scheduledSourceCount > 0;
+
+  return {
+    bufferedAudioMs: Math.round(state.bufferedAudioMs),
+    scheduledLeadMs:
+      state.currentTime !== null &&
+      state.playbackStarted &&
+      hasBufferedOrScheduledAudio
+        ? getScheduledLeadMs(state.currentTime, state.nextStartTime)
+        : 0,
+    underrunCount: state.underrunCount,
+  };
 }

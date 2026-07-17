@@ -3,7 +3,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.api.ws_router import ClientCapabilities, process_audio_buffer, stream_assistant_reply
+from app.api.ws_router import (
+    ClientCapabilities,
+    process_audio_buffer,
+    process_text_message,
+    stream_assistant_reply,
+)
 from app.core.config import Settings
 from app.services.asr import ASRTranscriptionResult
 from app.services.chat import RAGGuideChatService, ReplyStreamEvent, TTSSegmenter
@@ -53,6 +58,32 @@ class TTSSegmenterTestCase(unittest.TestCase):
         self.assertGreaterEqual(len(segments), 2)
         self.assertTrue(segments[0].endswith("，"))
         self.assertLessEqual(len(segments[0]), 25)
+
+    def test_hard_limit_still_applies_when_entire_reply_arrives_in_one_piece(self) -> None:
+        segmenter = TTSSegmenter(soft_min_chars=12, soft_max_chars=20, hard_max_chars=28)
+        text = (
+            '唐贞观年间，玄奘法师西行取经归来，携大乘佛法东传，途经马山时，见此地"层峦丛翠，'
+            '曲水净秀，山形酷似印度灵鹫山"，顿觉此地与佛法渊源深厚，遂将所译《大般若经》中的'
+            '"灵鹫胜境"之名赐予此地，命名为"小灵山"，并嘱咐大弟子窥基法师在此住持道场，'
+            '兴建小灵山庵，奠定了此地的佛教根基。灵山胜境坐落于江苏省无锡市太湖西北部的马山镇，'
+            '地处秦履峰、青龙山、白虎山三山环抱之间，占地面积约30万平方米，是国家5A级旅游景区、'
+            '世界佛教论坛永久会址，被誉为"东方佛国"和"太湖佛国"。'
+        )
+
+        segments = segmenter.feed(text) + segmenter.flush()
+
+        self.assertGreater(len(segments), 2)
+        self.assertTrue(all(len(segment) <= 28 for segment in segments))
+
+    def test_flush_keeps_hard_splitting_overlong_tail(self) -> None:
+        segmenter = TTSSegmenter(soft_min_chars=12, soft_max_chars=20, hard_max_chars=28)
+        text = "甲" * 65
+        segmenter.buffer = text
+
+        segments = segmenter.flush()
+
+        self.assertEqual("".join(segments), text)
+        self.assertEqual([len(segment) for segment in segments], [28, 28, 9])
 
     def test_v100_segmenter_merges_short_sentence_into_later_strong_boundary(self) -> None:
         segmenter = TTSSegmenter(soft_min_chars=24, soft_max_chars=56, hard_max_chars=96)
@@ -697,6 +728,7 @@ class ProcessAudioBufferTestCase(unittest.IsolatedAsyncioTestCase):
             *,
             started_at: float | None = None,
             initial_metrics: dict[str, int] | None = None,
+            send_lock: asyncio.Lock | None = None,
         ) -> None:
             captured["session_id"] = session_id
             captured["content"] = content
@@ -711,7 +743,7 @@ class ProcessAudioBufferTestCase(unittest.IsolatedAsyncioTestCase):
                 websocket=websocket,
                 db_session=object(),
                 session_id="session-audio",
-                audio_buffer=bytearray(b"\x01\x00\x02\x00"),
+                audio_data=b"\x01\x00\x02\x00",
                 capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
             )
 
@@ -872,6 +904,55 @@ class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):
             return value
 
         return _inner
+
+
+class ProcessTextMessageTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_reply_does_not_persist_user_or_assistant_messages(self) -> None:
+        avatar = SimpleNamespace(
+            persona="guide",
+            response_language="zh",
+            voice_id="voice",
+            tts_reference_audio_path="prompt.wav",
+            tts_reference_text="prompt text",
+            tts_speed=1.0,
+            tts_emotion_enabled=True,
+        )
+        quick_emotion = EmotionAnalysis(
+            label="thinking",
+            confidence=0.72,
+            keywords=["首次来访"],
+            reason="quick emotion",
+            source="heuristic",
+        )
+        save_message_mock = AsyncMock()
+
+        with (
+            patch("app.api.ws_router.get_chat_service", return_value=SimpleNamespace()),
+            patch("app.api.ws_router.get_tts_service", return_value=SimpleNamespace()),
+            patch("app.api.ws_router.get_avatar_config", AsyncMock(return_value=avatar)),
+            patch("app.api.ws_router.load_recent_history", AsyncMock(return_value=[])),
+            patch("app.api.ws_router.get_active_clarification_state", AsyncMock(return_value=None)),
+            patch(
+                "app.api.ws_router.get_emotion_analyzer",
+                return_value=SimpleNamespace(analyze_quick=lambda user_text: quick_emotion),
+            ),
+            patch(
+                "app.api.ws_router.stream_assistant_reply",
+                AsyncMock(side_effect=asyncio.CancelledError()),
+            ),
+            patch("app.api.ws_router.save_message", save_message_mock),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await process_text_message(
+                    websocket=SimpleNamespace(),
+                    db_session=SimpleNamespace(),
+                    session_id="session-1",
+                    content="这轮先取消",
+                    capabilities=ClientCapabilities(tts_streaming=True, audio_format="pcm16le"),
+                    send_lock=asyncio.Lock(),
+                )
+
+        save_message_mock.assert_not_awaited()
 
 
 if __name__ == "__main__":

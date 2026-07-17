@@ -77,11 +77,16 @@ export interface SocketPingMessage {
   type: 'ping'
 }
 
+export interface SocketCancelReplyMessage {
+  type: 'cancel_reply'
+}
+
 export type ClientSocketMessage =
   | SocketHelloMessage
   | SocketTextMessage
   | SocketAudioChunkMessage
   | SocketAudioEndMessage
+  | SocketCancelReplyMessage
   | SocketPingMessage
 
 export interface TextDeltaEvent {
@@ -185,6 +190,13 @@ export interface AudioDoneEvent {
   reply_id: string
 }
 
+export interface ReplyCancelledEvent {
+  type: 'reply_cancelled'
+  session_id: string
+  had_active_reply: boolean
+  reason?: string
+}
+
 export interface ErrorEvent {
   type: 'error'
   code: string
@@ -208,6 +220,7 @@ export type ServerSocketMessage =
   | SourcesEvent
   | TextDoneEvent
   | AudioDoneEvent
+  | ReplyCancelledEvent
   | DoneEvent
   | ErrorEvent
   | PongEvent
