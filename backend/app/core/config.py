@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_model: str = "qwen3.7-plus"
     dashscope_vl_model: str = "qwen-vl-max"
+    # Qwen3 系列默认开启 thinking，会先生成一整段 <think> 推理再出正文，
+    # 首 token 因此被拖慢数秒。RAG 导览场景不需要显式推理链，默认关闭。
+    dashscope_enable_thinking: bool = False
     visitor_upload_dir: str = "./storage/uploads/visitor"
     visitor_image_max_bytes: int = 6 * 1024 * 1024
 

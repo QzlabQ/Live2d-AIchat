@@ -55,6 +55,7 @@ class EmotionAnalyzer:
             "model": self.settings.dashscope_model,
             "temperature": 0.1,
             "max_tokens": 220,
+            "enable_thinking": self.settings.dashscope_enable_thinking,
             "messages": [
                 {
                     "role": "system",

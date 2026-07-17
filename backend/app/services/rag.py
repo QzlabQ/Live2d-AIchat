@@ -276,6 +276,7 @@ class DashScopeChatCompletionsClient:
             "messages": messages,
             "temperature": self.settings.rag_generation_temperature,
             "max_tokens": self.settings.rag_generation_max_tokens,
+            "enable_thinking": self.settings.dashscope_enable_thinking,
         }
         headers = {
             "Authorization": f"Bearer {self.settings.dashscope_api_key}",
@@ -305,6 +306,7 @@ class DashScopeChatCompletionsClient:
             "temperature": self.settings.rag_generation_temperature,
             "max_tokens": self.settings.rag_generation_max_tokens,
             "stream": True,
+            "enable_thinking": self.settings.dashscope_enable_thinking,
         }
         headers = {
             "Authorization": f"Bearer {self.settings.dashscope_api_key}",
@@ -390,7 +392,6 @@ class ScenicRAGService:
 
     async def answer(
         self,
-            "enable_thinking": False,
         question: str,
         persona: str | None = None,
         response_language: str | None = None,
@@ -421,7 +422,6 @@ class ScenicRAGService:
             sources=prepared.sources,
             confidence=prepared.confidence,
             used_llm=prepared.used_llm,
-            "enable_thinking": False,
         )
 
         query = normalize_question(question)

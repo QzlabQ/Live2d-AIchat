@@ -381,6 +381,7 @@ class DailyEmotionReportService:
             "model": self.settings.dashscope_model,
             "temperature": 0.2,
             "max_tokens": 260,
+            "enable_thinking": self.settings.dashscope_enable_thinking,
             "messages": [
                 {
                     "role": "system",
