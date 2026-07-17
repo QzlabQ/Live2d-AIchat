@@ -84,6 +84,7 @@ async def get_admin_session_detail(
                 segment_count=item.segment_count,
                 max_chunk_gap_ms=item.max_chunk_gap_ms,
                 metrics=item.metrics,
+                tts_chunks=item.tts_chunks,
             )
             for item in detail.reply_traces
         ],

@@ -130,7 +130,7 @@ mkdir -p /opt/ai-chat-live2d/deploy/nginx
 cp /opt/ai-chat-live2d/app/deploy/nginx/default.conf /opt/ai-chat-live2d/deploy/nginx/default.conf
 ```
 
-如果你这台服务器是 V100，并且你更在意流式 TTS 连续播放稳定性，可以把第二行替换成：
+如果你这台服务器是 V100，并且你需要直接启用 ONNX CUDA + TRT 路径，可以把第二行替换成：
 
 ```bash
 cp /opt/ai-chat-live2d/app/deploy/backend.env.v100.example /opt/ai-chat-live2d/deploy/backend.env
@@ -142,9 +142,11 @@ cp /opt/ai-chat-live2d/app/deploy/backend.env.v100.example /opt/ai-chat-live2d/d
 - `TTS_COSYVOICE_LOAD_TRT=true`
 - `TTS_COSYVOICE_TRT_CONCURRENT=1`
 - `TTS_STREAM_PROFILE=stable`
-- `TTS_SEGMENT_SOFT_MIN_CHARS=22`
-- `TTS_SEGMENT_SOFT_MAX_CHARS=40`
-- `TTS_SEGMENT_HARD_MAX_CHARS=64`
+- `TTS_SEGMENT_SOFT_MIN_CHARS=12`
+- `TTS_SEGMENT_SOFT_MAX_CHARS=20`
+- `TTS_SEGMENT_HARD_MAX_CHARS=28`
+
+这里要特别注意：旧版 V100 调参文档里曾经用过 `22 / 40 / 64` 这组更长的 TTS 分段阈值，它会减少分段数量，但也会显著放大长句在单个 segment 内的 `token_wait_ms` 与 `token2wav_ms` 退化。当前测试服务器如果要优先避免长句断流，建议继续使用 `12 / 20 / 28`，不要因为沿用了老的 `backend.env` 而误以为那是稳定默认值。
 
 然后至少修改这几个值：
 

@@ -123,9 +123,11 @@ class ReplyTrace:
             self.tts_vendor_session_count += 1
         duration_ms = max(int(audio_duration_ms), 0)
         self._last_audio_chunk_duration_ms = duration_ms
-        rtf = round(float(model_ready_ms) / duration_ms, 3) if duration_ms > 0 else 0.0
         chunk_token_wait_ms = max(int(token_wait_ms), 0)
         chunk_token2wav_ms = max(int(token2wav_ms), 0)
+        chunk_generate_ms = chunk_token_wait_ms + chunk_token2wav_ms
+        ready_ratio = round(float(model_ready_ms) / duration_ms, 3) if duration_ms > 0 else 0.0
+        real_rtf = round(float(duration_ms) / chunk_generate_ms, 3) if chunk_generate_ms > 0 else 0.0
         chunk_supply_lag_ms = int(gap_ms - previous_audio_ms) if self.tts_chunks else 0
         self.metrics["tts_total_token_wait_ms"] = self.metrics.get("tts_total_token_wait_ms", 0) + chunk_token_wait_ms
         self.metrics["tts_total_token2wav_ms"] = (
@@ -148,7 +150,9 @@ class ReplyTrace:
                 "tts_model_ready_ms": int(model_ready_ms),
                 "tts_ws_send_lag_ms": int(send_lag_ms),
                 "tts_chunk_gap_ms": int(max(gap_ms, 0)),
-                "tts_chunk_rtf": rtf,
+                "tts_chunk_rtf": ready_ratio,
+                "tts_chunk_ready_ratio": ready_ratio,
+                "tts_chunk_real_rtf": real_rtf,
                 "token_wait_ms": chunk_token_wait_ms,
                 "token2wav_ms": chunk_token2wav_ms,
                 "hop_len": int(max(hop_len, 0)),

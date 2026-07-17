@@ -1507,6 +1507,58 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.admin-trace-chunk-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-trace-chunk-header {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.admin-trace-chunk-header span {
+  color: #60788e;
+  font-size: 0.86rem;
+}
+
+.admin-trace-chunk-table-wrap {
+  overflow: auto;
+  border-radius: 14px;
+  border: 1px solid rgba(71, 98, 124, 0.1);
+  background: #fbfdff;
+}
+
+.admin-trace-chunk-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.admin-trace-chunk-table th,
+.admin-trace-chunk-table td {
+  padding: 0.72rem 0.8rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(71, 98, 124, 0.08);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.admin-trace-chunk-table th {
+  color: #60788e;
+  font-size: 0.8rem;
+  background: rgba(238, 245, 251, 0.95);
+}
+
+.admin-trace-chunk-table td {
+  color: #17324a;
+  font-size: 0.9rem;
+}
+
+.admin-trace-chunk-table tr[data-final='true'] td {
+  background: rgba(77, 129, 179, 0.06);
+}
+
 .admin-badge[data-role='assistant'] {
   background: rgba(61, 137, 212, 0.14);
   color: #1f67a6;

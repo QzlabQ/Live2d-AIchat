@@ -96,6 +96,8 @@ class ReplyTraceTestCase(unittest.TestCase):
                     "tts_ws_send_lag_ms": 7,
                     "tts_chunk_gap_ms": 0,
                     "tts_chunk_rtf": 0.358,
+                    "tts_chunk_ready_ratio": 0.358,
+                    "tts_chunk_real_rtf": 0.0,
                     "token_wait_ms": 0,
                     "token2wav_ms": 0,
                     "hop_len": 0,
@@ -105,6 +107,34 @@ class ReplyTraceTestCase(unittest.TestCase):
                 }
             ],
         )
+
+    def test_observe_tts_chunk_records_real_rtf_from_wait_and_token2wav(self) -> None:
+        trace = ReplyTrace(
+            reply_id="reply-2b",
+            session_id="session-2b",
+            streaming=True,
+            chat_mode="rag",
+            tts_engine="cosyvoice",
+        )
+
+        trace.observe_tts_chunk(
+            seq=0,
+            chunk_index=1,
+            sent_at_ms=600,
+            audio_duration_ms=4000,
+            model_ready_ms=6200,
+            send_lag_ms=11,
+            token_wait_ms=5200,
+            token2wav_ms=1000,
+        )
+
+        payload = trace.to_payload()
+
+        self.assertEqual(payload["metrics"]["tts_total_token_wait_ms"], 5200)
+        self.assertEqual(payload["metrics"]["tts_total_token2wav_ms"], 1000)
+        self.assertEqual(payload["tts_chunks"][0]["tts_chunk_rtf"], 1.55)
+        self.assertEqual(payload["tts_chunks"][0]["tts_chunk_ready_ratio"], 1.55)
+        self.assertEqual(payload["tts_chunks"][0]["tts_chunk_real_rtf"], 0.645)
 
     def test_runtime_and_prompt_cache_snapshots_are_serialized(self) -> None:
         trace = ReplyTrace(

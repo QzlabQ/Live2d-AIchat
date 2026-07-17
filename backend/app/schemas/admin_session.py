@@ -44,6 +44,7 @@ class AdminReplyTraceResponse(BaseModel):
     segment_count: int
     max_chunk_gap_ms: int
     metrics: dict[str, int]
+    tts_chunks: list[dict[str, object]]
 
 
 class AdminReplyTraceSummaryResponse(BaseModel):

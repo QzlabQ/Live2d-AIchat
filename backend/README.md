@@ -205,16 +205,18 @@ CHAT_MODE=rag
 RAG_RESPONSE_MODE=fast_humanized
 ```
 
-如果你是在 V100 这类显存更宽裕、并且更重视连续播放稳定性的服务器上部署，建议直接参考 `../deploy/backend.env.v100.example`：
+如果你是在 V100 这类显存更宽裕、并且更重视 TensorRT / ONNX GPU 路径的服务器上部署，建议直接参考 `../deploy/backend.env.v100.example`：
 
 - `TTS_COSYVOICE_ONNX_PROVIDER=cuda`
 - `TTS_COSYVOICE_LOAD_TRT=true`
 - `TTS_COSYVOICE_TRT_CONCURRENT=1`
 - `TTS_STREAM_PROFILE=stable`
-- `TTS_SEGMENT_SOFT_MIN_CHARS=22`
-- `TTS_SEGMENT_SOFT_MAX_CHARS=40`
-- `TTS_SEGMENT_HARD_MAX_CHARS=64`
+- `TTS_SEGMENT_SOFT_MIN_CHARS=12`
+- `TTS_SEGMENT_SOFT_MAX_CHARS=20`
+- `TTS_SEGMENT_HARD_MAX_CHARS=28`
 - 首次部署前先预构建或加载 `flow.decoder.estimator.fp16.mygpu.plan`
+
+说明：服务器示例里 `TTS_COSYVOICE_ONNX_PROVIDER=cuda` 与 `TTS_COSYVOICE_LOAD_TRT=true` 适合继续保留，但分段阈值不建议再沿用旧的 `22 / 40 / 64`。那组值会减少 segment 数量，却会把单个 segment 拉得过长，容易在 CosyVoice 单段流式生成后半段触发明显退化。当前稳定推荐仍是 `12 / 20 / 28`，优先保证长句连续播放。
 
 说明：`voice_id` 现在只作为兼容展示字段保留，真实发声由 `avatar_config` 中的参考音频、参考文本、语速和情感开关决定。
 

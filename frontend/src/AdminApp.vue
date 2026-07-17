@@ -130,6 +130,19 @@ interface SessionTraceMetricDefinition {
   label: string
 }
 
+interface SessionTraceChunkMetric {
+  seq: number
+  chunkIndex: number
+  tokenOffset: number
+  tokenWaitMs: number | null
+  token2wavMs: number | null
+  audioMs: number | null
+  supplyLagMs: number | null
+  realRtf: number | null
+  readyRatio: number | null
+  isFinal: boolean
+}
+
 const API_BASE_URL = getAdminApiBaseUrl()
 const TOKEN_STORAGE_KEY = 'ai-chat-live2d.admin.token'
 const MODEL_FALLBACK = '/live2d/haru/haru_greeter_t03.model3.json'
@@ -152,6 +165,7 @@ const SESSION_TRACE_METRICS: SessionTraceMetricDefinition[] = [
   { key: 'tts_first_audio_chunk_ms', label: '首包音频' },
   { key: 'audio_done_ms', label: '音频完成' },
 ] as const
+const SESSION_TRACE_CHUNK_LIMIT = 12
 const ADMIN_PAGES: AdminPageMeta[] = [
   {
     key: 'overview',
@@ -1811,6 +1825,45 @@ function sessionTraceMetricEntries(trace: AdminReplyTrace) {
   })).filter((item) => item.value !== null)
 }
 
+function readTraceChunkNumber(
+  chunk: Record<string, number | string | boolean | null>,
+  key: string,
+) {
+  const value = chunk[key]
+  return typeof value === 'number' && !Number.isNaN(value) ? value : null
+}
+
+function readTraceChunkBoolean(
+  chunk: Record<string, number | string | boolean | null>,
+  key: string,
+) {
+  const value = chunk[key]
+  return typeof value === 'boolean' ? value : false
+}
+
+function sessionTraceChunkMetrics(trace: AdminReplyTrace): SessionTraceChunkMetric[] {
+  return trace.ttsChunks.slice(0, SESSION_TRACE_CHUNK_LIMIT).map((chunk) => ({
+    seq: readTraceChunkNumber(chunk, 'seq') ?? 0,
+    chunkIndex: readTraceChunkNumber(chunk, 'chunk_index') ?? 0,
+    tokenOffset: readTraceChunkNumber(chunk, 'token_offset') ?? 0,
+    tokenWaitMs: readTraceChunkNumber(chunk, 'token_wait_ms'),
+    token2wavMs: readTraceChunkNumber(chunk, 'token2wav_ms'),
+    audioMs: readTraceChunkNumber(chunk, 'tts_chunk_audio_ms'),
+    supplyLagMs: readTraceChunkNumber(chunk, 'chunk_supply_lag_ms'),
+    realRtf: readTraceChunkNumber(chunk, 'tts_chunk_real_rtf'),
+    readyRatio:
+      readTraceChunkNumber(chunk, 'tts_chunk_ready_ratio') ?? readTraceChunkNumber(chunk, 'tts_chunk_rtf'),
+    isFinal: readTraceChunkBoolean(chunk, 'is_final'),
+  }))
+}
+
+function formatRatio(value: number | null | undefined) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '--'
+  }
+  return `${value.toFixed(2)}x`
+}
+
 function traceRuntimeBadges(trace: AdminReplyTrace) {
   const badges: string[] = []
   badges.push(trace.streaming ? 'Streaming' : 'Non-streaming')
@@ -3213,6 +3266,45 @@ async function handleHashChange() {
                         >
                           <span>{{ metric.label }}</span>
                           <strong>{{ formatLatency(metric.value) }}</strong>
+                        </div>
+                      </div>
+
+                      <div v-if="sessionTraceChunkMetrics(trace).length" class="admin-trace-chunk-panel">
+                        <div class="admin-trace-chunk-header">
+                          <strong>Chunk 级诊断</strong>
+                          <span>优先看 `token_wait_ms`、`token2wav_ms`、`chunk_supply_lag_ms` 和真实 RTF</span>
+                        </div>
+                        <div class="admin-trace-chunk-table-wrap">
+                          <table class="admin-trace-chunk-table">
+                            <thead>
+                              <tr>
+                                <th>seq/chunk</th>
+                                <th>offset</th>
+                                <th>wait</th>
+                                <th>token2wav</th>
+                                <th>audio</th>
+                                <th>supply lag</th>
+                                <th>real RTF</th>
+                                <th>ready ratio</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr
+                                v-for="chunk in sessionTraceChunkMetrics(trace)"
+                                :key="`${trace.replyId}-${chunk.seq}-${chunk.chunkIndex}`"
+                                :data-final="chunk.isFinal"
+                              >
+                                <td>{{ chunk.seq }} / {{ chunk.chunkIndex }}{{ chunk.isFinal ? ' final' : '' }}</td>
+                                <td>{{ chunk.tokenOffset }}</td>
+                                <td>{{ formatLatency(chunk.tokenWaitMs) }}</td>
+                                <td>{{ formatLatency(chunk.token2wavMs) }}</td>
+                                <td>{{ formatLatency(chunk.audioMs) }}</td>
+                                <td>{{ formatLatency(chunk.supplyLagMs) }}</td>
+                                <td>{{ formatRatio(chunk.realRtf) }}</td>
+                                <td>{{ formatRatio(chunk.readyRatio) }}</td>
+                              </tr>
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     </article>

@@ -51,6 +51,7 @@ class AdminReplyTrace:
     segment_count: int
     max_chunk_gap_ms: int
     metrics: dict[str, int]
+    tts_chunks: list[dict[str, Any]]
 
 
 @dataclass(slots=True)
@@ -253,6 +254,7 @@ def _parse_reply_trace(payload: dict[str, Any]) -> AdminReplyTrace | None:
         segment_count=int(payload.get("segment_count") or 0),
         max_chunk_gap_ms=int(payload.get("max_chunk_gap_ms") or 0),
         metrics=metrics,
+        tts_chunks=_parse_trace_chunks(payload.get("tts_chunks")),
     )
 
 
@@ -261,3 +263,25 @@ def _as_optional_str(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _parse_trace_chunks(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        chunk: dict[str, Any] = {}
+        for key, raw in item.items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(raw, bool):
+                chunk[key] = raw
+                continue
+            if isinstance(raw, (int, float, str)) or raw is None:
+                chunk[key] = raw
+        if chunk:
+            normalized.append(chunk)
+    return normalized

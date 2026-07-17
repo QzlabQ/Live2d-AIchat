@@ -350,6 +350,7 @@ interface AdminReplyTraceApi {
   segment_count: number
   max_chunk_gap_ms: number
   metrics: Record<string, number>
+  tts_chunks: Record<string, number | string | boolean | null>[]
 }
 
 interface AdminReplyTraceSummaryApi {
@@ -561,6 +562,7 @@ function mapAdminReplyTrace(payload: AdminReplyTraceApi): AdminReplyTrace {
     segmentCount: payload.segment_count,
     maxChunkGapMs: payload.max_chunk_gap_ms,
     metrics: payload.metrics ?? {},
+    ttsChunks: payload.tts_chunks ?? [],
   }
 }
 

@@ -300,6 +300,21 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
                             "audio_chunk_count": 4,
                             "segment_count": 1,
                             "max_chunk_gap_ms": 3200,
+                            "tts_chunks": [
+                                {
+                                    "seq": 0,
+                                    "chunk_index": 0,
+                                    "token_offset": 0,
+                                    "token_wait_ms": 1800,
+                                    "token2wav_ms": 600,
+                                    "tts_chunk_audio_ms": 1000,
+                                    "chunk_supply_lag_ms": 0,
+                                    "tts_chunk_rtf": 2.4,
+                                    "tts_chunk_ready_ratio": 2.4,
+                                    "tts_chunk_real_rtf": 0.417,
+                                    "is_final": False,
+                                }
+                            ],
                             "metrics": {
                                 "rag_embed_ms": 30,
                                 "rag_vector_search_ms": 10,
@@ -328,6 +343,7 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
                             "audio_chunk_count": 5,
                             "segment_count": 2,
                             "max_chunk_gap_ms": 4100,
+                            "tts_chunks": [],
                             "metrics": {
                                 "rag_embed_ms": 50,
                                 "rag_vector_search_ms": 20,
@@ -350,6 +366,7 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
                             "audio_chunk_count": 1,
                             "segment_count": 1,
                             "max_chunk_gap_ms": 100,
+                            "tts_chunks": [],
                             "metrics": {"rag_rerank_ms": 9999},
                         },
                         ensure_ascii=False,
@@ -368,6 +385,7 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(payload["reply_traces"]), 2)
         self.assertEqual(payload["reply_traces"][0]["reply_id"], f"{session_id}-new")
         self.assertEqual(payload["reply_traces"][0]["metrics"]["rag_rerank_ms"], 100)
+        self.assertEqual(payload["reply_traces"][0]["tts_chunks"][0]["tts_chunk_real_rtf"], 0.417)
         self.assertEqual(payload["reply_trace_summary"]["trace_count"], 2)
         self.assertEqual(payload["reply_trace_summary"]["avg_metrics"]["rag_rerank_ms"], 1100.0)
         self.assertEqual(payload["reply_trace_summary"]["max_metrics"]["tts_first_audio_chunk_ms"], 9100)

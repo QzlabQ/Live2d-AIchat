@@ -259,6 +259,7 @@ export interface AdminReplyTrace {
   segmentCount: number
   maxChunkGapMs: number
   metrics: Record<string, number>
+  ttsChunks: Record<string, number | string | boolean | null>[]
 }
 
 export interface AdminReplyTraceSummary {

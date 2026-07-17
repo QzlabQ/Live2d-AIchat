@@ -626,6 +626,9 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
             def mark_prefetch_hit(self) -> None:
                 return None
 
+            async def prime(self) -> None:
+                return None
+
             async def next_event(self):
                 if self._returned:
                     return SimpleNamespace(kind='done')
@@ -693,6 +696,9 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
             def mark_prefetch_hit(self) -> None:
                 self._prefetch_hit = True
 
+            async def prime(self) -> None:
+                return None
+
             async def next_event(self):
                 if not self._events:
                     return SimpleNamespace(kind='done')
@@ -747,13 +753,13 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
             [
                 'start:first:0',
                 'event:first:chunk',
-                'event:first:llm_done',
                 'start:second:1',
+                'event:first:llm_done',
                 'event:first:chunk',
                 'event:first:done',
                 'event:second:chunk',
-                'event:second:llm_done',
                 'start:third:2',
+                'event:second:llm_done',
                 'event:second:done',
                 'event:third:chunk',
                 'event:third:done',
@@ -789,6 +795,9 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
             def mark_prefetch_hit(self) -> None:
                 raise AssertionError('serial fallback should not mark a prefetch hit')
+
+            async def prime(self) -> None:
+                return None
 
             async def next_event(self):
                 if not self._events:
@@ -873,6 +882,9 @@ class TTSServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
             def mark_prefetch_hit(self) -> None:
                 self._prefetch_hit = True
+
+            async def prime(self) -> None:
+                return None
 
             async def next_event(self):
                 if not self._events:
