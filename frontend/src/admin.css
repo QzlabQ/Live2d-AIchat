@@ -769,6 +769,138 @@ button {
   gap: 1rem;
 }
 
+.admin-gap-distribution-panel {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: center;
+}
+
+.admin-gap-distribution-chart {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 15rem;
+  padding: 1rem;
+}
+
+.admin-gap-distribution-ring {
+  position: relative;
+  width: min(15rem, 100%);
+  aspect-ratio: 1;
+  border-radius: 999px;
+  box-shadow:
+    inset 0 0 0 1px rgba(71, 98, 124, 0.08),
+    0 18px 36px rgba(36, 79, 118, 0.12);
+}
+
+.admin-gap-distribution-ring::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 56%;
+  height: 56%;
+  border-radius: 999px;
+  background: rgba(248, 251, 254, 0.98);
+  border: 1px solid rgba(71, 98, 124, 0.08);
+  transform: translate(-50%, -50%);
+}
+
+.admin-gap-distribution-center {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  gap: 0.2rem;
+  justify-items: center;
+  text-align: center;
+}
+
+.admin-gap-distribution-center strong {
+  font-size: clamp(1.8rem, 2.8vw, 2.4rem);
+  color: #17324a;
+}
+
+.admin-gap-distribution-center span {
+  color: #5c7388;
+  font-size: 0.88rem;
+}
+
+.admin-gap-distribution-legend {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.admin-gap-status-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid rgba(71, 98, 124, 0.12);
+  border-radius: 18px;
+  background: rgba(248, 251, 254, 0.88);
+  color: #17324a;
+  text-align: left;
+  transition:
+    transform 0.15s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.admin-gap-status-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(61, 137, 212, 0.24);
+  box-shadow: 0 12px 24px rgba(36, 79, 118, 0.1);
+}
+
+.admin-gap-status-card[data-active='true'] {
+  border-color: rgba(23, 97, 165, 0.28);
+  background: linear-gradient(180deg, rgba(245, 250, 255, 0.98), rgba(235, 244, 255, 0.96));
+}
+
+.admin-gap-status-card p {
+  margin: 0;
+  color: #5a7186;
+}
+
+.admin-gap-status-card-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.admin-gap-status-card-header strong {
+  min-width: 0;
+}
+
+.admin-gap-status-card-header span:last-child {
+  color: #4a647d;
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-gap-status-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.96);
+}
+
+.admin-gap-status-bar {
+  height: 0.45rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(71, 98, 124, 0.12);
+}
+
+.admin-gap-status-bar i {
+  display: block;
+  height: 100%;
+  min-width: 10%;
+  border-radius: inherit;
+}
+
 .admin-filter-chip {
   border: 1px solid rgba(32, 94, 150, 0.16);
   border-radius: 999px;
@@ -1826,6 +1958,10 @@ button {
 
   .admin-dashboard-metric-row,
   .admin-dashboard-metric-row-compact {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-gap-distribution-panel {
     grid-template-columns: 1fr;
   }
 

@@ -10,6 +10,7 @@ import {
   type AvatarDisplayConfig,
 } from './lib/avatarDisplay'
 import type { AvatarPresentation } from './lib/avatarPresentation'
+import { buildKnowledgeGapStatusDistribution } from './lib/knowledgeGapSummary'
 import {
   activateAvatarProfile,
   createAvatarProfile,
@@ -146,6 +147,7 @@ interface SessionTraceChunkMetric {
 const API_BASE_URL = getAdminApiBaseUrl()
 const TOKEN_STORAGE_KEY = 'ai-chat-live2d.admin.token'
 const MODEL_FALLBACK = '/live2d/haru/haru_greeter_t03.model3.json'
+const KNOWLEDGE_GAP_AUTO_REFRESH_MS = 15_000
 const KNOWLEDGE_GAP_STATUS_ORDER = [
   'pending',
   'draft',
@@ -312,6 +314,7 @@ const knowledgeGapEditor = reactive<KnowledgeGapEditorState>({
   filenamePrefix: '',
 })
 let knowledgeGapDetailRequestId = 0
+let knowledgeGapAutoRefreshTimer: number | null = null
 
 const sessionSearch = ref('')
 const voiceUploadForm = reactive({
@@ -576,6 +579,9 @@ const recentVoiceProfiles = computed(() => voiceProfiles.value.slice(0, 3))
 const knowledgeGapTopStatus = computed(() => {
   return [...(knowledgeGapSummary.value?.statusCounts || [])].sort((left, right) => right.count - left.count)[0] ?? null
 })
+const knowledgeGapStatusDistribution = computed(() =>
+  buildKnowledgeGapStatusDistribution(knowledgeGapSummary.value?.statusCounts || []),
+)
 const knowledgeGapTotalPages = computed(() =>
   Math.max(1, Math.ceil(knowledgeGapTotal.value / Math.max(1, knowledgeGapFilters.size))),
 )
@@ -780,6 +786,10 @@ watch(
     await loadKnowledgeGapWorkspace({ preserveSelection: true })
   },
 )
+
+watch([activePage, isAuthenticated], () => {
+  syncKnowledgeGapAutoRefresh()
+}, { immediate: true })
 
 watch([adminPreviewPresentation, adminLive2dRef], ([presentation, live2d]) => {
   live2d?.setAvatarPresentation(presentation)
@@ -1138,6 +1148,7 @@ async function loadKnowledgeGapWorkspace(
   options: {
     preserveSelection?: boolean
     focusGapId?: string
+    refreshDetail?: boolean
   } = {},
 ) {
   if (!adminToken.value) {
@@ -1173,17 +1184,82 @@ async function loadKnowledgeGapWorkspace(
       result.items[0]?.id ||
       ''
 
-    if (nextGapId) {
+    if (nextGapId && options.refreshDetail !== false) {
       await openKnowledgeGap(nextGapId)
       return
     }
 
-    resetKnowledgeGapSelection()
+    if (!nextGapId) {
+      resetKnowledgeGapSelection()
+    }
   } catch (error) {
     handleAdminError(error, '加载知识缺口数据失败。')
   } finally {
     loading.knowledgeGapReload = false
   }
+}
+
+async function refreshKnowledgeGapWorkspace() {
+  const refreshDetail =
+    !knowledgeGapEditorDirty.value &&
+    !loading.knowledgeGapSave &&
+    !loading.knowledgeGapImport &&
+    !loading.knowledgeGapDetail
+
+  await loadKnowledgeGapWorkspace({
+    preserveSelection: true,
+    refreshDetail,
+  })
+}
+
+function stopKnowledgeGapAutoRefresh() {
+  if (knowledgeGapAutoRefreshTimer === null) {
+    return
+  }
+
+  window.clearInterval(knowledgeGapAutoRefreshTimer)
+  knowledgeGapAutoRefreshTimer = null
+}
+
+function startKnowledgeGapAutoRefresh() {
+  if (knowledgeGapAutoRefreshTimer !== null) {
+    return
+  }
+
+  knowledgeGapAutoRefreshTimer = window.setInterval(() => {
+    if (
+      document.visibilityState === 'hidden' ||
+      activePage.value !== 'knowledge-gaps' ||
+      !adminToken.value ||
+      loading.knowledgeGapReload
+    ) {
+      return
+    }
+
+    void refreshKnowledgeGapWorkspace()
+  }, KNOWLEDGE_GAP_AUTO_REFRESH_MS)
+}
+
+function syncKnowledgeGapAutoRefresh() {
+  if (isAuthenticated.value && activePage.value === 'knowledge-gaps') {
+    startKnowledgeGapAutoRefresh()
+    return
+  }
+
+  stopKnowledgeGapAutoRefresh()
+}
+
+function handleDocumentVisibilityChange() {
+  if (
+    document.visibilityState !== 'visible' ||
+    activePage.value !== 'knowledge-gaps' ||
+    !isAuthenticated.value ||
+    loading.knowledgeGapReload
+  ) {
+    return
+  }
+
+  void refreshKnowledgeGapWorkspace()
 }
 
 async function applyKnowledgeGapFilters() {
@@ -1914,11 +1990,14 @@ function sentimentLabel(value: string) {
 onMounted(async () => {
   activePage.value = resolvePageFromHash(window.location.hash)
   window.addEventListener('hashchange', handleHashChange)
+  document.addEventListener('visibilitychange', handleDocumentVisibilityChange)
   await bootstrapAuth()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('hashchange', handleHashChange)
+  document.removeEventListener('visibilitychange', handleDocumentVisibilityChange)
+  stopKnowledgeGapAutoRefresh()
   stopVoicePreview()
   previewAudio = null
   releaseAudioPreviewCache()
@@ -2758,7 +2837,7 @@ async function handleHashChange() {
                 class="admin-secondary-button"
                 type="button"
                 :disabled="loading.knowledgeGapReload"
-                @click="loadKnowledgeGapWorkspace({ preserveSelection: true })"
+                @click="refreshKnowledgeGapWorkspace"
               >
                 {{ loading.knowledgeGapReload ? '刷新中..' : '刷新缺口数据' }}
               </button>
@@ -2767,17 +2846,39 @@ async function handleHashChange() {
             <div class="admin-gap-summary-grid">
               <div class="admin-overview-list">
                 <h4>状态分布</h4>
-                <div v-if="knowledgeGapSummary?.statusCounts?.length" class="admin-chip-row admin-chip-row-wrap">
-                  <button
-                    v-for="item in knowledgeGapSummary?.statusCounts"
-                    :key="item.status"
-                    class="admin-filter-chip"
-                    :data-active="knowledgeGapFilters.status === item.status"
-                    type="button"
-                    @click="knowledgeGapFilters.status = knowledgeGapFilters.status === item.status ? '' : item.status"
-                  >
-                    {{ knowledgeGapStatusLabel(item.status) }} · {{ item.count }}
-                  </button>
+                <div v-if="knowledgeGapStatusDistribution" class="admin-gap-distribution-panel">
+                  <div class="admin-gap-distribution-chart">
+                    <div
+                      class="admin-gap-distribution-ring"
+                      :style="{ background: knowledgeGapStatusDistribution.gradient }"
+                      aria-hidden="true"
+                    ></div>
+                    <div class="admin-gap-distribution-center">
+                      <strong>{{ knowledgeGapStatusDistribution.totalCount }}</strong>
+                      <span>条问题</span>
+                    </div>
+                  </div>
+
+                  <div class="admin-gap-distribution-legend">
+                    <button
+                      v-for="segment in knowledgeGapStatusDistribution.segments"
+                      :key="segment.status"
+                      class="admin-gap-status-card"
+                      :data-active="knowledgeGapFilters.status === segment.status"
+                      type="button"
+                      @click="knowledgeGapFilters.status = knowledgeGapFilters.status === segment.status ? '' : segment.status"
+                    >
+                      <div class="admin-gap-status-card-header">
+                        <span class="admin-gap-status-swatch" :style="{ background: segment.color }"></span>
+                        <strong>{{ knowledgeGapStatusLabel(segment.status) }}</strong>
+                        <span>{{ segment.percentLabel }}</span>
+                      </div>
+                      <p>{{ segment.count }} 条问题</p>
+                      <div class="admin-gap-status-bar">
+                        <i :style="{ width: `${segment.percent}%`, background: segment.color }"></i>
+                      </div>
+                    </button>
+                  </div>
                 </div>
                 <p v-else class="admin-empty-hint">暂无状态统计。</p>
               </div>
