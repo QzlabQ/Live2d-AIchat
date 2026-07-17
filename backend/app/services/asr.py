@@ -6,6 +6,7 @@ from functools import lru_cache
 from time import perf_counter
 
 import numpy as np
+from opencc import OpenCC
 
 from app.core.config import Settings, get_settings
 
@@ -50,13 +51,13 @@ class ASRService:
             return ASRTranscriptionResult(text="")
 
         if self.settings.asr_engine == "mock":
-            return ASRTranscriptionResult(text=self.settings.asr_mock_transcript)
+            return ASRTranscriptionResult(text=self._normalize_transcript_text(self.settings.asr_mock_transcript))
 
         total_started_at = perf_counter()
         model_load_ms = await self.ensure_model_loaded()
         if self._model is None:
             return ASRTranscriptionResult(
-                text=self.settings.asr_mock_transcript,
+                text=self._normalize_transcript_text(self.settings.asr_mock_transcript),
                 model_load_ms=model_load_ms,
                 asr_total_ms=int((perf_counter() - total_started_at) * 1000),
             )
@@ -67,7 +68,7 @@ class ASRService:
         transcribe_ms = int((perf_counter() - transcribe_started_at) * 1000)
         total_ms = int((perf_counter() - total_started_at) * 1000)
         return ASRTranscriptionResult(
-            text=text,
+            text=self._normalize_transcript_text(text),
             model_load_ms=model_load_ms,
             asr_transcribe_ms=transcribe_ms,
             asr_total_ms=total_ms,
@@ -114,7 +115,19 @@ class ASRService:
         text = "".join(segment.text for segment in segments).strip()
         return text or self.settings.asr_mock_transcript
 
+    @staticmethod
+    def _normalize_transcript_text(text: str) -> str:
+        normalized = text.strip()
+        if not normalized:
+            return normalized
+        return _get_opencc_t2s().convert(normalized)
+
 
 @lru_cache
 def get_asr_service() -> ASRService:
     return ASRService(get_settings())
+
+
+@lru_cache
+def _get_opencc_t2s() -> OpenCC:
+    return OpenCC("t2s")
