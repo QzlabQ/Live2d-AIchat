@@ -7,6 +7,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Message, Session
+from app.services.vision import get_visitor_vision_service
 
 
 @dataclass(slots=True)
@@ -25,6 +26,43 @@ class VisitorSessionMessage:
     role: str
     content: str
     created_at: datetime
+    attachments: list[dict[str, object]]
+
+
+def _clean_optional_text(value: object) -> str | None:
+    cleaned = " ".join(str(value or "").split())
+    return cleaned or None
+
+
+def _hydrate_attachments(
+    session_id: str,
+    attachments: list[dict[str, object]] | None,
+) -> list[dict[str, object]]:
+    service = get_visitor_vision_service()
+    hydrated: list[dict[str, object]] = []
+    for raw in attachments or []:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("kind", "")).strip().lower()
+        if kind != "photo":
+            continue
+        stored_image_path = " ".join(str(raw.get("stored_image_path", "")).split())
+        filename = " ".join(str(raw.get("filename", "")).split())
+        mime_type = " ".join(str(raw.get("mime_type", "")).split())
+        if not stored_image_path or not filename or not mime_type:
+            continue
+        hydrated.append(
+            {
+                "kind": "photo",
+                "stored_image_path": stored_image_path,
+                "filename": filename,
+                "mime_type": mime_type,
+                "preview_url": service.build_preview_url(session_id, filename),
+                "recognized_spot": _clean_optional_text(raw.get("recognized_spot")),
+                "recognition_summary": _clean_optional_text(raw.get("recognition_summary")),
+            }
+        )
+    return hydrated
 
 
 async def list_visitor_sessions(db: AsyncSession, limit: int = 20) -> list[VisitorSessionSummary]:
@@ -80,6 +118,7 @@ async def load_session_messages(db: AsyncSession, session_id: str) -> list[Visit
             role=message.role,
             content=message.content,
             created_at=message.created_at,
+            attachments=_hydrate_attachments(session_id, message.attachments),
         )
         for message in messages
     ]
@@ -90,6 +129,7 @@ async def save_session_message(
     session_id: str,
     role: str,
     content: str,
+    attachments: list[dict[str, object]] | None = None,
     emotion: str | None = None,
     latency_ms: int | None = None,
 ) -> Message:
@@ -103,11 +143,28 @@ async def save_session_message(
         role=role,
         content=content,
         created_at=activity_at,
+        attachments=list(attachments or []),
         emotion=emotion,
         latency_ms=latency_ms,
     )
     db.add(message)
     session_obj.updated_at = activity_at
+    await db.commit()
+    await db.refresh(message)
+    return message
+
+
+async def update_session_message_attachments(
+    db: AsyncSession,
+    *,
+    message_id: int,
+    attachments: list[dict[str, object]],
+) -> Message | None:
+    message = await db.get(Message, message_id)
+    if message is None:
+        return None
+
+    message.attachments = list(attachments)
     await db.commit()
     await db.refresh(message)
     return message

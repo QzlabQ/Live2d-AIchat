@@ -77,6 +77,7 @@ async def get_session_messages(
                 role=item.role,
                 content=item.content,
                 created_at=item.created_at,
+                attachments=item.attachments,
             )
             for item in items
         ]

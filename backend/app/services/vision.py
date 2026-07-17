@@ -69,11 +69,15 @@ class VisitorVisionResult:
     recognition_summary: str
     resolved_question: str
     stored_image_path: str
+    is_canonical_spot: bool = False
 
 
 class VisitorVisionService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+
+    def build_preview_url(self, session_id: str, filename: str) -> str:
+        return f"/api/v1/sessions/{session_id}/photos/{filename}"
 
     async def recognize(
         self,
@@ -120,6 +124,7 @@ class VisitorVisionService:
             recognition_summary=self._required_text(payload, "recognition_summary"),
             resolved_question=self._required_text(payload, "resolved_question"),
             stored_image_path=stored_key,
+            is_canonical_spot=bool(payload.get("is_canonical_spot", False)),
         )
 
     def _store_image(
@@ -170,7 +175,7 @@ class VisitorVisionService:
                     "role": "system",
                     "content": (
                         "You are a scenic spot vision assistant. "
-                        "Return only JSON with recognized_spot, recognition_summary, resolved_question."
+                        "Return only JSON with recognized_spot, recognition_summary, resolved_question, is_canonical_spot."
                     ),
                 },
                 {

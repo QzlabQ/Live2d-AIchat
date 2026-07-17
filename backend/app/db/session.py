@@ -16,6 +16,7 @@ from app.db.migrations import (
     ensure_avatar_config_tts_columns,
     ensure_knowledge_doc_admin_columns,
     ensure_message_analysis_columns,
+    ensure_message_attachments_column,
     ensure_session_updated_at_column,
 )
 
@@ -41,6 +42,7 @@ async def init_db() -> None:
         await connection.run_sync(Base.metadata.create_all)
     await ensure_session_updated_at_column(engine)
     await ensure_message_analysis_columns(engine)
+    await ensure_message_attachments_column(engine)
     await ensure_avatar_config_tts_columns(engine, settings)
     await ensure_avatar_config_admin_columns(engine)
     await ensure_avatar_config_profile_columns(engine)

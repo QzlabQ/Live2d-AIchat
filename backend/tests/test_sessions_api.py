@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
@@ -16,7 +17,11 @@ from app.api.routes.sessions import (
 )
 from app.api.routes.visitor import activate_public_avatar_profile, list_public_avatar_profiles
 from app.db.base import Base
-from app.db.migrations import ensure_message_analysis_columns, ensure_session_updated_at_column
+from app.db.migrations import (
+    ensure_message_analysis_columns,
+    ensure_message_attachments_column,
+    ensure_session_updated_at_column,
+)
 from app.db.models import AvatarConfig, Message, Session
 from app.schemas.session import SessionCreateRequest, SessionInterestTagsUpdate
 from app.services import visitor_sessions
@@ -112,9 +117,93 @@ class SessionMigrationTestCase(unittest.IsolatedAsyncioTestCase):
             finally:
                 await engine.dispose()
 
+    async def test_sqlite_migration_adds_message_attachments_column(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "old-message-attachments.db"
+            engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+            try:
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        text(
+                            """
+                            CREATE TABLE messages (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                session_id VARCHAR(36) NOT NULL,
+                                role VARCHAR(10) NOT NULL,
+                                content TEXT NOT NULL,
+                                created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+                            )
+                            """
+                        )
+                    )
+
+                await ensure_message_attachments_column(engine)
+
+                async with engine.connect() as connection:
+                    columns = (await connection.execute(text("PRAGMA table_info(messages)"))).mappings().all()
+
+                self.assertIn("attachments", {column["name"] for column in columns})
+            finally:
+                await engine.dispose()
+
+    async def test_postgresql_migration_adds_message_attachments_column(self) -> None:
+        class FakeResult:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def __iter__(self):
+                return iter(self._rows)
+
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.statements: list[tuple[str, dict[str, object] | None]] = []
+
+            async def execute(self, statement, params=None):
+                sql = str(statement)
+                self.statements.append((sql, params))
+                if "information_schema.columns" in sql:
+                    return FakeResult(
+                        [
+                            SimpleNamespace(_mapping={"column_name": "id"}),
+                            SimpleNamespace(_mapping={"column_name": "session_id"}),
+                            SimpleNamespace(_mapping={"column_name": "role"}),
+                            SimpleNamespace(_mapping={"column_name": "content"}),
+                            SimpleNamespace(_mapping={"column_name": "created_at"}),
+                        ]
+                    )
+                return FakeResult([])
+
+        class FakeBegin:
+            def __init__(self, connection: FakeConnection) -> None:
+                self.connection = connection
+
+            async def __aenter__(self):
+                return self.connection
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.url = SimpleNamespace(get_backend_name=lambda: "postgresql")
+                self.connection = FakeConnection()
+
+            def begin(self):
+                return FakeBegin(self.connection)
+
+        engine = FakeEngine()
+
+        await ensure_message_attachments_column(engine)
+
+        executed_sql = "\n".join(statement for statement, _ in engine.connection.statements)
+        self.assertIn("ALTER TABLE messages ADD COLUMN attachments JSON", executed_sql)
+        self.assertIn("UPDATE messages SET attachments", executed_sql)
+
     async def test_init_db_triggers_session_updated_at_migration(self) -> None:
         with (
             patch("app.db.session.ensure_session_updated_at_column", new=AsyncMock()) as ensure_session_mock,
+            patch("app.db.session.ensure_message_attachments_column", new=AsyncMock()) as ensure_message_attachments_mock,
             patch("app.db.session.ensure_avatar_config_tts_columns", new=AsyncMock()) as ensure_avatar_mock,
             patch("app.db.session.ensure_avatar_config_response_language_column", new=AsyncMock()) as ensure_avatar_language_mock,
             patch("app.db.session.ensure_avatar_config_display_columns", new=AsyncMock()) as ensure_avatar_display_mock,
@@ -131,6 +220,7 @@ class SessionMigrationTestCase(unittest.IsolatedAsyncioTestCase):
 
             connection.run_sync.assert_awaited_once()
             ensure_session_mock.assert_awaited_once_with(engine_mock)
+            ensure_message_attachments_mock.assert_awaited_once_with(engine_mock)
             ensure_avatar_mock.assert_awaited_once()
             ensure_avatar_language_mock.assert_awaited_once()
             ensure_avatar_display_mock.assert_awaited_once_with(engine_mock)
@@ -248,6 +338,47 @@ class VisitorSessionsApiTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(items[1].content, "The park is usually open from 9:00 to 21:30.")
             await engine.dispose()
 
+    async def test_get_session_messages_returns_photo_attachments_with_preview_url(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            engine = create_async_engine(f"sqlite+aiosqlite:///{Path(temp_dir) / 'message-attachments.db'}")
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+            async with session_factory() as db:
+                session_obj = Session(interest_tags=["architecture"], device_type="mobile")
+                db.add(session_obj)
+                await db.flush()
+                db.add(
+                    Message(
+                        session_id=session_obj.id,
+                        role="user",
+                        content="请介绍这张图里的景点。",
+                        attachments=[
+                            {
+                                "kind": "photo",
+                                "stored_image_path": f"{session_obj.id}/main-gate.jpg",
+                                "filename": "main-gate.jpg",
+                                "mime_type": "image/jpeg",
+                                "recognized_spot": "灵山大佛",
+                                "recognition_summary": "画面主体是一尊高大的金色佛像。",
+                            }
+                        ],
+                    )
+                )
+                await db.commit()
+
+                response = await get_session_messages(session_obj.id, db)
+
+            self.assertEqual(len(response.items), 1)
+            self.assertEqual(response.items[0].attachments[0].kind, "photo")
+            self.assertEqual(
+                response.items[0].attachments[0].preview_url,
+                f"/api/v1/sessions/{session_obj.id}/photos/main-gate.jpg",
+            )
+            self.assertEqual(response.items[0].attachments[0].recognized_spot, "灵山大佛")
+            await engine.dispose()
+
     async def test_save_session_message_refreshes_session_updated_at(self) -> None:
         with TemporaryDirectory() as temp_dir:
             engine = create_async_engine(f"sqlite+aiosqlite:///{Path(temp_dir) / 'save-message.db'}")
@@ -275,6 +406,14 @@ class VisitorSessionsApiTestCase(unittest.IsolatedAsyncioTestCase):
                         session_id=session_obj.id,
                         role="user",
                         content="Tell me about the old street.",
+                        attachments=[
+                            {
+                                "kind": "photo",
+                                "stored_image_path": f"{session_obj.id}/old-street.jpg",
+                                "filename": "old-street.jpg",
+                                "mime_type": "image/jpeg",
+                            }
+                        ],
                     )
                     await db.refresh(session_obj)
 
@@ -283,6 +422,7 @@ class VisitorSessionsApiTestCase(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(len(messages), 1)
                 self.assertEqual(messages[0].content, "Tell me about the old street.")
+                self.assertEqual(messages[0].attachments[0]["filename"], "old-street.jpg")
             finally:
                 await engine.dispose()
 

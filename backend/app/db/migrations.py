@@ -50,6 +50,48 @@ async def ensure_message_analysis_columns(engine: AsyncEngine) -> None:
                 await connection.execute(text(statement))
 
 
+async def ensure_message_attachments_column(engine: AsyncEngine) -> None:
+    backend_name = engine.url.get_backend_name()
+
+    async with engine.begin() as connection:
+        if backend_name.startswith('sqlite'):
+            result = await connection.execute(text('PRAGMA table_info(messages)'))
+            existing = {row._mapping['name'] for row in result}
+            if not existing:
+                return
+
+            if 'attachments' not in existing:
+                await connection.execute(text('ALTER TABLE messages ADD COLUMN attachments JSON'))
+
+            await connection.execute(
+                text("UPDATE messages SET attachments = '[]' WHERE attachments IS NULL")
+            )
+            return
+
+        if not backend_name.startswith('postgresql'):
+            return
+
+        result = await connection.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'messages'
+                """
+            )
+        )
+        existing = {row._mapping['column_name'] for row in result}
+        if not existing:
+            return
+
+        if 'attachments' not in existing:
+            await connection.execute(text('ALTER TABLE messages ADD COLUMN attachments JSON'))
+
+        await connection.execute(
+            text("UPDATE messages SET attachments = '[]'::json WHERE attachments IS NULL")
+        )
+
+
 async def ensure_avatar_config_tts_columns(engine: AsyncEngine, settings: Settings) -> None:
     if not engine.url.get_backend_name().startswith('sqlite'):
         return

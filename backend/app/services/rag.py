@@ -116,6 +116,161 @@ def build_humanized_language_instruction(response_language: str | None) -> str:
     return "你的任务不是复述资料，而是把资料整理成游客能直接听懂的自然中文。"
 
 
+CANONICAL_SPOT_NAMES = (
+    "灵山大佛",
+    "灵山梵宫",
+    "九龙灌浴",
+    "五印坛城",
+    "祥符禅寺",
+    "佛手广场",
+    "百子戏弥勒",
+    "灵山精舍",
+    "曼飞龙塔",
+)
+
+
+def is_canonical_spot_name(name: str) -> bool:
+    normalized = sanitize_answer(name)
+    return normalized in CANONICAL_SPOT_NAMES
+
+
+def is_photo_identification_question(question: str) -> bool:
+    normalized = normalize_question(question)
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in ("哪个景点", "哪儿", "哪里", "这是什么地方", "图里是哪", "图里是哪个景点", "这是哪个景点")
+    )
+
+
+def format_photo_context_for_prompt(
+    photo_context: dict[str, str] | None,
+    response_language: str | None,
+) -> str:
+    if not photo_context:
+        return localized_text(response_language, "无", "None")
+
+    recognized_spot = sanitize_answer(photo_context.get("recognized_spot", ""))
+    recognition_summary = sanitize_answer(photo_context.get("recognition_summary", ""))
+    is_canonical = bool(photo_context.get("recognized_spot_canonical"))
+    if normalize_response_language(response_language) == "en":
+        spot_label = "Canonical spot name" if is_canonical else "Recognized spot name"
+        return (
+            f"{spot_label}: {recognized_spot or 'Unknown'}\n"
+            f"Recognition summary: {recognition_summary or 'None'}"
+        )
+    spot_label = "标准景点名" if is_canonical else "图片识别名称"
+    return (
+        f"{spot_label}：{recognized_spot or '未识别'}\n"
+        f"图片识别摘要：{recognition_summary or '无'}"
+    )
+
+
+def build_photo_hint_answer(
+    photo_context: dict[str, str] | None,
+    response_language: str | None,
+) -> str:
+    if not photo_context:
+        return localized_text(
+            response_language,
+            "根据当前灵山胜境知识库，暂时无法确认这个问题。你可以换个更具体的问法，我再帮你细看。",
+            "I can't confirm that from the current Lingshan Scenic Area knowledge base yet. If you ask in a more specific way, I can check again.",
+        )
+
+    recognized_spot = sanitize_answer(photo_context.get("recognized_spot", ""))
+    if recognized_spot:
+        return localized_text(
+            response_language,
+            f"从图片看起来像是{recognized_spot}，不过根据当前灵山胜境知识库，我暂时还无法确认更多细节。",
+            f"From the image, this looks like {recognized_spot}, but I still can't confirm more details from the current Lingshan Scenic Area knowledge base.",
+        )
+    return localized_text(
+        response_language,
+        "我能从图片里看到一些景点线索，不过根据当前灵山胜境知识库，我暂时还无法确认更具体的信息。",
+        "I can see some scenic clues in the image, but I still can't confirm more specific details from the current Lingshan Scenic Area knowledge base.",
+    )
+
+
+def build_photo_answer_instruction(
+    question: str,
+    photo_context: dict[str, str] | None,
+    response_language: str | None,
+) -> str:
+    if not photo_context:
+        return ""
+    recognized_spot = sanitize_answer(photo_context.get("recognized_spot", ""))
+    if (
+        not recognized_spot
+        or not bool(photo_context.get("recognized_spot_canonical"))
+        or not is_canonical_spot_name(recognized_spot)
+    ):
+        return ""
+    if not is_photo_identification_question(question):
+        return ""
+    return localized_text(
+        response_language,
+        f"如果用户是在问图片里是哪个景点，第一句必须直接回答“这是{recognized_spot}。”，再补1到2句简短介绍。",
+        f"If the user is asking which landmark is in the photo, the first sentence must directly say “This is {recognized_spot}.” before adding one or two short sentences of introduction.",
+    )
+
+
+def finalize_photo_identification_answer(
+    question: str,
+    answer_text: str,
+    photo_context: dict[str, str] | None,
+    response_language: str | None,
+) -> str:
+    cleaned_answer = sanitize_answer(answer_text)
+    if not cleaned_answer or not photo_context:
+        return cleaned_answer
+
+    recognized_spot = sanitize_answer(photo_context.get("recognized_spot", ""))
+    if (
+        not recognized_spot
+        or not bool(photo_context.get("recognized_spot_canonical"))
+        or not is_canonical_spot_name(recognized_spot)
+    ):
+        return cleaned_answer
+    if not is_photo_identification_question(question):
+        return cleaned_answer
+
+    prefix = localized_text(
+        response_language,
+        f"这是{recognized_spot}。",
+        f"This is {recognized_spot}.",
+    )
+    if cleaned_answer.startswith(prefix):
+        return cleaned_answer
+
+    conservative_openers = [
+        localized_text(
+            response_language,
+            f"从图片看起来像是{recognized_spot}",
+            f"From the image, this looks like {recognized_spot}",
+        ),
+        localized_text(
+            response_language,
+            f"从图片看像是{recognized_spot}",
+            f"From the image, this looks like {recognized_spot}",
+        ),
+        localized_text(response_language, f"看起来像是{recognized_spot}", f"This looks like {recognized_spot}"),
+        localized_text(response_language, f"这是{recognized_spot}", f"This is {recognized_spot}"),
+        recognized_spot,
+    ]
+    remainder = cleaned_answer
+    for opener in conservative_openers:
+        if opener and remainder.startswith(opener):
+            remainder = remainder[len(opener) :].lstrip("，,。；;：: ")
+            break
+
+    if remainder:
+        if remainder[-1] not in "。！？!?":
+            remainder += "。"
+        return prefix + remainder
+    return prefix
+
+
 @dataclass(slots=True)
 class RetrievedChunk:
     chunk_id: str

@@ -41,11 +41,22 @@ class VisitorSessionListResponse(BaseModel):
     items: list[VisitorSessionSummaryResponse]
 
 
+class VisitorPhotoAttachmentResponse(BaseModel):
+    kind: Literal["photo"]
+    stored_image_path: str
+    filename: str
+    mime_type: str
+    preview_url: str
+    recognized_spot: str | None = None
+    recognition_summary: str | None = None
+
+
 class VisitorSessionMessageResponse(BaseModel):
     id: int
     role: str
     content: str
     created_at: datetime
+    attachments: list["VisitorPhotoAttachmentResponse"] = Field(default_factory=list)
 
 
 class VisitorSessionMessageListResponse(BaseModel):
