@@ -1,5 +1,8 @@
 # 测试服务器 Docker Compose 部署手册
 
+如果你的服务器 **禁止使用 Docker**，请直接看 [test-server-native.md](./test-server-native.md)。  
+当前测试服务器已经补充了对应的原生部署链路与脚本，不需要再硬套本文的容器方案。
+
 本文对应当前项目的测试服务器部署方案，目标环境为 `Ubuntu 22.04 + Docker + NVIDIA GPU`，并默认学校集群只能通过 `SSH` 访问。
 
 ## 1. 适用环境

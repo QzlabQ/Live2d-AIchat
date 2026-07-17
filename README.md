@@ -67,7 +67,7 @@
    从游客输入，到 LLM/RAG 回答，到 TTS 发声，再到 Live2D 表情与口型联动，已经形成端到端演示链路。
 
 4. **已经考虑真实部署问题**  
-   仓库内已经补齐 Docker 部署资产、测试服务器部署文档、GPU 环境说明和后续 A100/V100 扩展路线。
+   仓库内已经补齐 Docker 部署资产、原生无 Docker 部署脚本与文档、GPU 环境说明和后续 A100/V100 扩展路线。
 
 ## 仓库结构
 
@@ -87,7 +87,7 @@ AI-chat-live2d/
 │  ├─ scripts/                # 评测与辅助脚本
 │  └─ tests/
 ├─ docs/                      # 架构、路线图、部署、知识库、口型同步等文档
-├─ deploy/                    # Docker Compose 部署资产
+├─ deploy/                    # Docker Compose / 原生部署资产
 └─ .github/workflows/         # CI
 ```
 
@@ -145,17 +145,19 @@ npm run dev
 - 后端健康检查：`http://127.0.0.1:8000/api/v1/health`
 - Swagger：`http://127.0.0.1:8000/docs`
 
-### 2. Docker / 测试服务器部署
+### 2. 测试服务器部署
 
-仓库已提供测试服务器部署资产：
+仓库已提供两套测试服务器部署资产：
 
 - [deploy/docker-compose.yml](deploy/docker-compose.yml)
+- [deploy/native/](deploy/native/)
 - [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)
+- [docs/deployment/test-server-native.md](docs/deployment/test-server-native.md)
 
 适用场景：
 
-- `Ubuntu 22.04`
-- `Docker`
+- `Ubuntu 22.04 + Docker`：看 Docker 文档
+- `Ubuntu 22.04 + 禁用 Docker`：看原生部署文档
 - `PostgreSQL`
 - `V100 / A100` 测试服务器
 
@@ -178,7 +180,8 @@ npm run dev
 - [docs/knowledge-base.md](docs/knowledge-base.md)：知识库方案
 - [docs/lipsync.md](docs/lipsync.md)：口型同步方案
 - [docs/gpu-upgrade.md](docs/gpu-upgrade.md)：显卡升级与迁移建议
-- [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)：测试服务器部署手册
+- [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)：测试服务器 Docker 部署手册
+- [docs/deployment/test-server-native.md](docs/deployment/test-server-native.md)：测试服务器原生部署手册
 
 ## 当前重点问题
 
