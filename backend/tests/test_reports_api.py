@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.routes import admin_auth, reports
 from app.db.base import Base
-from app.db.models import Message, Session
+from app.db.models import DailyEmotionReport, Message, Session
 from app.db.session import get_db
 from app.services.admin_auth import get_admin_auth_service
 from app.services.reports import DailyEmotionReportService
@@ -108,6 +108,35 @@ class ReportsApiTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("亲子", report.top_interest_tags)
         self.assertTrue(report.summary_text)
 
+    async def test_generate_daily_report_refreshes_stale_existing_report_without_force(self) -> None:
+        await self._seed_messages()
+
+        async with self.session_factory() as db:
+            db.add(
+                DailyEmotionReport(
+                    report_date=date(2026, 7, 12),
+                    status="ready",
+                    session_count=0,
+                    message_count=0,
+                    user_message_count=0,
+                    assistant_message_count=0,
+                    avg_assistant_latency_ms=None,
+                    emotion_counts={},
+                    top_interest_tags=[],
+                    top_keywords=[],
+                    overall_sentiment="neutral",
+                    summary_text="当天暂无有效对话数据。",
+                    source="heuristic",
+                )
+            )
+            await db.commit()
+
+            report = await self.report_service.generate_for_date_in_session(db, date(2026, 7, 12), force=False)
+
+        self.assertEqual(report.message_count, 4)
+        self.assertEqual(report.session_count, 1)
+        self.assertEqual(report.assistant_message_count, 2)
+
     async def test_reports_routes_return_daily_and_summary_payloads(self) -> None:
         await self._seed_messages()
 
@@ -138,6 +167,42 @@ class ReportsApiTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["message_count"], 4)
         self.assertIn("亲子", payload["top_interest_tags"])
         self.assertTrue(payload["summary_text"])
+
+    async def test_summary_route_reconciles_stale_reports_before_aggregating(self) -> None:
+        await self._seed_messages()
+
+        async with self.session_factory() as db:
+            db.add(
+                DailyEmotionReport(
+                    report_date=date(2026, 7, 12),
+                    status="ready",
+                    session_count=0,
+                    message_count=0,
+                    user_message_count=0,
+                    assistant_message_count=0,
+                    avg_assistant_latency_ms=None,
+                    emotion_counts={},
+                    top_interest_tags=[],
+                    top_keywords=[],
+                    overall_sentiment="neutral",
+                    summary_text="当天暂无有效对话数据。",
+                    source="heuristic",
+                )
+            )
+            await db.commit()
+
+        summary_response = await self.client.get(
+            "/api/v1/admin/reports/summary",
+            headers=self.headers,
+            params={"date_from": "2026-07-12", "date_to": "2026-07-12"},
+        )
+
+        self.assertEqual(summary_response.status_code, 200)
+        payload = summary_response.json()
+        self.assertEqual(payload["report_count"], 1)
+        self.assertEqual(payload["session_count"], 1)
+        self.assertEqual(payload["message_count"], 4)
+        self.assertEqual(payload["assistant_message_count"], 2)
 
 
 if __name__ == "__main__":

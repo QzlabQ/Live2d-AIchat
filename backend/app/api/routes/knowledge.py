@@ -16,7 +16,12 @@ from app.schemas.admin import KnowledgeUploadResponse
 from app.schemas.avatar import MessageResponse
 from app.schemas.knowledge import KnowledgeDocItem, KnowledgeDocListResponse
 from app.services.admin_auth import require_admin_auth
-from app.services.knowledge_base import KnowledgeDocumentParser, KnowledgeImporter
+from app.services.knowledge_base import (
+    KnowledgeDocumentParser,
+    KnowledgeImporter,
+    KnowledgeVectorStore,
+    recover_knowledge_docs_from_vector_store,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -131,6 +136,18 @@ async def list_knowledge_docs(
     if filters:
         total_stmt = total_stmt.where(*filters)
     total = int((await db.execute(total_stmt)).scalar_one())
+
+    if total == 0 and not filters:
+        try:
+            recovered = await recover_knowledge_docs_from_vector_store(
+                db,
+                vector_store=KnowledgeVectorStore(settings),
+            )
+        except Exception:
+            logger.exception("Knowledge metadata reconciliation failed.")
+        else:
+            if recovered:
+                total = int((await db.execute(total_stmt)).scalar_one())
 
     stmt = select(KnowledgeDoc).order_by(KnowledgeDoc.uploaded_at.desc())
     if filters:

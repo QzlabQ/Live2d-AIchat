@@ -5,6 +5,7 @@ import math
 import re
 import struct
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from zipfile import ZipFile
@@ -69,6 +70,15 @@ class VectorStoreHit:
     text: str
     metadata: dict[str, str | int | float | bool]
     distance: float | None
+
+
+@dataclass(slots=True)
+class VectorStoreDocument:
+    doc_id: str
+    filename: str
+    category: str
+    stored_path: str
+    chunk_count: int
 
 
 @dataclass(slots=True)
@@ -534,6 +544,36 @@ class KnowledgeVectorStore:
     def count(self) -> int:
         return int(self.collection().count())
 
+    def list_documents(self) -> list[VectorStoreDocument]:
+        payload = self.collection().get(include=["metadatas"])
+        metadatas = payload.get("metadatas") or []
+        documents: OrderedDict[str, VectorStoreDocument] = OrderedDict()
+
+        for metadata in metadatas:
+            if not isinstance(metadata, dict):
+                continue
+            doc_id = str(metadata.get("doc_id", "")).strip()
+            filename = str(metadata.get("filename", "")).strip()
+            if not doc_id or not filename:
+                continue
+
+            existing = documents.get(doc_id)
+            category = str(metadata.get("category", "")).strip() or infer_category(filename)
+            stored_path = str(metadata.get("source_path", "")).strip()
+            if existing is None:
+                documents[doc_id] = VectorStoreDocument(
+                    doc_id=doc_id,
+                    filename=filename,
+                    category=category,
+                    stored_path=stored_path,
+                    chunk_count=1,
+                )
+                continue
+
+            existing.chunk_count += 1
+
+        return list(documents.values())
+
     def query_chunks(self, query_embedding: list[float], n_results: int) -> list[VectorStoreHit]:
         if n_results <= 0:
             return []
@@ -787,3 +827,38 @@ class KnowledgeImporter:
                 candidate.unlink()
         except OSError:
             return
+
+
+async def recover_knowledge_docs_from_vector_store(
+    db: AsyncSession,
+    *,
+    vector_store: KnowledgeVectorStore,
+) -> int:
+    existing_ids = {
+        row[0]
+        for row in (
+            await db.execute(select(KnowledgeDoc.id))
+        ).all()
+    }
+    recovered = 0
+    for snapshot in vector_store.list_documents():
+        if snapshot.doc_id in existing_ids:
+            continue
+        db.add(
+            KnowledgeDoc(
+                id=snapshot.doc_id,
+                filename=snapshot.filename,
+                category=snapshot.category,
+                stored_path=snapshot.stored_path,
+                chunk_count=snapshot.chunk_count,
+                status="ready",
+                error_message="",
+            )
+        )
+        existing_ids.add(snapshot.doc_id)
+        recovered += 1
+
+    if recovered:
+        await db.commit()
+
+    return recovered

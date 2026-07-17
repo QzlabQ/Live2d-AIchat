@@ -5,17 +5,19 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import struct
+from types import SimpleNamespace
 import unittest
 import wave
 from unittest.mock import patch
 
 import httpx
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.api.routes import admin_auth, admin_sessions, avatar, knowledge, voice_profiles
 from app.db.base import Base
-from app.db.models import Message, Session
+from app.db.models import KnowledgeDoc, Message, Session
 from app.db.session import get_db
 from app.services.admin_auth import get_admin_auth_service
 
@@ -199,6 +201,52 @@ class AdminApiTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items[0]["filename"], "history.txt")
         self.assertEqual(items[0]["category"], "history")
         self.assertEqual(items[0]["status"], "processing")
+
+    async def test_list_knowledge_docs_recovers_missing_rows_from_vector_store(self) -> None:
+        class FakeVectorStore:
+            def list_documents(self):
+                return [
+                    SimpleNamespace(
+                        doc_id="dfa0e009-26be-439e-beb7-f212d1a99baa",
+                        filename="灵山胜境 景点结构化数据集.docx",
+                        category="scenery",
+                        stored_path="E:/legacy/灵山胜境 景点结构化数据集.docx",
+                        chunk_count=40,
+                    ),
+                    SimpleNamespace(
+                        doc_id="6d55f8b7-0844-4736-8015-783965ae897e",
+                        filename="灵山胜境：历史、文化、景点特色与个性化游览指南.docx",
+                        category="route",
+                        stored_path="E:/legacy/灵山胜境：历史、文化、景点特色与个性化游览指南.docx",
+                        chunk_count=14,
+                    ),
+                ]
+
+        async with self.session_factory() as session:
+            existing = list((await session.execute(select(KnowledgeDoc))).scalars())
+            self.assertEqual(existing, [])
+
+        with patch("app.api.routes.knowledge.KnowledgeVectorStore", return_value=FakeVectorStore(), create=True):
+            response = await self.client.get("/api/v1/admin/knowledge", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual([item["filename"] for item in payload["items"]], [
+            "灵山胜境 景点结构化数据集.docx",
+            "灵山胜境：历史、文化、景点特色与个性化游览指南.docx",
+        ])
+
+        async with self.session_factory() as session:
+            recovered = list(
+                (
+                    await session.execute(select(KnowledgeDoc).order_by(KnowledgeDoc.filename.asc()))
+                ).scalars()
+            )
+
+        self.assertEqual(len(recovered), 2)
+        self.assertEqual(recovered[0].status, "ready")
+        self.assertEqual(recovered[1].chunk_count, 14)
 
     async def test_admin_can_list_sessions(self) -> None:
         async with self.session_factory() as session:

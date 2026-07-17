@@ -40,6 +40,7 @@ async def list_daily_reports(
         date_from=date_from,
         date_to=date_to,
         limit=limit,
+        reconcile=True,
     )
     return DailyEmotionReportListResponse(
         items=[DailyEmotionReportResponse.model_validate(item) for item in items]
@@ -59,6 +60,7 @@ async def get_report_summary(
         date_from=target_from,
         date_to=target_to,
         limit=366,
+        reconcile=True,
     )
     summary = await get_report_service().build_range_summary(
         db,

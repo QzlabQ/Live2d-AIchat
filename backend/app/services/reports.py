@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
@@ -109,9 +109,9 @@ class DailyEmotionReportService:
         force: bool = False,
     ) -> DailyEmotionReport:
         existing = await self._get_report_by_date(db, report_date)
-        if existing is not None and not force:
+        if existing is not None and not force and not await self._report_needs_refresh(db, existing):
             return existing
-        if existing is not None and force:
+        if existing is not None:
             await db.delete(existing)
             await db.flush()
 
@@ -143,8 +143,11 @@ class DailyEmotionReportService:
         date_from: date | None = None,
         date_to: date | None = None,
         limit: int = 31,
+        reconcile: bool = False,
     ) -> list[DailyEmotionReport]:
         stmt = select(DailyEmotionReport).order_by(DailyEmotionReport.report_date.desc())
+        if reconcile and date_from is not None and date_to is not None:
+            await self.reconcile_reports_in_range(db, date_from=date_from, date_to=date_to)
         if date_from is not None:
             stmt = stmt.where(DailyEmotionReport.report_date >= date_from)
         if date_to is not None:
@@ -152,6 +155,20 @@ class DailyEmotionReportService:
         if limit > 0:
             stmt = stmt.limit(limit)
         return list((await db.execute(stmt)).scalars())
+
+    async def reconcile_reports_in_range(
+        self,
+        db: AsyncSession,
+        *,
+        date_from: date,
+        date_to: date,
+    ) -> None:
+        target = date_from
+        today = datetime.now().date()
+        upper_bound = min(date_to, today)
+        while target <= upper_bound:
+            await self.generate_for_date_in_session(db, target, force=False)
+            target += timedelta(days=1)
 
     async def build_range_summary(
         self,
@@ -222,6 +239,30 @@ class DailyEmotionReportService:
     async def _get_report_by_date(self, db: AsyncSession, report_date: date) -> DailyEmotionReport | None:
         stmt = select(DailyEmotionReport).where(DailyEmotionReport.report_date == report_date).limit(1)
         return (await db.execute(stmt)).scalar_one_or_none()
+
+    async def _report_needs_refresh(self, db: AsyncSession, report: DailyEmotionReport) -> bool:
+        start_at = datetime.combine(report.report_date, time.min)
+        end_at = start_at + timedelta(days=1)
+        stats_stmt = (
+            select(
+                func.count(Message.id),
+                func.count(func.distinct(Message.session_id)),
+                func.count(Message.id).filter(Message.role == "user"),
+                func.count(Message.id).filter(Message.role == "assistant"),
+            )
+            .where(Message.created_at >= start_at, Message.created_at < end_at)
+        )
+        message_count, session_count, user_count, assistant_count = (
+            await db.execute(stats_stmt)
+        ).one()
+        return any(
+            [
+                int(session_count or 0) != int(report.session_count or 0),
+                int(message_count or 0) != int(report.message_count or 0),
+                int(user_count or 0) != int(report.user_message_count or 0),
+                int(assistant_count or 0) != int(report.assistant_message_count or 0),
+            ]
+        )
 
     async def _compute_report(self, db: AsyncSession, report_date: date) -> DailyReportComputation:
         start_at = datetime.combine(report_date, time.min)
