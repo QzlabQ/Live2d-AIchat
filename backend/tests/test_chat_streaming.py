@@ -899,6 +899,46 @@ class RAGGuideChatServiceFallbackTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(finals), 1)
         self.assertEqual(finals[0].text, "fallback answer from retrieval.")
 
+    async def test_stream_reply_passes_photo_context_to_rag_service(self) -> None:
+        service = RAGGuideChatService(Settings(chat_mode="rag"))
+        prepared = PreparedRAGAnswer(
+            answer_text="这是五印坛城。",
+            spoken_text="这是五印坛城。",
+            sources=[],
+            confidence=0.92,
+            used_llm=False,
+        )
+        prepare_stream_answer = AsyncMock(return_value=prepared)
+        fake_rag_service = SimpleNamespace(
+            prepare_stream_answer=prepare_stream_answer,
+        )
+        photo_context = {
+            "recognized_spot": "五印坛城",
+            "recognition_summary": "图片主体是一座白色藏式佛塔。",
+            "recognized_spot_canonical": True,
+        }
+
+        with patch("app.services.chat.get_rag_service", return_value=fake_rag_service):
+            events = [
+                event
+                async for event in service.stream_reply(
+                    "这是哪个景点？",
+                    persona="guide",
+                    photo_context=photo_context,
+                )
+            ]
+
+        prepare_stream_answer.assert_awaited_once_with(
+            "这是哪个景点？",
+            persona="guide",
+            history=[],
+            response_language=None,
+            photo_context=photo_context,
+        )
+        finals = [event for event in events if event.kind == "final"]
+        self.assertEqual(len(finals), 1)
+        self.assertEqual(finals[0].text, "这是五印坛城。")
+
     @staticmethod
     def _async_return(value):
         async def _inner(*args, **kwargs):

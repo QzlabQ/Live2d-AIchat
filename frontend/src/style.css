@@ -938,6 +938,33 @@ button {
   overflow-wrap: anywhere;
 }
 
+.bubble-attachment-stack {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.bubble-photo {
+  margin: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.bubble-photo-image {
+  display: block;
+  width: min(100%, 18rem);
+  border-radius: 1rem;
+  border: 1px solid rgba(22, 48, 70, 0.12);
+  background: rgba(255, 255, 255, 0.5);
+  object-fit: cover;
+}
+
+.bubble-photo-caption {
+  color: inherit;
+  opacity: 0.8;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
 .bubble-sources {
   margin-top: 0.85rem;
   padding-top: 0.8rem;
@@ -1058,6 +1085,68 @@ button {
 .composer-attachment-banner[data-tone="error"] {
   background: rgba(255, 240, 235, 0.94);
   border-color: rgba(181, 85, 67, 0.2);
+}
+
+.composer-photo-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: center;
+  margin-bottom: 0.85rem;
+  padding: 0.78rem 0.82rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(25, 74, 103, 0.1);
+  background: rgba(255, 250, 239, 0.92);
+}
+
+.composer-photo-card-image {
+  width: 4.25rem;
+  height: 4.25rem;
+  object-fit: cover;
+  border-radius: 0.82rem;
+  border: 1px solid rgba(22, 48, 70, 0.12);
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.composer-photo-card-copy {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.composer-photo-card-copy strong {
+  color: var(--ink-strong);
+}
+
+.composer-photo-card-copy span {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.composer-photo-card-remove {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.55rem 0.88rem;
+  background: rgba(181, 85, 67, 0.1);
+  color: #944333;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.composer-photo-card-remove:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(181, 85, 67, 0.12);
+  background: rgba(181, 85, 67, 0.16);
+}
+
+.composer-photo-card-remove:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .composer-input {

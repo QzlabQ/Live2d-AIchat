@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi import File, Form, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +15,7 @@ from app.db.session import get_db
 from app.schemas.visitor import (
     VisitorAvatarProfileListResponse,
     VisitorAvatarProfileSummary,
+    VisitorPhotoUploadResponse,
     VisionRecognitionResponse,
     VisitorRecommendationRequest,
     VisitorRecommendationResponse,
@@ -116,6 +119,64 @@ async def create_session_recommendations(
         highlights=result.highlights,
         suggested_questions=result.suggested_questions,
         applied_interest_tags=result.applied_interest_tags,
+    )
+
+
+@router.post("/{session_id}/attachments/photos", response_model=VisitorPhotoUploadResponse)
+async def upload_session_photo(
+    session_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    service: VisitorVisionService = Depends(get_visitor_vision_service),
+) -> VisitorPhotoUploadResponse:
+    session_obj = await db.get(Session, session_id)
+    if session_obj is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+
+    try:
+        data = await _read_upload_limited(file, max_bytes=get_settings().visitor_image_max_bytes)
+        stored_image_path, stored_filename, mime_type = await service.store_photo(
+            session_id=session_id,
+            filename=file.filename or "upload",
+            content_type=file.content_type or "",
+            data=data,
+        )
+    except VisitorVisionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    finally:
+        await file.close()
+
+    return VisitorPhotoUploadResponse(
+        stored_image_path=stored_image_path,
+        filename=stored_filename,
+        mime_type=mime_type,
+        preview_url=service.build_preview_url(session_id, stored_filename),
+    )
+
+
+@router.get("/{session_id}/photos/{filename}")
+async def get_session_photo(
+    session_id: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    service: VisitorVisionService = Depends(get_visitor_vision_service),
+):
+    session_obj = await db.get(Session, session_id)
+    if session_obj is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+
+    try:
+        stored_path, mime_type = service.resolve_preview_file(
+            session_id=session_id,
+            filename=filename,
+        )
+    except VisitorVisionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    return FileResponse(
+        path=Path(stored_path),
+        media_type=mime_type,
+        filename=Path(stored_path).name,
     )
 
 

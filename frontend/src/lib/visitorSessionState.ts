@@ -38,6 +38,7 @@ export function mapHistoryMessagesToChatMessages(items: VisitorSessionMessage[])
     content: item.content,
     meta: '历史记录',
     streaming: false,
+    attachments: item.attachments.map((attachment) => ({ ...attachment })),
   }))
 }
 

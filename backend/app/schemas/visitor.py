@@ -36,6 +36,13 @@ class VisionRecognitionResponse(BaseModel):
     stored_image_path: str
 
 
+class VisitorPhotoUploadResponse(BaseModel):
+    stored_image_path: str
+    filename: str
+    mime_type: str
+    preview_url: str
+
+
 class VisitorAvatarProfileSummary(BaseModel):
     id: int
     name: str

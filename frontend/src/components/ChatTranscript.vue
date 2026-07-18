@@ -60,6 +60,31 @@ defineExpose({
         @ask="emit('askToolAction', $event)"
       />
 
+      <div
+        v-else-if="message.attachments?.length"
+        class="bubble-attachment-stack"
+      >
+        <figure
+          v-for="attachment in message.attachments"
+          :key="`${message.id}-${attachment.storedImagePath}`"
+          class="bubble-photo"
+        >
+          <img
+            class="bubble-photo-image"
+            :src="attachment.previewUrl"
+            :alt="attachment.filename"
+            loading="lazy"
+          />
+          <figcaption class="bubble-photo-caption">
+            {{ attachment.filename }}
+          </figcaption>
+        </figure>
+        <p class="bubble-content">
+          {{ message.content }}
+          <span v-if="message.streaming" class="cursor">|</span>
+        </p>
+      </div>
+
       <p v-else class="bubble-content">
         {{ message.content }}
         <span v-if="message.streaming" class="cursor">|</span>

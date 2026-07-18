@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { listVisitorAvatarProfiles, recognizeVisitorPhoto } from './visitorApi'
+import { listVisitorAvatarProfiles, recognizeVisitorPhoto, uploadVisitorPhotoAttachment } from './visitorApi'
 
 const originalFetch = globalThis.fetch
 
@@ -59,6 +59,51 @@ describe('recognizeVisitorPhoto', () => {
         [],
       ),
     ).rejects.toThrow('Failed to recognize photo: Image file is empty.')
+  })
+})
+
+describe('uploadVisitorPhotoAttachment', () => {
+  it('maps preview URLs against the API host so the pending thumbnail can render before send', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          stored_image_path: 'session-1/uploaded.jpg',
+          filename: 'uploaded.jpg',
+          mime_type: 'image/jpeg',
+          preview_url: '/api/v1/sessions/session-1/photos/uploaded.jpg',
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    ) as typeof fetch
+
+    const result = await uploadVisitorPhotoAttachment(
+      'http://testserver/api/v1',
+      'session-1',
+      new File(['mock'], 'gate.jpg', { type: 'image/jpeg' }),
+    )
+
+    expect(result.storedImagePath).toBe('session-1/uploaded.jpg')
+    expect(result.previewUrl).toBe('http://testserver/api/v1/sessions/session-1/photos/uploaded.jpg')
+  })
+
+  it('surfaces backend detail text when upload fails', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ detail: 'Unsupported image content type.' }), {
+        status: 415,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ) as typeof fetch
+
+    await expect(
+      uploadVisitorPhotoAttachment(
+        'http://testserver/api/v1',
+        'session-1',
+        new File(['mock'], 'gate.gif', { type: 'image/gif' }),
+      ),
+    ).rejects.toThrow('Failed to upload photo: Unsupported image content type.')
   })
 })
 

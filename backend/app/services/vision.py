@@ -31,6 +31,91 @@ IMAGE_SIGNATURES: dict[str, tuple[bytes, ...]] = {
     "image/png": (b"\x89PNG\r\n\x1a\n",),
 }
 
+CANONICAL_SPOT_NAMES = (
+    "灵山大佛",
+    "灵山梵宫",
+    "九龙灌浴",
+    "五印坛城",
+    "祥符禅寺",
+    "佛手广场",
+    "百子戏弥勒",
+    "灵山精舍",
+    "曼飞龙塔",
+)
+
+CANONICAL_SPOT_ALIASES: dict[str, tuple[str, ...]] = {
+    "五印坛城": (
+        "五印坛城",
+        "白塔",
+        "藏式白塔",
+        "白色佛塔",
+        "五层佛塔",
+        "藏式佛塔",
+        "the white pagoda",
+        "white pagoda",
+        "white stupa",
+        "five-storeyed stupa",
+        "five-storied stupa",
+        "five-storeyed pagoda",
+        "five-storied pagoda",
+        "lingshan white pagoda",
+    ),
+    "灵山大佛": (
+        "灵山大佛",
+        "大佛",
+        "佛像",
+        "giant buddha",
+        "lingshan buddha",
+        "grand buddha at ling shan",
+    ),
+    "灵山梵宫": (
+        "灵山梵宫",
+        "梵宫",
+        "brahma palace",
+        "fan gong palace",
+    ),
+    "九龙灌浴": (
+        "九龙灌浴",
+        "九龙灌浴广场",
+        "baby buddha bathing",
+        "nine dragons bathing",
+    ),
+    "祥符禅寺": (
+        "祥符禅寺",
+        "祥符寺",
+        "xiangfu temple",
+        "xiangfu chan temple",
+    ),
+    "佛手广场": (
+        "佛手广场",
+        "天下第一掌",
+        "buddha hand square",
+    ),
+    "百子戏弥勒": (
+        "百子戏弥勒",
+        "百子戏弥勒雕塑",
+    ),
+    "灵山精舍": (
+        "灵山精舍",
+        "精舍",
+    ),
+    "曼飞龙塔": (
+        "曼飞龙塔",
+        "曼飞龙佛塔",
+        "manfeilong pagoda",
+    ),
+}
+
+GENERIC_SPOT_NAMES = {
+    "灵山胜境",
+    "灵山景区",
+    "景区",
+    "园区",
+    "寺庙",
+    "佛教景区",
+    "旅游景区",
+}
+
 
 class VisitorVisionError(Exception):
     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -79,6 +164,72 @@ class VisitorVisionService:
     def build_preview_url(self, session_id: str, filename: str) -> str:
         return f"/api/v1/sessions/{session_id}/photos/{filename}"
 
+    async def store_photo(
+        self,
+        *,
+        session_id: str,
+        filename: str,
+        content_type: str,
+        data: bytes,
+    ) -> tuple[str, str, str]:
+        normalized_content_type = self._validate_image_bytes(
+            content_type=content_type,
+            data=data,
+        )
+        stored_key, stored_path = self._store_image(
+            session_id=session_id,
+            filename=filename,
+            content_type=normalized_content_type,
+            data=data,
+        )
+        return stored_key, stored_path.name, normalized_content_type
+
+    async def recognize_stored_photo(
+        self,
+        *,
+        session_id: str,
+        stored_image_path: str,
+        interest_tags: list[str],
+        user_prompt: str | None = None,
+    ) -> VisitorVisionResult:
+        if not self.settings.dashscope_api_key:
+            raise VisitorVisionServiceNotConfiguredError(
+                "DASHSCOPE_API_KEY is not configured."
+            )
+        stored_key, stored_path = self._resolve_stored_image_path(
+            session_id=session_id,
+            stored_image_path=stored_image_path,
+        )
+        data = stored_path.read_bytes()
+        content_type = self._guess_content_type(stored_path)
+        normalized_content_type = self._validate_image_bytes(
+            content_type=content_type,
+            data=data,
+        )
+        data_url = self._build_data_url(normalized_content_type, data)
+        payload = await self._request_recognition_payload(
+            data_url=data_url,
+            interest_tags=self._normalize_interest_tags(interest_tags),
+            user_prompt=user_prompt,
+        )
+        return self._build_result_from_payload(payload=payload, stored_key=stored_key)
+
+    def resolve_preview_file(
+        self,
+        *,
+        session_id: str,
+        filename: str,
+    ) -> tuple[Path, str]:
+        cleaned_name = Path(filename).name
+        if not cleaned_name or cleaned_name in {".", ".."}:
+            raise VisitorVisionValidationError("Invalid photo filename.")
+        stored_key = f"{session_id}/{cleaned_name}"
+        _stored_key, stored_path = self._resolve_stored_image_path(
+            session_id=session_id,
+            stored_image_path=stored_key,
+        )
+        return stored_path, self._guess_content_type(stored_path)
+
     async def recognize(
         self,
         session_id: str,
@@ -93,20 +244,10 @@ class VisitorVisionService:
                 "DASHSCOPE_API_KEY is not configured."
             )
 
-        normalized_content_type = (content_type or "").strip().lower()
-        if normalized_content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
-            raise VisitorVisionUnsupportedMediaTypeError("Unsupported image content type.")
-        if not data:
-            raise VisitorVisionValidationError("Image file is empty.")
-        if len(data) > self.settings.visitor_image_max_bytes:
-            raise VisitorVisionPayloadTooLargeError(
-                "Image file exceeds the configured size limit."
-            )
-        if not self._matches_image_signature(normalized_content_type, data):
-            raise VisitorVisionValidationError(
-                "Image file content does not match the declared image type."
-            )
-
+        normalized_content_type = self._validate_image_bytes(
+            content_type=content_type,
+            data=data,
+        )
         stored_key, _stored_path = self._store_image(
             session_id=session_id,
             filename=filename,
@@ -119,13 +260,7 @@ class VisitorVisionService:
             interest_tags=self._normalize_interest_tags(interest_tags),
             user_prompt=user_prompt,
         )
-        return VisitorVisionResult(
-            recognized_spot=self._required_text(payload, "recognized_spot"),
-            recognition_summary=self._required_text(payload, "recognition_summary"),
-            resolved_question=self._required_text(payload, "resolved_question"),
-            stored_image_path=stored_key,
-            is_canonical_spot=bool(payload.get("is_canonical_spot", False)),
-        )
+        return self._build_result_from_payload(payload=payload, stored_key=stored_key)
 
     def _store_image(
         self,
@@ -152,6 +287,69 @@ class VisitorVisionService:
         encoded = base64.b64encode(data).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
 
+    def _validate_image_bytes(self, *, content_type: str, data: bytes) -> str:
+        normalized_content_type = (content_type or "").strip().lower()
+        if normalized_content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+            raise VisitorVisionUnsupportedMediaTypeError("Unsupported image content type.")
+        if not data:
+            raise VisitorVisionValidationError("Image file is empty.")
+        if len(data) > self.settings.visitor_image_max_bytes:
+            raise VisitorVisionPayloadTooLargeError(
+                "Image file exceeds the configured size limit."
+            )
+        if not self._matches_image_signature(normalized_content_type, data):
+            raise VisitorVisionValidationError(
+                "Image file content does not match the declared image type."
+            )
+        return normalized_content_type
+
+    def _resolve_stored_image_path(
+        self,
+        *,
+        session_id: str,
+        stored_image_path: str,
+    ) -> tuple[str, Path]:
+        storage_root = Path(self.settings.visitor_upload_dir).resolve()
+        raw_key = " ".join(str(stored_image_path or "").split())
+        relative_path = Path(raw_key)
+        if (
+            not raw_key
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or not relative_path.parts
+            or relative_path.parts[0] != session_id
+        ):
+            raise VisitorVisionValidationError("Invalid stored image path.")
+        stored_path = (storage_root / relative_path).resolve()
+        if not stored_path.is_relative_to(storage_root):
+            raise VisitorVisionValidationError("Invalid stored image path.")
+        if not stored_path.exists() or not stored_path.is_file():
+            raise VisitorVisionValidationError("Stored image file not found.")
+        return raw_key, stored_path
+
+    def _guess_content_type(self, stored_path: Path) -> str:
+        guessed = (mimetypes.guess_type(stored_path.name)[0] or "").strip().lower()
+        if guessed in ALLOWED_IMAGE_CONTENT_TYPES:
+            return guessed
+        raise VisitorVisionUnsupportedMediaTypeError("Unsupported image content type.")
+
+    def _build_result_from_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        stored_key: str,
+    ) -> VisitorVisionResult:
+        raw_spot = self._required_text(payload, "recognized_spot")
+        normalized_spot = self._normalize_recognized_spot(raw_spot)
+        is_canonical_spot = self._is_canonical_spot_name(normalized_spot)
+        return VisitorVisionResult(
+            recognized_spot=normalized_spot,
+            recognition_summary=self._required_text(payload, "recognition_summary"),
+            resolved_question=self._required_text(payload, "resolved_question"),
+            stored_image_path=stored_key,
+            is_canonical_spot=is_canonical_spot,
+        )
+
     def _matches_image_signature(self, content_type: str, data: bytes) -> bool:
         if content_type == "image/webp":
             return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
@@ -174,8 +372,10 @@ class VisitorVisionService:
                 {
                     "role": "system",
                     "content": (
-                        "You are a scenic spot vision assistant. "
-                        "Return only JSON with recognized_spot, recognition_summary, resolved_question, is_canonical_spot."
+                        "你是江苏无锡灵山胜境的景点识图助手。"
+                        "必须使用简体中文输出。"
+                        "只返回 JSON，不要输出任何额外说明。"
+                        "JSON 字段固定为 recognized_spot, recognition_summary, resolved_question, is_canonical_spot。"
                     ),
                 },
                 {
@@ -222,13 +422,17 @@ class VisitorVisionService:
         return parsed
 
     def _build_prompt(self, interest_tags: list[str], user_prompt: str | None) -> str:
-        joined_tags = ", ".join(interest_tags) if interest_tags else "none"
-        prompt = (user_prompt or "").strip() or "Describe the image for a visitor and infer a helpful follow-up question."
+        joined_tags = "、".join(interest_tags) if interest_tags else "无"
+        prompt = (user_prompt or "").strip() or "请帮我看看这张图片。"
         return (
-            "Analyze this visitor-uploaded scenic spot image. "
-            f"Visitor interest tags: {joined_tags}. "
-            f"User prompt: {prompt} "
-            "Respond with JSON fields recognized_spot, recognition_summary, resolved_question."
+            "请识别这张游客上传的灵山胜境景点照片。"
+            f"游客兴趣标签：{joined_tags}。"
+            f"游客当前问题：{prompt}。"
+            "请优先判断它是否对应灵山胜境的标准景点名，如灵山大佛、灵山梵宫、九龙灌浴、五印坛城、祥符禅寺、佛手广场、百子戏弥勒、灵山精舍、曼飞龙塔。"
+            "如果能可靠命中标准景点名，recognized_spot 直接填写标准景点中文名，is_canonical_spot 设为 true。"
+            "如果不能可靠命中标准景点名，recognized_spot 也必须用简体中文填写当前最合理的景点名称或场景描述，is_canonical_spot 设为 false。"
+            "recognition_summary 用1到2句简体中文概括画面线索。"
+            "resolved_question 用简体中文给出更完整的单轮提问句子，便于后续导览问答继续使用。"
         )
 
     def _normalize_interest_tags(self, interest_tags: list[str]) -> list[str]:
@@ -277,6 +481,24 @@ class VisitorVisionService:
                 f"Vision recognition payload missing required field: {key}"
             )
         return value
+
+    def _normalize_recognized_spot(self, raw_spot: str) -> str:
+        cleaned = " ".join(raw_spot.strip().split())
+        lowered = cleaned.casefold()
+        for canonical_name in CANONICAL_SPOT_NAMES:
+            if cleaned == canonical_name:
+                return canonical_name
+            aliases = CANONICAL_SPOT_ALIASES.get(canonical_name, ())
+            if any(lowered == alias.casefold() for alias in aliases):
+                return canonical_name
+            if any(alias.casefold() in lowered for alias in aliases):
+                return canonical_name
+        if cleaned in GENERIC_SPOT_NAMES:
+            return cleaned
+        return cleaned
+
+    def _is_canonical_spot_name(self, spot_name: str) -> bool:
+        return spot_name in CANONICAL_SPOT_NAMES
 
 
 @lru_cache

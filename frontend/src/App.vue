@@ -9,14 +9,12 @@ import Live2DStage from './components/Live2DStage.vue'
 import SessionHistoryRail from './components/SessionHistoryRail.vue'
 import { useAudioRecorder } from './composables/useAudioRecorder'
 import { useChatSocket } from './composables/useChatSocket'
-import { usePhotoRecognition } from './composables/usePhotoRecognition'
 import { useVisitorRecommendations } from './composables/useVisitorRecommendations'
 import { useVisitorSessions } from './composables/useVisitorSessions'
 import { base64ToBlobUrl, base64ToUint8Array } from './lib/base64'
 import { attachAssistantMessageMeta, normalizeSources } from './lib/chatMessageMeta'
 import { buildComposerQuickHints, type ComposerMode } from './lib/chatComposerMode'
 import { canUsePhotoAttachment } from './lib/photoAttachment'
-import { buildPhotoQuestion, shouldEnterThinkingForPhoto } from './lib/photoQuestion'
 import {
   discardReplyMessages,
   hasCancellableReplyActivity,
@@ -55,11 +53,13 @@ import {
   activateVisitorAvatarProfile,
   createVisitorSession,
   listVisitorAvatarProfiles,
+  uploadVisitorPhotoAttachment,
 } from './services/visitorApi'
 import type {
   AudioEvent,
   AvatarPhaseEvent,
   ChatMessage,
+  ChatPhotoAttachment,
   EmotionEvent,
   EmotionStage,
   EmotionTelemetry,
@@ -70,7 +70,7 @@ import type {
   TtsAudioChunkEvent,
   TtsVisemeChunkEvent,
 } from './types/chat'
-import type { VisitorAvatarProfileSummary } from './types/visitor'
+import type { VisitorAvatarProfileSummary, VisitorPhotoAttachment } from './types/visitor'
 
 const API_BASE_URL = getRuntimeApiBaseUrl(import.meta.env)
 const WS_BASE_URL = getRuntimeWsBaseUrl(import.meta.env, window.location)
@@ -79,6 +79,7 @@ const DEFAULT_MODEL_PATH =
 const LEGACY_BROKEN_MODEL_PATH = '/live2d/models/guide/guide.model3.json'
 const HEARTBEAT_MS = Number(import.meta.env.VITE_HEARTBEAT_MS || 15000)
 const RECONNECT_BASE_MS = Number(import.meta.env.VITE_RECONNECT_BASE_MS || 1200)
+const DEFAULT_PHOTO_QUESTION = '请帮我看看这张图片。'
 
 function createWelcomeMessage(): ChatMessage {
   return {
@@ -127,7 +128,6 @@ const transcriptRef = ref<{ scrollToEnd: () => Promise<void> } | null>(null)
 const visitorSessions = useVisitorSessions(API_BASE_URL)
 const sessionId = visitorSessions.activeSessionId
 const recommendationState = useVisitorRecommendations(API_BASE_URL, sessionId)
-const photoRecognition = usePhotoRecognition(API_BASE_URL, sessionId)
 const avatarProfiles = ref<VisitorAvatarProfileSummary[]>([])
 const avatarProfilesLoading = ref(false)
 const avatarProfilesError = ref('')
@@ -140,6 +140,9 @@ const historyRailOpen = ref(false)
 const composerMode = ref<ComposerMode>('chat')
 const bootError = ref('')
 const composer = ref('')
+const pendingPhotoAttachment = ref<VisitorPhotoAttachment | null>(null)
+const photoUploadBusy = ref(false)
+const photoUploadError = ref('')
 const messages = visitorSessions.activeMessages
 const assistantDraftId = ref<string | null>(null)
 const activeReplyUserMessageId = ref<string | null>(null)
@@ -219,7 +222,33 @@ function clearAvatarCooldownTimer() {
 function syncSessionTools(interestTags: string[]) {
   recommendationState.setSelectedTags(interestTags)
   recommendationState.clearRecommendation()
-  photoRecognition.clearResult()
+  clearPendingPhotoAttachment()
+}
+
+function clearPendingPhotoAttachment() {
+  pendingPhotoAttachment.value = null
+  photoUploadError.value = ''
+}
+
+function toChatPhotoAttachment(attachment: VisitorPhotoAttachment): ChatPhotoAttachment {
+  return {
+    kind: 'photo',
+    storedImagePath: attachment.storedImagePath,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    previewUrl: attachment.previewUrl,
+    recognizedSpot: attachment.recognizedSpot ?? null,
+    recognitionSummary: attachment.recognitionSummary ?? null,
+  }
+}
+
+function toSocketPhotoAttachment(attachment: ChatPhotoAttachment) {
+  return {
+    kind: 'photo' as const,
+    stored_image_path: attachment.storedImagePath,
+    filename: attachment.filename,
+    mime_type: attachment.mimeType,
+  }
 }
 
 function getSessionTagsById(targetSessionId: string | null) {
@@ -337,6 +366,7 @@ function resetConversation() {
   latestEmotion.value = 'neutral'
   emotionTelemetry.value = createDefaultEmotionTelemetry()
   composer.value = ''
+  clearPendingPhotoAttachment()
   resetReplyMediaState()
 }
 
@@ -982,12 +1012,7 @@ const recorder = useAudioRecorder({
   onError: handleSocketError,
 })
 
-const isPhotoThinking = computed(() =>
-  shouldEnterThinkingForPhoto({
-    uploading: photoRecognition.uploading.value,
-    recognizing: photoRecognition.recognizing.value,
-  }),
-)
+const isPhotoThinking = computed(() => photoUploadBusy.value)
 const isReplyStreaming = computed(
   () =>
     isReplyFlowActiveForSessionSwitch({
@@ -1026,7 +1051,7 @@ const sessionSwitchBlockedReason = computed(() => {
   }
 
   if (isPhotoThinking.value) {
-    return '图片识别进行中，等识别完成后再切换会话。'
+    return '图片上传进行中，等上传完成后再切换会话。'
   }
 
   if (isReplyStreaming.value) {
@@ -1038,10 +1063,11 @@ const sessionSwitchBlockedReason = computed(() => {
 const canSend = computed(
   () =>
     socket.state.value === 'connected' &&
-    composer.value.trim().length > 0 &&
+    (composer.value.trim().length > 0 || pendingPhotoAttachment.value !== null) &&
     !sessionBooting.value &&
     !canCancelReply.value &&
-    !replyCanceling.value,
+    !replyCanceling.value &&
+    !photoUploadBusy.value,
 )
 const canRecord = computed(
   () =>
@@ -1095,15 +1121,11 @@ const quickHints = computed(() =>
   }),
 )
 const photoStatusTitle = computed(() => {
-  if (photoRecognition.uploading.value || photoRecognition.recognizing.value) {
-    return '景点识别进行中'
-  }
-
-  return photoRecognition.lastResult.value?.recognizedSpot ?? ''
+  return pendingPhotoAttachment.value ? '已添加景点照片' : ''
 })
 const photoStatusDetail = computed(() => {
-  if (photoRecognition.lastResult.value) {
-    return photoRecognition.lastResult.value.resolvedQuestion
+  if (pendingPhotoAttachment.value) {
+    return '你可以继续输入问题，点击发送后再开始识图和问答。'
   }
 
   return ''
@@ -1267,10 +1289,13 @@ async function sendOutgoingText(
     meta?: string
     resetTurn?: boolean
     clearComposer?: boolean
+    attachments?: ChatPhotoAttachment[]
   } = {},
 ) {
   const normalized = content.trim()
-  if (!normalized) {
+  const attachments = options.attachments ?? []
+  const visibleContent = normalized || (attachments.length > 0 ? DEFAULT_PHOTO_QUESTION : '')
+  if (!visibleContent) {
     return false
   }
 
@@ -1292,16 +1317,17 @@ async function sendOutgoingText(
   messages.value.push({
     id: userMessageId,
     role: 'user',
-    content: normalized,
+    content: visibleContent,
     meta: options.meta,
+    attachments: attachments.map((attachment) => ({ ...attachment })),
   })
   startTrackedReplyTurn(userMessageId)
 
-  if (options.clearComposer) {
-    composer.value = ''
-  }
-
-  const sent = socket.send({ type: 'text', content: normalized })
+  const sent = socket.send({
+    type: 'text',
+    content: normalized,
+    attachments: attachments.map(toSocketPhotoAttachment),
+  })
   if (!sent) {
     messages.value = discardReplyMessages(messages.value, {
       userMessageId,
@@ -1312,16 +1338,27 @@ async function sendOutgoingText(
     return false
   }
 
+  if (options.clearComposer) {
+    composer.value = ''
+  }
+
   replyPending.value = true
   await scrollChatToEnd()
   return sent
 }
 
 async function sendText() {
-  await sendOutgoingText(composer.value, {
+  const attachments = pendingPhotoAttachment.value
+    ? [toChatPhotoAttachment(pendingPhotoAttachment.value)]
+    : []
+  const sent = await sendOutgoingText(composer.value, {
     clearComposer: true,
     resetTurn: true,
+    attachments,
   })
+  if (sent && pendingPhotoAttachment.value) {
+    clearPendingPhotoAttachment()
+  }
 }
 
 async function toggleRecording() {
@@ -1478,33 +1515,28 @@ async function handlePhotoPicked(file: File) {
     }
   }
 
-  try {
-    photoRecognition.clearResult()
-    resetReplyMediaState()
-    beginLocalThinkingPhase('photo_recognition_started')
+  const previousAttachment = pendingPhotoAttachment.value
+  composerMode.value = 'chat'
+  photoUploadBusy.value = true
+  photoUploadError.value = ''
 
-    const result = await photoRecognition.recognize(
+  try {
+    pendingPhotoAttachment.value = await uploadVisitorPhotoAttachment(
+      API_BASE_URL,
+      sessionId.value,
       file,
-      recommendationState.selectedInterestTags.value,
     )
-    const autoQuestion = buildPhotoQuestion({
-      recognizedSpot: result.recognizedSpot,
-      recognitionSummary: result.recognitionSummary,
-      resolvedQuestion: result.resolvedQuestion,
-    })
-    await sendOutgoingText(autoQuestion, {
-      meta: '图片识别',
-      resetTurn: false,
-    })
-  } catch {
-    applyAvatarPhase({
-      type: 'avatar_phase',
-      phase: 'idle',
-      at_ms: Date.now(),
-      reason: 'photo_recognition_error',
-    })
+  } catch (error) {
+    pendingPhotoAttachment.value = previousAttachment
+    photoUploadError.value = error instanceof Error ? error.message : '图片上传失败'
     await scrollChatToEnd()
+  } finally {
+    photoUploadBusy.value = false
   }
+}
+
+function handlePhotoRemoved() {
+  clearPendingPhotoAttachment()
 }
 
 async function activateSelectedAvatarProfile() {
@@ -1755,10 +1787,12 @@ onBeforeUnmount(() => {
               :can-attach-photo="!photoAttachmentDisabled"
               :can-toggle-route-mode="!!sessionId"
               :is-recording="recorder.isRecording.value"
-              :photo-busy="photoRecognition.uploading.value || photoRecognition.recognizing.value"
+              :photo-busy="photoUploadBusy"
               :photo-status-title="photoStatusTitle"
               :photo-status-detail="photoStatusDetail"
-              :photo-error="photoRecognition.error.value"
+              :photo-error="photoUploadError"
+              :photo-preview-url="pendingPhotoAttachment?.previewUrl || ''"
+              :photo-filename="pendingPhotoAttachment?.filename || ''"
               :route-selected-tags="recommendationState.selectedInterestTags.value"
               :route-loading="recommendationState.loading.value"
               :route-saving="recommendationState.saving.value"
@@ -1768,6 +1802,7 @@ onBeforeUnmount(() => {
               @toggle-route-tag="handleToggleInterestTag"
               @generate-route="handleGenerateRecommendation"
               @pick-photo="handlePhotoPicked"
+              @remove-photo="handlePhotoRemoved"
               @cancel-reply="cancelCurrentReply"
               @send="sendText"
               @toggle-recording="toggleRecording"

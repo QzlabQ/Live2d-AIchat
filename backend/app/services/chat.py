@@ -208,6 +208,7 @@ class BaseGuideChatService:
         *,
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
+        photo_context: dict[str, str] | None = None,
     ) -> AsyncIterator[ReplyStreamEvent]:
         generated = await self.generate_reply(
             user_text,
@@ -215,6 +216,7 @@ class BaseGuideChatService:
             response_language=response_language,
             query_text=query_text,
             history=history,
+            photo_context=photo_context,
         )
         async for event in self._stream_from_pieces(
             self._iter_pieces(self.chunk_text(generated.spoken_text or generated.text)),
@@ -320,6 +322,7 @@ class TemplateGuideChatService(BaseGuideChatService):
         *,
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
+        photo_context: dict[str, str] | None = None,
     ) -> GeneratedReply:
         text = " ".join(user_text.strip().split())
         if not text:
@@ -400,12 +403,14 @@ class RAGGuideChatService(BaseGuideChatService):
         *,
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
+        photo_context: dict[str, str] | None = None,
     ) -> GeneratedReply:
         answer = await get_rag_service().answer(
             query_text or user_text,
             persona=persona,
             history=history or [],
             response_language=response_language,
+            photo_context=photo_context,
         )
         emotion = await self.analyze_emotion(user_text, answer.spoken_text or answer.answer_text)
         return GeneratedReply(
@@ -431,6 +436,7 @@ class RAGGuideChatService(BaseGuideChatService):
         *,
         query_text: str | None = None,
         history: list[dict[str, str]] | None = None,
+        photo_context: dict[str, str] | None = None,
     ) -> AsyncIterator[ReplyStreamEvent]:
         rag_service = get_rag_service()
         prepared = await rag_service.prepare_stream_answer(
@@ -438,6 +444,7 @@ class RAGGuideChatService(BaseGuideChatService):
             persona=persona,
             history=history or [],
             response_language=response_language,
+            photo_context=photo_context,
         )
         fallback_text = prepared.answer_text or prepared.fallback_text or prepared.spoken_text
         if prepared.metrics:

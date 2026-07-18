@@ -20,6 +20,8 @@ const props = withDefaults(
     photoStatusTitle?: string
     photoStatusDetail?: string
     photoError?: string
+    photoPreviewUrl?: string
+    photoFilename?: string
     routeSelectedTags?: string[]
     routeLoading?: boolean
     routeSaving?: boolean
@@ -35,6 +37,8 @@ const props = withDefaults(
     photoStatusTitle: '',
     photoStatusDetail: '',
     photoError: '',
+    photoPreviewUrl: '',
+    photoFilename: '',
     routeSelectedTags: () => [],
     routeLoading: false,
     routeSaving: false,
@@ -47,6 +51,7 @@ const emit = defineEmits<{
   'update:modelValue': [value: string]
   switchMode: [mode: ComposerMode]
   pickPhoto: [file: File]
+  removePhoto: []
   send: []
   cancelReply: []
   toggleRecording: []
@@ -118,6 +123,10 @@ function emitGenerateRoute() {
   emit('generateRoute')
 }
 
+function removePhoto() {
+  emit('removePhoto')
+}
+
 function closeAttachmentMenuOnOutsidePointer(event: PointerEvent) {
   if (!attachmentMenuOpen.value) {
     return
@@ -176,18 +185,37 @@ onBeforeUnmount(() => {
 
     <div class="composer-panel">
       <div
-        v-if="props.photoBusy || props.photoError || props.photoStatusTitle"
+        v-if="props.photoBusy || props.photoError"
         class="composer-attachment-banner"
         :data-tone="props.photoError ? 'error' : props.photoBusy ? 'busy' : 'ready'"
       >
-        <strong>{{ props.photoBusy ? '正在识别景点照片' : props.photoError || props.photoStatusTitle }}</strong>
+        <strong>{{ props.photoBusy ? '正在上传景点照片' : props.photoError }}</strong>
         <span>
           {{
             props.photoBusy
-              ? '识别完成后会自动生成追问并发到当前会话。'
+              ? '上传成功后会先挂在输入区，等你点击发送时再和问题一起提交。'
               : props.photoError || props.photoStatusDetail
           }}
         </span>
+      </div>
+
+      <div
+        v-if="props.photoPreviewUrl && props.photoFilename"
+        class="composer-photo-card"
+      >
+        <img class="composer-photo-card-image" :src="props.photoPreviewUrl" :alt="props.photoFilename" />
+        <div class="composer-photo-card-copy">
+          <strong>{{ props.photoStatusTitle || '已添加景点照片' }}</strong>
+          <span>{{ props.photoStatusDetail || props.photoFilename }}</span>
+        </div>
+        <button
+          type="button"
+          class="composer-photo-card-remove"
+          :disabled="props.photoBusy"
+          @click="removePhoto"
+        >
+          移除
+        </button>
       </div>
 
       <textarea
@@ -235,7 +263,7 @@ onBeforeUnmount(() => {
                 @click="openPhotoPicker"
               >
                 <span class="attach-menu-title">上传景点照片</span>
-                <span class="attach-menu-desc">识别景点后自动帮你发问</span>
+                <span class="attach-menu-desc">先挂到输入区，发送时和问题一起提交</span>
               </button>
             </div>
           </transition>

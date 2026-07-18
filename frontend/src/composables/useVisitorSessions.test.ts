@@ -28,10 +28,10 @@ describe('useVisitorSessions', () => {
 
   it('ignores stale openSession responses when a newer request finishes later', async () => {
     const older = createDeferred<{
-      items: Array<{ id: number; role: 'user'; content: string; createdAt: string }>
+      items: Array<{ id: number; role: 'user'; content: string; createdAt: string; attachments: [] }>
     }>()
     const newer = createDeferred<{
-      items: Array<{ id: number; role: 'user'; content: string; createdAt: string }>
+      items: Array<{ id: number; role: 'user'; content: string; createdAt: string; attachments: [] }>
     }>()
 
     vi.mocked(loadVisitorSessionMessages)
@@ -43,12 +43,12 @@ describe('useVisitorSessions', () => {
     const newerTask = sessions.openSession('session-new')
 
     newer.resolve({
-      items: [{ id: 2, role: 'user', content: 'newer', createdAt: '2026-07-08T10:00:01Z' }],
+      items: [{ id: 2, role: 'user', content: 'newer', createdAt: '2026-07-08T10:00:01Z', attachments: [] }],
     })
     await newerTask
 
     older.resolve({
-      items: [{ id: 1, role: 'user', content: 'older', createdAt: '2026-07-08T10:00:00Z' }],
+      items: [{ id: 1, role: 'user', content: 'older', createdAt: '2026-07-08T10:00:00Z', attachments: [] }],
     })
     await olderTask
 

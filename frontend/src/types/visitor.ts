@@ -18,6 +18,7 @@ export interface VisitorSessionMessage {
   role: VisitorSessionMessageRole
   content: string
   createdAt: string
+  attachments: VisitorPhotoAttachment[]
 }
 
 export interface VisitorSessionMessageListResponse {
@@ -37,6 +38,16 @@ export interface VisionRecognitionResult {
   recognitionSummary: string
   resolvedQuestion: string
   storedImagePath: string
+}
+
+export interface VisitorPhotoAttachment {
+  kind: 'photo'
+  storedImagePath: string
+  filename: string
+  mimeType: string
+  previewUrl: string
+  recognizedSpot?: string | null
+  recognitionSummary?: string | null
 }
 
 export interface VisitorAvatarProfileSummary {

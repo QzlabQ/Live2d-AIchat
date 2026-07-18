@@ -3,6 +3,7 @@ import { normalizeVisitorMessageRole } from '../lib/visitorSessionState'
 import type {
   VisitorAvatarProfileListResponse,
   VisitorAvatarProfileSummary,
+  VisitorPhotoAttachment,
   VisionRecognitionResult,
   VisitorRecommendation,
   VisitorSessionListResponse,
@@ -32,6 +33,7 @@ interface VisitorSessionMessageApi {
   role: string
   content: string
   created_at: string
+  attachments?: VisitorPhotoAttachmentApi[]
 }
 
 interface VisitorSessionMessageListResponseApi {
@@ -51,6 +53,23 @@ interface VisionRecognitionResultApi {
   recognition_summary: string
   resolved_question: string
   stored_image_path: string
+}
+
+interface VisitorPhotoAttachmentApi {
+  kind: 'photo'
+  stored_image_path: string
+  filename: string
+  mime_type: string
+  preview_url: string
+  recognized_spot?: string | null
+  recognition_summary?: string | null
+}
+
+interface VisitorPhotoUploadResponseApi {
+  stored_image_path: string
+  filename: string
+  mime_type: string
+  preview_url: string
 }
 
 interface VisitorAvatarProfileSummaryApi {
@@ -75,6 +94,14 @@ const LEGACY_BROKEN_MODEL_PATH = '/live2d/models/guide/guide.model3.json'
 
 function trimApiBaseUrl(apiBaseUrl: string) {
   return apiBaseUrl.replace(/\/+$/, '')
+}
+
+function resolveApiUrl(apiBaseUrl: string, path: string) {
+  try {
+    return new URL(path, `${trimApiBaseUrl(apiBaseUrl)}/`).toString()
+  } catch {
+    return path
+  }
 }
 
 async function readJson<T>(response: Response, action: string) {
@@ -122,6 +149,21 @@ function mapVisionRecognition(payload: VisionRecognitionResultApi): VisionRecogn
     recognitionSummary: payload.recognition_summary,
     resolvedQuestion: payload.resolved_question,
     storedImagePath: payload.stored_image_path,
+  }
+}
+
+function mapPhotoAttachment(
+  apiBaseUrl: string,
+  payload: VisitorPhotoAttachmentApi | VisitorPhotoUploadResponseApi,
+): VisitorPhotoAttachment {
+  return {
+    kind: 'photo',
+    storedImagePath: payload.stored_image_path,
+    filename: payload.filename,
+    mimeType: payload.mime_type,
+    previewUrl: resolveApiUrl(apiBaseUrl, payload.preview_url),
+    recognizedSpot: 'recognized_spot' in payload ? payload.recognized_spot ?? null : null,
+    recognitionSummary: 'recognition_summary' in payload ? payload.recognition_summary ?? null : null,
   }
 }
 
@@ -193,6 +235,7 @@ export async function loadVisitorSessionMessages(
       role: normalizeVisitorMessageRole(item.role),
       content: item.content,
       createdAt: item.created_at,
+      attachments: (item.attachments ?? []).map((attachment) => mapPhotoAttachment(apiBaseUrl, attachment)),
     })),
   }
 }
@@ -261,6 +304,26 @@ export async function recognizeVisitorPhoto(
 
   const data = await readJson<VisionRecognitionResultApi>(response, 'recognize photo')
   return mapVisionRecognition(data)
+}
+
+export async function uploadVisitorPhotoAttachment(
+  apiBaseUrl: string,
+  sessionId: string,
+  file: File,
+): Promise<VisitorPhotoAttachment> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(
+    `${trimApiBaseUrl(apiBaseUrl)}/sessions/${sessionId}/attachments/photos`,
+    {
+      method: 'POST',
+      body: formData,
+    },
+  )
+
+  const data = await readJson<VisitorPhotoUploadResponseApi>(response, 'upload photo')
+  return mapPhotoAttachment(apiBaseUrl, data)
 }
 
 export async function listVisitorAvatarProfiles(

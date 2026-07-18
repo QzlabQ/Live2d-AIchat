@@ -8,6 +8,7 @@ import type { VisitorSessionSummary } from '../types/visitor'
 function cloneChatMessages(messages: ChatMessage[]) {
   return messages.map((message) => ({
     ...message,
+    attachments: message.attachments?.map((attachment) => ({ ...attachment })),
     sources: message.sources?.map((source) => ({ ...source })),
   }))
 }

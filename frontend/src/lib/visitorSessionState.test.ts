@@ -37,8 +37,20 @@ describe('normalizeVisitorMessageRole', () => {
 describe('mapHistoryMessagesToChatMessages', () => {
   it('maps backend session messages into chat bubbles', () => {
     const messages = mapHistoryMessagesToChatMessages([
-      { id: 1, role: 'user', content: '开放时间是什么时候？', createdAt: '2026-07-07T10:00:00Z' },
-      { id: 2, role: 'assistant', content: '景区整体一般是 9:00-21:30。', createdAt: '2026-07-07T10:00:01Z' },
+      {
+        id: 1,
+        role: 'user',
+        content: '开放时间是什么时候？',
+        createdAt: '2026-07-07T10:00:00Z',
+        attachments: [],
+      },
+      {
+        id: 2,
+        role: 'assistant',
+        content: '景区整体一般是 9:00-21:30。',
+        createdAt: '2026-07-07T10:00:01Z',
+        attachments: [],
+      },
     ])
 
     expect(messages[0].role).toBe('user')

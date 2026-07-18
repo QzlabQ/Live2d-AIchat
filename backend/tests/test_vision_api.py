@@ -32,6 +32,56 @@ from app.services.vision import (
 
 
 class VisitorVisionServiceTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_build_prompt_targets_lingshan_and_simplified_chinese(self) -> None:
+        service = VisitorVisionService(
+            Settings(
+                dashscope_api_key="test-key",
+                visitor_upload_dir="/tmp/uploads",
+                visitor_image_max_bytes=1024 * 1024,
+            )
+        )
+
+        prompt = service._build_prompt(["历史文化", "拍照打卡"], "这是哪个景点？")
+
+        self.assertIn("灵山胜境", prompt)
+        self.assertIn("游客当前问题：这是哪个景点？", prompt)
+        self.assertIn("recognized_spot 直接填写标准景点中文名", prompt)
+        self.assertNotIn("Analyze this visitor-uploaded scenic spot image.", prompt)
+
+    async def test_recognize_stored_photo_normalizes_english_alias_to_canonical_chinese_name(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            settings = Settings(
+                dashscope_api_key="test-key",
+                visitor_upload_dir=str(Path(temp_dir) / "uploads"),
+                visitor_image_max_bytes=1024 * 1024,
+            )
+            service = VisitorVisionService(settings)
+            stored_image_path, _, _ = await service.store_photo(
+                session_id="session-vision-canonical",
+                filename="white-pagoda.jpg",
+                content_type="image/jpeg",
+                data=b"\xff\xd8\xff\xe0mock-jpeg",
+            )
+            request_mock = AsyncMock(
+                return_value={
+                    "recognized_spot": "The White Pagoda",
+                    "recognition_summary": "画面主体是一座白色藏式佛塔。",
+                    "resolved_question": "这是哪个景点？",
+                    "is_canonical_spot": False,
+                }
+            )
+
+            with patch.object(service, "_request_recognition_payload", request_mock):
+                result = await service.recognize_stored_photo(
+                    session_id="session-vision-canonical",
+                    stored_image_path=stored_image_path,
+                    interest_tags=["拍照打卡"],
+                    user_prompt="这是哪个景点？",
+                )
+
+            self.assertEqual(result.recognized_spot, "五印坛城")
+            self.assertTrue(result.is_canonical_spot)
+
     async def test_recognize_stores_image_and_returns_relative_storage_key(self) -> None:
         with TemporaryDirectory() as temp_dir:
             settings = Settings(
@@ -507,6 +557,56 @@ class VisitorVisionHttpSmokeTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stub.requests[0]["content_type"], "image/jpeg")
         self.assertEqual(stub.requests[0]["interest_tags"], ["history", "architecture"])
         self.assertEqual(stub.requests[0]["user_prompt"], "What is this spot?")
+
+    async def test_post_attachment_photo_returns_stored_payload(self) -> None:
+        session_obj = await self._insert_session()
+        service = VisitorVisionService(
+            Settings(
+                visitor_upload_dir=str(Path(self.temp_dir.name) / "uploads"),
+                visitor_image_max_bytes=1024 * 1024,
+            )
+        )
+        self.app.dependency_overrides[get_visitor_vision_service] = lambda: service
+
+        response = await self.client.post(
+            f"/api/v1/sessions/{session_obj.id}/attachments/photos",
+            files={"file": ("gate.jpg", b"\xff\xd8\xff\xe0mock-jpeg", "image/jpeg")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["mime_type"], "image/jpeg")
+        self.assertTrue(payload["stored_image_path"].startswith(f"{session_obj.id}/"))
+        self.assertTrue(payload["filename"].endswith(".jpg"))
+        self.assertEqual(
+            payload["preview_url"],
+            f"/api/v1/sessions/{session_obj.id}/photos/{payload['filename']}",
+        )
+        self.assertTrue((Path(service.settings.visitor_upload_dir) / payload["stored_image_path"]).exists())
+
+    async def test_get_photo_preview_returns_uploaded_image_bytes(self) -> None:
+        session_obj = await self._insert_session()
+        service = VisitorVisionService(
+            Settings(
+                visitor_upload_dir=str(Path(self.temp_dir.name) / "uploads"),
+                visitor_image_max_bytes=1024 * 1024,
+            )
+        )
+        self.app.dependency_overrides[get_visitor_vision_service] = lambda: service
+
+        upload_response = await self.client.post(
+            f"/api/v1/sessions/{session_obj.id}/attachments/photos",
+            files={"file": ("gate.jpg", b"\xff\xd8\xff\xe0mock-jpeg", "image/jpeg")},
+        )
+        filename = upload_response.json()["filename"]
+
+        preview_response = await self.client.get(
+            f"/api/v1/sessions/{session_obj.id}/photos/{filename}"
+        )
+
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertEqual(preview_response.headers["content-type"], "image/jpeg")
+        self.assertEqual(preview_response.content, b"\xff\xd8\xff\xe0mock-jpeg")
 
     async def test_post_vision_recognize_accepts_empty_interest_tags_array(self) -> None:
         session_obj = await self._insert_session()

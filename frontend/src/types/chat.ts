@@ -4,10 +4,21 @@ export interface ChatMessage {
   content: string
   streaming?: boolean
   meta?: string
+  attachments?: ChatPhotoAttachment[]
   sources?: SourceItem[]
   replyKind?: string
   needsFollowup?: boolean
   toolResult?: ChatToolResult
+}
+
+export interface ChatPhotoAttachment {
+  kind: 'photo'
+  storedImagePath: string
+  filename: string
+  mimeType: string
+  previewUrl: string
+  recognizedSpot?: string | null
+  recognitionSummary?: string | null
 }
 
 export interface RouteRecommendationToolResult {
@@ -55,6 +66,14 @@ export interface EmotionTelemetry {
 export interface SocketTextMessage {
   type: 'text'
   content: string
+  attachments?: SocketPhotoAttachment[]
+}
+
+export interface SocketPhotoAttachment {
+  kind: 'photo'
+  stored_image_path: string
+  filename: string
+  mime_type: string
 }
 
 export interface SocketHelloMessage {
