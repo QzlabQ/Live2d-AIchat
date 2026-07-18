@@ -47,6 +47,7 @@ import {
   shouldStartBufferedPlayback,
 } from './lib/streamAudioBuffer'
 import {
+  canToggleRecording,
   canSwitchSessionWhileIdle,
   isReplyFlowActiveForSessionSwitch,
 } from './lib/visitorSessionState'
@@ -1044,11 +1045,14 @@ const canSend = computed(
 )
 const canRecord = computed(
   () =>
-    recorder.isSupported.value &&
-    socket.state.value === 'connected' &&
-    !sessionBooting.value &&
-    !canCancelReply.value &&
-    !replyCanceling.value,
+    canToggleRecording({
+      isSupported: recorder.isSupported.value,
+      isConnected: socket.state.value === 'connected',
+      sessionBooting: sessionBooting.value,
+      canCancelReply: canCancelReply.value,
+      replyCanceling: replyCanceling.value,
+      isRecording: recorder.isRecording.value,
+    }),
 )
 const meterScale = computed(() => Math.max(0.05, recorder.level.value))
 const avatarPresentation = computed(() =>

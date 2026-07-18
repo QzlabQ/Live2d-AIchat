@@ -48,6 +48,27 @@ export function canSwitchSessionWhileIdle(state: {
   return !state.isStreaming && !state.isRecording
 }
 
+export function canToggleRecording(state: {
+  isSupported: boolean
+  isConnected: boolean
+  sessionBooting: boolean
+  canCancelReply: boolean
+  replyCanceling: boolean
+  isRecording: boolean
+}) {
+  if (state.isRecording) {
+    return true
+  }
+
+  return (
+    state.isSupported &&
+    state.isConnected &&
+    !state.sessionBooting &&
+    !state.canCancelReply &&
+    !state.replyCanceling
+  )
+}
+
 export function isReplyFlowActiveForSessionSwitch(state: {
   replyPending: boolean
   isPhotoPending: boolean

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  canToggleRecording,
   canSwitchSessionWhileIdle,
   isReplyFlowActiveForSessionSwitch,
   mapHistoryMessagesToChatMessages,
@@ -53,6 +54,34 @@ describe('canSwitchSessionWhileIdle', () => {
 
   it('allows switching when streaming and recording are both idle', () => {
     expect(canSwitchSessionWhileIdle({ isStreaming: false, isRecording: false })).toBe(true)
+  })
+})
+
+describe('canToggleRecording', () => {
+  it('keeps the record button enabled while recording so the user can stop manually', () => {
+    expect(
+      canToggleRecording({
+        isSupported: true,
+        isConnected: true,
+        sessionBooting: false,
+        canCancelReply: true,
+        replyCanceling: false,
+        isRecording: true,
+      }),
+    ).toBe(true)
+  })
+
+  it('blocks starting a new recording while a cancellable reply is active', () => {
+    expect(
+      canToggleRecording({
+        isSupported: true,
+        isConnected: true,
+        sessionBooting: false,
+        canCancelReply: true,
+        replyCanceling: false,
+        isRecording: false,
+      }),
+    ).toBe(false)
   })
 })
 
