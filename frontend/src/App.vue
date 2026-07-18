@@ -1582,17 +1582,6 @@ onBeforeUnmount(() => {
     <div class="aurora aurora-left"></div>
     <div class="aurora aurora-right"></div>
 
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">Phase 3 Visitor Experience</p>
-        <h1>景区 AI 数字人导览台</h1>
-        <p class="subtitle">
-          当前页面整合了历史会话、个性化路线推荐、拍照问景点、流式语音回复和 Live2D 口型同步，
-          方便在同一个游客端完成完整体验。
-        </p>
-      </div>
-    </header>
-
     <main class="workspace">
       <button
         class="history-rail-peek"
