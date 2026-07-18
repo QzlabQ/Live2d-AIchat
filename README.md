@@ -1,138 +1,120 @@
 # 景区导览服务 AI 数字人
 
 > 中国软件杯 A5 赛题项目  
-> 当前仓库状态更新于 `2026-07-14`
+> 面向景区导览场景的多模态 AI 数字人系统
 
-一个面向景区导览场景的多模态 AI 数字人系统，支持文字/语音问答、Live2D 数字人驱动、RAG 知识库问答、游客端个性化推荐、管理后台配置与数据大屏。
+本项目聚焦“景区导览”这一真实服务场景，构建了一套集文字问答、语音交互、图片识图、Live2D 数字人展示、知识库问答、管理后台与数据分析于一体的完整系统。它不仅能“回答问题”，还强调“像导游一样讲解、推荐、追问与持续运营”。
 
-项目目标不是只做“会回答问题的聊天框”，而是做一个可演示、可配置、可部署的景区导览数字人产品原型。
+延伸阅读：[总体设计说明](docs/overall-design.md)
 
-## 当前进度
+## 演示预览
 
-按照 [docs/roadmap.md](docs/roadmap.md) 统计，目前整体进度如下：
+当前 README 采用“素材占位”方案，待前端演示素材补齐后可直接替换：
 
-| 阶段 | 状态 | 说明 |
-| --- | --- | --- |
-| Phase 1 基础骨架 | 已完成 | 前后端骨架、WebSocket、ASR/TTS 基础链路、知识库导入已打通 |
-| Phase 2 核心 AI 能力 | 基本完成 | RAG、CosyVoice2 TTS、流式音频、口型同步、情绪与动作联动已落地 |
-| Phase 3 功能完整化 | 基本完成 | 游客端、管理后台、数字人配置、知识库管理、会话记录、语音与多模态体验已完成主链路 |
-| Phase 4 数据大屏与体验打磨 | 部分完成 | 数据大屏、感受度报告已完成；TTS 延迟、口型精度、体验收尾仍在优化 |
-| Phase 5 测试与交付 | 未开始/进行前准备 | 一键部署、完整验收、最终材料整理仍待收尾 |
-
-如果只看“是否已经可演示”，答案是：**可以**。  
-如果看“是否已经达到比赛最终交付质量”，答案是：**还在做性能与部署收尾**。
-
-## 已实现能力
-
-### 游客端
-
-- 文字对话与语音对话
-- `faster-whisper` 语音识别链路
-- Live2D 数字人展示、情绪切换、思考态/说话态动作协调
-- CosyVoice2 本地 TTS 发声
-- 流式音频播放与基础口型同步
-- 拍照上传后进行景点识别与问答
-- 个性化路线/偏好推荐入口
-- GPT 风格的历史会话侧边栏与多模态 `+` 入口
-- 多数字人切换
-
-### 管理后台
-
-- 数字人配置页
-- 知识库管理页
-- 会话记录页
-- 感受度报告页
-- 数据大屏页
-- 后台数字人实时预览与情绪预览
-
-### 后端与 AI
-
-- FastAPI + WebSocket 实时对话通道
-- PostgreSQL / SQLite 数据持久化
-- RAG 检索、重排、生成与口语化改写
-- 澄清追问状态管理
-- CosyVoice2-0.5B 本地 TTS
-- 本地/远程 TTS Provider 抽象
-- ASR / RAG / TTS / 前端缓冲 trace 记录
+- 游客端数字人对话 GIF：`.github/assets/readme/visitor-demo.gif`
+- 管理后台大屏截图：`.github/assets/readme/admin-dashboard.png`
 
 ## 核心亮点
 
-1. **不是纯聊天机器人**  
-   以景区导览为主场景，强调“可讲解、可推荐、可配置、可管理”。
+### 1. 端到端多模态闭环
 
-2. **RAG 回答做人性化改写**  
-   不直接把知识库原文拼接给游客，而是先重写成导览式口语回答，并在需要时主动澄清。
+系统将文本提问、语音输入、拍照识图统一纳入同一条数字人问答主链：用户输入经过 ASR 或视觉识别后进入 RAG / LLM，再联动 TTS、Live2D 表情、动作和口型同步，形成完整的沉浸式导览体验。
 
-3. **数字人链路已完整打通**  
-   从游客输入，到 LLM/RAG 回答，到 TTS 发声，再到 Live2D 表情与口型联动，已经形成端到端演示链路。
+详见：[系统架构设计](docs/architecture.md)
 
-4. **已经考虑真实部署问题**  
-   仓库内已经补齐 Docker 部署资产、原生无 Docker 部署脚本与文档、GPU 环境说明和后续 A100/V100 扩展路线。
+### 2. 口语化 RAG 改写与澄清追问
 
-## 仓库结构
+系统并不直接把知识库原文拼接给游客，而是先对检索结果做导览式口语重写，再根据问题是否模糊决定是否继续澄清追问，从而显著降低“念资料”的机器感。
 
-```text
-AI-chat-live2d/
-├─ frontend/                  # Vue 3 + Vite 游客端 / 管理后台
-│  ├─ src/
-│  ├─ public/live2d/          # Live2D 模型与静态资源
-│  └─ tests/
-├─ backend/                   # FastAPI 后端
-│  ├─ app/
-│  │  ├─ api/
-│  │  ├─ core/
-│  │  ├─ models/
-│  │  └─ services/
-│  ├─ storage/                # 模型、知识库、上传文件等运行时资源
-│  ├─ scripts/                # 评测与辅助脚本
-│  └─ tests/
-├─ docs/                      # 架构、路线图、部署、知识库、口型同步等文档
-├─ deploy/                    # Docker Compose / 原生部署资产
-└─ .github/workflows/         # CI
-```
+详见：[知识库建设方案](docs/knowledge-base.md)
 
-## 技术栈
+### 3. 面向 4060 / V100 / A100 的多层部署方案
 
-### 前端
+项目已形成“本机开发联调 + 测试服务器 Docker 部署 + 原生 GPU 部署 + 后续远程 TTS 扩展”的多层方案，既能适配低显存边缘端环境，也为更高算力服务器上的性能演进留出了清晰路径。
 
-- Vue 3
-- TypeScript
-- Vite
-- PixiJS
-- `pixi-live2d-display`
+详见：[显卡升级与迁移建议](docs/gpu-upgrade.md)｜[Docker 部署手册](docs/deployment/test-server-docker.md)
 
-### 后端
+## 系统能力总览
 
-- FastAPI
-- SQLAlchemy
-- WebSocket
-- PostgreSQL / SQLite
+### 游客体验
 
-### AI 能力
+- 支持文本、语音、图片三类输入方式
+- 支持 Live2D 数字人展示、思考态、说话态、情绪灯与基础动作协调
+- 支持流式回复、语音播报与口型同步
+- 支持 GPT 风格历史会话侧边栏、多模态 `+` 入口与路线推荐入口
 
-- DashScope / Qwen
-- `faster-whisper`
-- CosyVoice2-0.5B
-- ChromaDB
-- BGE Embedding / Reranker
+详见：[总体设计说明](docs/overall-design.md)｜[口型同步方案](docs/lipsync.md)
+
+### 管理闭环
+
+- 支持数字人配置、音色管理、知识库管理、会话记录查看
+- 支持知识缺口统计、人工补答并回流知识库
+- 支持数据大屏与感受度报告，便于从“服务记录”走向“运营分析”
+
+详见：[总体设计说明](docs/overall-design.md)｜[研发路线与阶段记录](docs/roadmap.md)
+
+### AI 与系统底座
+
+- `FastAPI + WebSocket` 实时对话通道
+- `faster-whisper` 本地 ASR
+- `Qwen / DashScope` 问答与视觉识别
+- `CosyVoice2-0.5B` 本地 TTS 与情绪指令发声
+- `bge-m3 + bge-reranker-v2-m3 + ChromaDB` 知识库检索链路
+- RAG / ASR / TTS / 前端缓冲 trace 与多显卡迁移预留
+
+详见：[系统架构设计](docs/architecture.md)｜[知识库建设方案](docs/knowledge-base.md)
+
+## 演示场景 / 功能概览
+
+### 游客端导览问答
+
+游客可以直接输入文字、发起语音提问，或上传景点图片。系统会识别问题意图、检索景区资料、生成自然讲解，并通过数字人进行语音播报与表情口型联动。
+
+### 个性化游览推荐
+
+系统支持兴趣标签与路线推荐能力，能够围绕“历史文化、亲子、夜游、轻松、省力、拍照打卡”等偏好生成更贴近游客需求的游览建议。
+
+### 管理后台运营
+
+管理员可以切换数字人形象、配置参考音频、更新知识库、查看历史会话、分析知识缺口，并通过数据大屏与日报总结持续优化服务质量。
 
 ## 快速开始
 
-### 1. 本地开发启动
+### 方式一：测试服务器推荐部署（Docker 优先）
 
-后端推荐直接参考 [backend/README.md](backend/README.md) 中的 conda 方案。当前项目主要在 `ai-chat-gpu` 这套环境中联调。
+该方式适用于 `Ubuntu 22.04 + Docker + NVIDIA GPU` 的测试服务器环境，适合作为评审演示部署方案。当前 Compose 与辅助脚本围绕测试服务器目录约定组织，不等价于“任意本地机器直接一键启动”。
+
+1. 准备服务器目录、模型权重与运行资源
+2. 执行 Docker 部署自举脚本
+3. 启动完整前后端与数据库栈
+
+```bash
+./deploy/docker/bootstrap.sh
+./deploy/docker/up.sh
+```
+
+详细步骤、目录约定、环境变量与访问方式详见：[测试服务器 Docker Compose 部署手册](docs/deployment/test-server-docker.md)
+
+如果目标环境禁用 Docker，请改看：[测试服务器原生部署手册](docs/deployment/test-server-native.md)
+
+### 方式二：本地开发兜底
 
 后端：
 
-```powershell
+```bash
 cd backend
-conda activate ai-chat-gpu
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -r requirements.asr.txt
+python -m pip install -r requirements.knowledge.txt
+python -m pip install -r requirements.tts.txt --no-build-isolation
+cp .env.example .env
 python -m uvicorn main:app --reload
 ```
 
 前端：
 
-```powershell
+```bash
 cd frontend
 npm install
 npm run dev
@@ -143,75 +125,58 @@ npm run dev
 - 游客端：`http://127.0.0.1:5173/`
 - 管理后台：`http://127.0.0.1:5173/admin.html`
 - 后端健康检查：`http://127.0.0.1:8000/api/v1/health`
-- Swagger：`http://127.0.0.1:8000/docs`
+- 后端接口文档：`http://127.0.0.1:8000/docs`
 
-### 2. 测试服务器部署
+如果需要 Conda、Windows 二进制依赖修复、GPU 环境说明或更完整的后端启动说明，请看：[backend/README.md](backend/README.md)
 
-仓库已提供两套测试服务器部署资产：
+## 模型与资源准备
 
-- [deploy/docker-compose.yml](deploy/docker-compose.yml)
-- [deploy/docker/](deploy/docker/)
-- [deploy/native/](deploy/native/)
-- [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)
-- [docs/deployment/test-server-native.md](docs/deployment/test-server-native.md)
+比赛部署或本地完整联调时，建议准备以下资源：
 
-适用场景：
+| 资源 | 建议目录 |
+| --- | --- |
+| `FunAudioLLM/CosyVoice2-0.5B` | `backend/storage/models/CosyVoice2-0.5B` |
+| `Systran/faster-whisper-small` | `backend/storage/models/faster-whisper-small` |
+| `BAAI/bge-m3` | `backend/storage/models/bge-m3` |
+| `BAAI/bge-reranker-v2-m3` | `backend/storage/models/bge-reranker-v2-m3` |
+| `FunAudioLLM/CosyVoice` vendor 代码 | `backend/storage/vendor/CosyVoice` |
 
-- `Ubuntu 22.04 + Docker`：看 Docker 文档
-- `Ubuntu 22.04 + 禁用 Docker`：看原生部署文档
-- `PostgreSQL`
-- `V100 / A100` 测试服务器
+模型下载细节、服务器资源映射和环境配置详见：[backend/README.md](backend/README.md)｜[测试服务器 Docker Compose 部署手册](docs/deployment/test-server-docker.md)
 
-### 3. CI
+## 仓库结构
 
-当前仓库已配置基础 CI：
+```text
+AI-chat-live2d/
+├─ frontend/                  # Vue 3 + Vite 游客端 / 管理后台
+├─ backend/                   # FastAPI 后端与 AI 服务编排
+├─ docs/                      # 架构、知识库、部署、口型同步等文档
+├─ deploy/                    # Docker / 原生部署资产
+└─ .github/workflows/         # CI
+```
 
-- 前端构建测试
-- 后端轻量测试
+## 阶段成果
 
-工作流位置：
+截至 `2026-07-18`，项目已经完成以下阶段性成果：
 
-- [.github/workflows/ci.yml](.github/workflows/ci.yml)
+- 已打通前后端基础骨架、WebSocket、ASR/TTS、知识库导入与对话主链
+- 已完成 RAG 检索、口语化回答改写、澄清追问、CosyVoice2 发声与数字人口型同步主链
+- 已完成游客端多模态体验、会话侧边栏、管理后台、音色管理、知识缺口、数据大屏与感受度报告
+- 已补齐测试服务器 Docker / 原生部署文档，以及面向更高算力 GPU 的扩展思路
+
+当前的后续工作重点主要集中在低显存边缘端设备的流式音频链路性能演进、口型同步量化验收以及最终压测与交付材料收尾。
+
+详见：[研发路线与阶段记录](docs/roadmap.md)
 
 ## 重要文档导航
 
-- [docs/roadmap.md](docs/roadmap.md)：项目阶段计划与完成情况
-- [docs/architecture.md](docs/architecture.md)：整体架构
-- [docs/api-design.md](docs/api-design.md)：接口设计
-- [docs/knowledge-base.md](docs/knowledge-base.md)：知识库方案
-- [docs/lipsync.md](docs/lipsync.md)：口型同步方案
-- [docs/gpu-upgrade.md](docs/gpu-upgrade.md)：显卡升级与迁移建议
-- [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)：测试服务器 Docker 部署手册
-- [docs/deployment/test-server-native.md](docs/deployment/test-server-native.md)：测试服务器原生部署手册
-- [docs/deployment/user-manual.md](docs/deployment/user-manual.md)：产品使用手册
-
-## 当前重点问题
-
-目前最需要继续打磨的不是“有没有功能”，而是“体验是否足够稳定”：
-
-- TTS 流式发声速度仍慢于理想状态
-- 4060 本机环境下偶发卡顿仍需继续优化
-- 口型同步主观体验已可用，但还需要更严格的量化验收
-- 最终部署、评测、交付材料还需要补齐
-
-## 说明
-
-- 仓库体积相对偏大，主要原因是 `frontend/public/live2d/` 中直接纳入了 Live2D 模型资源。
-- 后端运行还依赖本地模型目录，比赛部署时需要单独准备，可选择从 Hugging Face 直接下载或从本机传输到服务器。
-- `data/`、本地模型、虚拟环境、日志等运行时目录默认不纳入 Git。
-- 如果后续要做正式开源整理，建议把大体积数字人资源与模型下载步骤进一步拆分。
-
-### 比赛部署模型清单（简版）
-
-部署时请准备以下资源：
-
-- `FunAudioLLM/CosyVoice2-0.5B` -> `models/CosyVoice2-0.5B`
-- `Systran/faster-whisper-small` -> `models/faster-whisper-small`
-- `BAAI/bge-m3` -> `models/bge-m3`
-- `BAAI/bge-reranker-v2-m3` -> `models/bge-reranker-v2-m3`
-- `FunAudioLLM/CosyVoice` 仓库 -> `vendor/CosyVoice`
-
-有外网时可直接用 Hugging Face 下载；无外网时可先在本机准备好再传到服务器，具体命令见 [docs/deployment/test-server-native.md](docs/deployment/test-server-native.md)。
+- [总体设计说明](docs/overall-design.md)
+- [系统架构设计](docs/architecture.md)
+- [知识库建设方案](docs/knowledge-base.md)
+- [口型同步方案](docs/lipsync.md)
+- [测试服务器 Docker Compose 部署手册](docs/deployment/test-server-docker.md)
+- [测试服务器原生部署手册](docs/deployment/test-server-native.md)
+- [显卡升级与迁移建议](docs/gpu-upgrade.md)
+- [研发路线与阶段记录](docs/roadmap.md)
 
 ## License
 
