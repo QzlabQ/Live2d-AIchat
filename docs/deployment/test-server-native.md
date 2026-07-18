@@ -133,9 +133,12 @@ rsync -avz --delete \
   ./ user@server:/opt/ai-chat-live2d/app/
 ```
 
-## 6. 上传模型、知识库与 CosyVoice 代码
+## 6. 准备模型、知识库与 CosyVoice 代码
 
-这套原生部署默认 **不在线下载模型**，统一从本机传。
+这套原生部署里的模型和第三方资源不随仓库一起分发，部署时需要你自己准备。推荐两种方式：
+
+- **有外网时**：直接从 Hugging Face 下载到目标目录
+- **离线或内网时**：从本机用 `scp` / `rsync` 传到服务器
 
 建议的映射关系：
 
@@ -147,6 +150,25 @@ backend/storage/models/bge-reranker-v2-m3     -> /opt/ai-chat-live2d/models/bge-
 backend/storage/vendor/CosyVoice              -> /opt/ai-chat-live2d/vendor/CosyVoice
 backend/storage/knowledge                     -> /opt/ai-chat-live2d/data/knowledge
 ```
+
+### 6.1 Hugging Face 直下
+
+如果服务器能访问 Hugging Face，推荐直接把模型下载到目标目录：
+
+```bash
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='FunAudioLLM/CosyVoice2-0.5B', local_dir='/opt/ai-chat-live2d/models/CosyVoice2-0.5B')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Systran/faster-whisper-small', local_dir='/opt/ai-chat-live2d/models/faster-whisper-small')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='BAAI/bge-m3', local_dir='/opt/ai-chat-live2d/models/bge-m3')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='BAAI/bge-reranker-v2-m3', local_dir='/opt/ai-chat-live2d/models/bge-reranker-v2-m3')"
+```
+
+`vendor/CosyVoice` 是代码仓，不是模型权重。它仍然需要单独准备，推荐直接从仓库同步：
+
+```bash
+git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git /opt/ai-chat-live2d/vendor/CosyVoice
+```
+
+如果你已经在本机下载好了模型，也可以直接把本机目录传到服务器，对应到上面的目标路径即可。
 
 `scp` 示例：
 

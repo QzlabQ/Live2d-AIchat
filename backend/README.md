@@ -92,6 +92,14 @@ conda activate ai-chat-gpu
 python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='FunAudioLLM/CosyVoice2-0.5B', local_dir='E:/2026spring/software contest/AI-chat-live2d/backend/storage/models/CosyVoice2-0.5B')"
 ```
 
+如果你希望把其余后端模型也直接从 Hugging Face 准备好，推荐按下面目录分别下载：
+
+```powershell
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='Systran/faster-whisper-small', local_dir='./storage/models/faster-whisper-small')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='BAAI/bge-m3', local_dir='./storage/models/bge-m3')"
+python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='BAAI/bge-reranker-v2-m3', local_dir='./storage/models/bge-reranker-v2-m3')"
+```
+
 说明：
 
 - `requirements.txt` 里故意不再包含 `numpy`

@@ -183,6 +183,7 @@ npm run dev
 - [docs/gpu-upgrade.md](docs/gpu-upgrade.md)：显卡升级与迁移建议
 - [docs/deployment/test-server-docker.md](docs/deployment/test-server-docker.md)：测试服务器 Docker 部署手册
 - [docs/deployment/test-server-native.md](docs/deployment/test-server-native.md)：测试服务器原生部署手册
+- [docs/deployment/user-manual.md](docs/deployment/user-manual.md)：产品使用手册
 
 ## 当前重点问题
 
@@ -196,8 +197,21 @@ npm run dev
 ## 说明
 
 - 仓库体积相对偏大，主要原因是 `frontend/public/live2d/` 中直接纳入了 Live2D 模型资源。
+- 后端运行还依赖本地模型目录，比赛部署时需要单独准备，可选择从 Hugging Face 直接下载或从本机传输到服务器。
 - `data/`、本地模型、虚拟环境、日志等运行时目录默认不纳入 Git。
 - 如果后续要做正式开源整理，建议把大体积数字人资源与模型下载步骤进一步拆分。
+
+### 比赛部署模型清单（简版）
+
+部署时请准备以下资源：
+
+- `FunAudioLLM/CosyVoice2-0.5B` -> `models/CosyVoice2-0.5B`
+- `Systran/faster-whisper-small` -> `models/faster-whisper-small`
+- `BAAI/bge-m3` -> `models/bge-m3`
+- `BAAI/bge-reranker-v2-m3` -> `models/bge-reranker-v2-m3`
+- `FunAudioLLM/CosyVoice` 仓库 -> `vendor/CosyVoice`
+
+有外网时可直接用 Hugging Face 下载；无外网时可先在本机准备好再传到服务器，具体命令见 [docs/deployment/test-server-native.md](docs/deployment/test-server-native.md)。
 
 ## License
 
