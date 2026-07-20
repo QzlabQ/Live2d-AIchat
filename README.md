@@ -1,5 +1,10 @@
 # 景区导览服务 AI 数字人
 
+[![README 中文](https://img.shields.io/badge/README-%E4%B8%AD%E6%96%87-0F766E?style=for-the-badge)](./README.md)
+[![README English](https://img.shields.io/badge/README-English-1D4ED8?style=for-the-badge)](./README.en.md)
+
+中文 README 为比赛提交与主要维护版本；英文 README 提供对外概览与快速上手入口。
+
 > 中国软件杯 A5 赛题项目  
 > 面向景区导览场景的多模态 AI 数字人系统
 
