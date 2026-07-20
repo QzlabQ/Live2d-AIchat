@@ -5,11 +5,11 @@
 
 本项目聚焦“景区导览”这一真实服务场景，构建了一套集文字问答、语音交互、图片识图、Live2D 数字人展示、知识库问答、管理后台与数据分析于一体的完整系统。它不仅能“回答问题”，还强调“像导游一样讲解、推荐、追问与持续运营”。
 
+仓库连接：https://github.com/QzlabQ/Live2d-AI-Guide
+
 延伸阅读：[总体设计说明](docs/overall-design.md)
 
 ## 演示预览
-
-当前 README 采用“素材占位”方案，待前端演示素材补齐后可直接替换：
 
 - 游客端数字人对话 GIF：`.github/assets/readme/visitor-demo.gif`
 - 管理后台大屏截图：`.github/assets/readme/admin-dashboard.png`
@@ -33,6 +33,13 @@
 项目已形成“本机开发联调 + 测试服务器 Docker 部署 + 原生 GPU 部署 + 后续远程 TTS 扩展”的多层方案，既能适配低显存边缘端环境，也为更高算力服务器上的性能演进留出了清晰路径。
 
 详见：[显卡升级与迁移建议](docs/gpu-upgrade.md)｜[Docker 部署手册](docs/deployment/test-server-docker.md)
+
+### 4. 高准确率回答与高细度的 tracing
+
+本地 50 道文档准确率均值达到 98%，能够在保证事实准确性的同时，生成更自然、更像导览员的口语化回答。
+系统同时对 ASR、RAG、LLM、TTS 以及前端缓冲做了结构化 tracing，支持按 `reply_id` 回放关键耗时链路，便于快速定位瓶颈与卡顿来源。
+
+详见：[知识库建设方案](docs/knowledge-base.md)｜[研发路线与阶段记录](docs/roadmap.md)｜[后端 Trace 与日志](backend/README.md#trace-与日志)
 
 ## 系统能力总览
 
@@ -133,13 +140,13 @@ npm run dev
 
 比赛部署或本地完整联调时，建议准备以下资源：
 
-| 资源 | 建议目录 |
-| --- | --- |
-| `FunAudioLLM/CosyVoice2-0.5B` | `backend/storage/models/CosyVoice2-0.5B` |
-| `Systran/faster-whisper-small` | `backend/storage/models/faster-whisper-small` |
-| `BAAI/bge-m3` | `backend/storage/models/bge-m3` |
-| `BAAI/bge-reranker-v2-m3` | `backend/storage/models/bge-reranker-v2-m3` |
-| `FunAudioLLM/CosyVoice` vendor 代码 | `backend/storage/vendor/CosyVoice` |
+| 资源                                | 建议目录                                      |
+| ----------------------------------- | --------------------------------------------- |
+| `FunAudioLLM/CosyVoice2-0.5B`       | `backend/storage/models/CosyVoice2-0.5B`      |
+| `Systran/faster-whisper-small`      | `backend/storage/models/faster-whisper-small` |
+| `BAAI/bge-m3`                       | `backend/storage/models/bge-m3`               |
+| `BAAI/bge-reranker-v2-m3`           | `backend/storage/models/bge-reranker-v2-m3`   |
+| `FunAudioLLM/CosyVoice` vendor 代码 | `backend/storage/vendor/CosyVoice`            |
 
 模型下载细节、服务器资源映射和环境配置详见：[backend/README.md](backend/README.md)｜[测试服务器 Docker Compose 部署手册](docs/deployment/test-server-docker.md)
 
