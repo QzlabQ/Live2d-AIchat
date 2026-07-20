@@ -11,8 +11,7 @@
 
 ## 演示预览
 
-- 游客端数字人对话 GIF：`.github/assets/readme/visitor-demo.gif`
-- 管理后台大屏截图：`.github/assets/readme/admin-dashboard.png`
+https://github.com/user-attachments/assets/721c7be0-dc56-4576-bde2-b6f160619382
 
 ## 核心亮点
 
